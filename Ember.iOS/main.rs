@@ -1,5 +1,6 @@
-//! The iOS host of Ember (UIKit, on macOS with Xcode). FerroUI's `scripts/ios/bundle.sh`
-//! packages applications of the FerroUI workspace.
+//! The iOS host of Ember (UIKit, on macOS with Xcode). Package it with
+//! `FERROUI_IOS_WORKSPACE=$PWD FerroUI/scripts/ios/bundle.sh --package ember-ios --bin ember-ios
+//! --name Ember --bundle-id org.ferroui.ember` (docs/ember.md).
 
 #[cfg(not(target_os = "ios"))]
 fn main() {
