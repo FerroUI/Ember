@@ -1,0 +1,116 @@
+<UserControl xmlns="https://github.com/ferroui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Ember.ReaderView" Background="{DynamicResource EmberBackground}" Foreground="{DynamicResource EmberText}">
+  <InputPaneAwareDecorator Behavior="Resize">
+  <Grid RowDefinitions="Auto,*,Auto,Auto">
+    <Border BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,0,1" Background="{DynamicResource EmberSurface}" Padding="20,12">
+      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16">
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <Border Background="#E85D32" Width="38" Height="38" CornerRadius="12">
+            <TextBlock Text="e" FontSize="31" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-5,0,0" />
+          </Border>
+          <StackPanel VerticalAlignment="Center">
+            <TextBlock Text="ember" FontSize="23" FontWeight="Bold" />
+            <TextBlock x:Name="BrandSubtitle" Text="A LITTLE MORE SIGNAL." FontSize="9" Classes="muted" />
+          </StackPanel>
+        </StackPanel>
+        <Border x:Name="SearchHost" Grid.Column="1" MaxWidth="520" HorizontalAlignment="Center" VerticalAlignment="Center">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox x:Name="SearchBox" MinWidth="200" PlaceholderText="Search Hacker News" AutomationProperties.Name="Search Hacker News" />
+            <Button x:Name="SearchButton" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Search (Ctrl+K)" AutomationProperties.Name="Search" />
+          </Grid>
+        </Border>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+          <Button x:Name="RefreshButton" Classes="icon-button" ToolTip.Tip="Refresh (R)" AutomationProperties.Name="Refresh stories" />
+          <Button x:Name="ThemeButton" Classes="icon-button" ToolTip.Tip="Appearance and settings" AutomationProperties.Name="Appearance and settings" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <Grid x:Name="Workspace" Grid.Row="1" ColumnDefinitions="202,400,*">
+      <Border x:Name="NavigationRail" Background="{DynamicResource EmberRail}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,1,0" Padding="12,22">
+        <Grid RowDefinitions="Auto,*,Auto">
+          <StackPanel Spacing="5">
+            <TextBlock x:Name="ExploreLabel" Text="EXPLORE" Classes="eyebrow" Margin="14,0,0,12" />
+            <Button x:Name="NavTop" Classes="nav" AutomationProperties.Name="Front page" />
+            <Button x:Name="NavNew" Classes="nav" AutomationProperties.Name="Latest stories" />
+            <Button x:Name="NavBest" Classes="nav" AutomationProperties.Name="Best stories" />
+            <Button x:Name="NavAsk" Classes="nav" AutomationProperties.Name="Ask HN" />
+            <Button x:Name="NavShow" Classes="nav" AutomationProperties.Name="Show HN" />
+            <Button x:Name="NavJobs" Classes="nav" AutomationProperties.Name="Jobs" />
+            <Border Height="1" Background="{DynamicResource EmberBorder}" Margin="12,15" />
+            <TextBlock x:Name="LibraryLabel" Text="YOUR CORNER" Classes="eyebrow" Margin="14,0,0,9" />
+            <Button x:Name="NavSaved" Classes="nav" AutomationProperties.Name="Saved stories" />
+            <Button x:Name="NavHistory" Classes="nav" AutomationProperties.Name="Reading history" />
+            <Button x:Name="NavHidden" Classes="nav" AutomationProperties.Name="Hidden stories" />
+          </StackPanel>
+          <StackPanel Grid.Row="2" Spacing="6">
+            <Button x:Name="NavSettings" Classes="nav" AutomationProperties.Name="Settings" />
+            <TextBlock x:Name="RailFooter" Text="MADE FOR CURIOUS MINDS.&#10;Powered by FerroUI" FontSize="9" Classes="muted" Margin="14,12,0,0" LineHeight="17" />
+          </StackPanel>
+        </Grid>
+      </Border>
+      <Border x:Name="FeedPane" Grid.Column="1" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,1,0" Padding="20,24,16,12">
+        <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+          <StackPanel x:Name="FeedHeader" Spacing="7" Background="Transparent">
+            <TextBlock x:Name="FeedEyebrow" Text="THE INTERNET, CONSIDERED." Classes="eyebrow" />
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock x:Name="FeedTitle" Text="Front page" FontSize="28" FontWeight="Bold" />
+              <Button x:Name="UnreadButton" Grid.Column="1" Content="Unread" FontSize="11" ToolTip.Tip="Toggle unread stories only" />
+            </Grid>
+            <TextBlock x:Name="FeedSubtitle" Text="Good stories. Better conversations." Classes="muted" FontSize="12" TextWrapping="Wrap" />
+          </StackPanel>
+          <Border Grid.Row="1" Background="{DynamicResource EmberTint}" CornerRadius="8" Padding="12,9">
+            <TextBlock x:Name="FeedSummary" Text="LIVE FROM THE HN COMMUNITY" FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource SystemControlHighlightAccentBrush}" TextWrapping="Wrap" />
+          </Border>
+          <Grid Grid.Row="2">
+            <ListBox x:Name="Stories" Classes="reader-list" AutomationProperties.Name="Stories" />
+            <StackPanel x:Name="FeedEmpty" Spacing="12" Margin="20,40" VerticalAlignment="Top">
+              <TextBlock x:Name="EmptyTitle" Text="Finding your next good read" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" />
+              <TextBlock x:Name="EmptyMessage" Text="Connecting to Hacker News. Cached stories stay available when you are offline." Classes="muted" TextWrapping="Wrap" LineHeight="22" />
+              <Button x:Name="RetryButton" Content="Try again" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Grid>
+          <Button x:Name="LoadMoreButton" Grid.Row="3" Content="Load more stories" HorizontalAlignment="Stretch" />
+        </Grid>
+      </Border>
+      <Border x:Name="DetailPane" Grid.Column="2" Background="{DynamicResource EmberSurface}">
+        <Grid RowDefinitions="Auto,Auto,*">
+          <Border BorderThickness="0,0,0,1" BorderBrush="{DynamicResource EmberBorder}" Padding="16,12">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+              <Button x:Name="BackButton" Classes="icon-button" AutomationProperties.Name="Back" ToolTip.Tip="Back (Escape)" />
+              <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock x:Name="DetailEyebrow" Text="THE READING ROOM" Classes="eyebrow" />
+                <TextBlock x:Name="DetailTitle" Text="A space for good conversations" FontSize="13" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+              <Button x:Name="SaveButton" Grid.Column="2" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Save story" ToolTip.Tip="Save story (S)" />
+            </Grid>
+          </Border>
+          <Border x:Name="ThreadTools" Grid.Row="1" Padding="18,10" IsVisible="False">
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+              <TextBox x:Name="ThreadFind" PlaceholderText="Find in this conversation" AutomationProperties.Name="Find in thread" />
+              <Button x:Name="CollapseButton" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Collapse or expand all" AutomationProperties.Name="Collapse or expand all comments" />
+              <Button x:Name="DownloadButton" Grid.Column="2" Classes="icon-button" ToolTip.Tip="Download thread for offline reading" AutomationProperties.Name="Download thread" />
+            </Grid>
+          </Border>
+          <ContentControl x:Name="DetailHost" Grid.Row="2" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+        </Grid>
+      </Border>
+    </Grid>
+    <Border Grid.Row="2" x:Name="StatusBar" Background="{DynamicResource EmberTint}" Padding="16,8" IsVisible="False">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock x:Name="StatusText" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+        <Button x:Name="DismissStatus" Grid.Column="1" Content="Dismiss" FontSize="11" Margin="10,0,0,0" />
+      </Grid>
+    </Border>
+    <Border Grid.Row="3" x:Name="BottomNavigation" Background="{DynamicResource EmberSurface}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,1,0,0" Padding="4,6" IsVisible="False">
+      <UniformGrid Columns="5">
+        <Button x:Name="MobileHome" Classes="nav" AutomationProperties.Name="Front page" />
+        <Button x:Name="MobileNew" Classes="nav" AutomationProperties.Name="Latest stories" />
+        <Button x:Name="MobileSearch" Classes="nav" AutomationProperties.Name="Search" />
+        <Button x:Name="MobileSaved" Classes="nav" AutomationProperties.Name="Saved stories" />
+        <Button x:Name="MobileMore" Classes="nav" AutomationProperties.Name="More navigation" />
+      </UniformGrid>
+    </Border>
+  </Grid>
+  </InputPaneAwareDecorator>
+</UserControl>

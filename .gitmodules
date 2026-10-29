@@ -1,0 +1,3 @@
+[submodule "FerroUI"]
+	path = FerroUI
+	url = https://github.com/wieslawsoltes/FerroUI.git

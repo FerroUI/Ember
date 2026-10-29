@@ -1,0 +1,2 @@
+# FerroUI's cargo configuration: the link settings of the browser target (FerroUI/docs/apps.md).
+include = ["../FerroUI/.cargo/config.toml"]

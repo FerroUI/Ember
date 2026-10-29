@@ -1,0 +1,17 @@
+/* Only the app's loading/error surface is HTML. The reader itself is FerroUI. */
+:root { color-scheme: light dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f6f4f0; }
+#out { position: relative; width: 100%; height: 100%; height: 100dvh; }
+.ferroui-splash, .boot-error { box-sizing: border-box; position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; background: #f6f4f0; color: #242423; text-align: center; }
+.ferroui-splash { pointer-events: none; }
+.ferroui-splash h1 { font-size: 36px; font-weight: 650; letter-spacing: -1.5px; margin: 16px 0 4px; }
+.ferroui-splash p { color: #716b63; margin: 8px 0 28px; }
+.loading-line { width: 96px; height: 3px; border-radius: 3px; background: #e6ddd5; overflow: hidden; }
+.loading-line::after { content: ""; display: block; width: 50%; height: 100%; border-radius: inherit; background: #d95b32; animation: ember-loading 1.2s ease-in-out infinite alternate; }
+.ferroui-splash.splash-close { display: none; }
+.boot-error h1 { font-size: 24px; }
+.boot-error p { max-width: 500px; line-height: 1.6; overflow-wrap: anywhere; }
+.boot-error button { border: 0; background: #bd4622; color: white; padding: 12px 24px; min-height: 48px; border-radius: 8px; font: inherit; cursor: pointer; }
+@keyframes ember-loading { from { transform: translateX(-60%); } to { transform: translateX(160%); } }
+@media (prefers-color-scheme: dark) { html, body, .ferroui-splash, .boot-error { background: #181a1c; color: #f4f0e9; } .ferroui-splash p { color: #b5afa6; } .loading-line { background: #35312e; } }
+@media (prefers-reduced-motion: reduce) { .loading-line::after { animation: none; width: 100%; } }

@@ -1,0 +1,308 @@
+[workspace]
+resolver = "2"
+members = [
+    "Ember.Core",
+    "Ember.Content",
+    "Ember",
+    "Ember.Desktop",
+    "Ember.Browser",
+    "Ember.Android",
+    "Ember.iOS",
+]
+# The framework crates belong to the workspace of the submodule (FerroUI/docs/apps.md).
+exclude = ["FerroUI"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/FerroUI/Ember"
+
+[workspace.dependencies]
+# >>> FerroUI workspace dependencies (written by FerroUI/scripts/apps/sync-workspace.py from FerroUI/Cargo.toml; do not edit)
+ferroui-hot-reload = { version = "=0.4.0", path = "FerroUI/src/FerroUI.HotReload" }
+ferroui-hot-patch = { version = "=0.4.0", path = "FerroUI/src/FerroUI.HotPatch" }
+ferroui-inspect = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Inspect" }
+ferroui-devtools = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DevTools", default-features = false }
+ferroui-mcp = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Mcp" }
+ferroui-system = { version = "=0.4.0", path = "FerroUI/src/FerroUI.System" }
+ferroui-reactive = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Reactive" }
+ferroui-reactive-testing = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Reactive.Testing" }
+ferroui-dependency-injection = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DependencyInjection" }
+ferroui-splat = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Splat" }
+ferroui-dynamic-data = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DynamicData" }
+ferroui-reactiveui = { version = "=0.4.0", path = "FerroUI/src/FerroUI.ReactiveUI" }
+ferroui-reactiveui-testing = { version = "=0.4.0", path = "FerroUI/src/FerroUI.ReactiveUI.Testing" }
+ferroui-reactiveui-controls = { version = "=0.4.0", path = "FerroUI/src/FerroUI.ReactiveUI.Controls" }
+ferroui-base = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Base" }
+ferroui-controls = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls" }
+ferroui-view = { version = "=0.4.0", path = "FerroUI/src/FerroUI.View" }
+ferroui-view-macros = { version = "=0.4.0", path = "FerroUI/src/FerroUI.View.Macros" }
+ferroui-controls-color-picker = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.ColorPicker" }
+ferroui-controls-charts = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.Charts" }
+ferroui-controls-inking = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.Inking" }
+ferroui-treedatagrid-core = { version = "=0.4.0", path = "FerroUI/src/TreeDataGrid/FerroUI.TreeDataGrid.Core" }
+ferroui-controls-treedatagrid = { version = "=0.4.0", path = "FerroUI/src/TreeDataGrid/FerroUI.Controls.TreeDataGrid" }
+ferroui-static-view-locator = { version = "=0.4.0", path = "FerroUI/src/StaticViewLocator/FerroUI.StaticViewLocator" }
+ferroui-static-view-locator-macros = { version = "=0.4.0", path = "FerroUI/src/StaticViewLocator/FerroUI.StaticViewLocator.Macros" }
+ferroui-static-view-locator-build = { version = "=0.4.0", path = "FerroUI/src/StaticViewLocator/FerroUI.StaticViewLocator.Build" }
+ferroui-markup = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup" }
+ferroui-markup-xaml = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup.Xaml" }
+# Without the default features: the default is the run-time back end, which links the XAML runtime library
+# and the controls, and the build tool (`ferroui-build`) takes the compiler alone. Every crate that loads
+# markup at run time states the `runtime` feature.
+ferroui-markup-xaml-loader = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup.Xaml.Loader", default-features = false }
+ferroui-build-scan = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Build.Scan" }
+ferroui-build = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Build.Tasks" }
+xamlx = { version = "=0.4.0", path = "FerroUI/external/XamlX/src/XamlX" }
+ferroui-microcom = { version = "=0.4.0", path = "FerroUI/src/FerroUI.MicroCom" }
+microcom-codegen = { version = "=0.4.0", path = "FerroUI/src/tools/MicroCom.CodeGenerator" }
+ferroui-native = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Native" }
+# Without its default feature `angle`: a crate that wants ANGLE asks for it (ferroui-desktop, the
+# desktop catalog, the integration tests), and ferroui-winui, which does not need it to compile, is
+# checked for a Windows target on any host.
+ferroui-win32 = { version = "=0.4.0", path = "FerroUI/src/Windows/FerroUI.Win32", default-features = false }
+ferroui-desktop = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Desktop" }
+ferroui-x11 = { version = "=0.4.0", path = "FerroUI/src/FerroUI.X11" }
+ferroui-wayland = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Wayland" }
+ferroui-ios = { version = "=0.4.0", path = "FerroUI/src/iOS/FerroUI.iOS" }
+ferroui-freedesktop = { version = "=0.4.0", path = "FerroUI/src/FerroUI.FreeDesktop" }
+ferroui-android = { version = "=0.4.0", path = "FerroUI/src/Android/FerroUI.Android" }
+ferroui-browser = { version = "=0.4.0", path = "FerroUI/src/Browser/FerroUI.Browser" }
+ferroui-headless = { version = "=0.4.0", path = "FerroUI/src/Headless/FerroUI.Headless" }
+ferroui-headless-vnc = { version = "=0.4.0", path = "FerroUI/src/Headless/FerroUI.Headless.Vnc" }
+# Reserved names: empty placeholders until the ports exist (docs/release.md, section 2.2).
+ferroui = { version = "=0.4.0", path = "FerroUI/src/FerroUI" }
+ferroui-vulkan = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Vulkan" }
+ferroui-linuxframebuffer = { version = "=0.4.0", path = "FerroUI/src/Linux/FerroUI.LinuxFramebuffer" }
+ferroui-winui = { version = "=0.4.0", path = "FerroUI/src/Windows/FerroUI.WinUI" }
+ferroui-fonts-inter = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Fonts.Inter" }
+ferroui-dialogs = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Dialogs" }
+ferroui-diagnostics = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Diagnostics" }
+ferroui-xaml-interactivity = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactivity" }
+ferroui-xaml-behaviors-animations = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Behaviors.Animations" }
+ferroui-xaml-interactions = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions" }
+ferroui-xaml-interactions-reactiveui = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.ReactiveUI" }
+ferroui-xaml-interactions-custom = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.Custom" }
+ferroui-xaml-behaviors = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Behaviors" }
+ferroui-xaml-interactions-draggable = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.Draggable" }
+ferroui-xaml-interactions-draganddrop = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.DragAndDrop" }
+ferroui-xaml-interactions-events = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.Events" }
+ferroui-xaml-interactions-responsive = { version = "=0.4.0", path = "FerroUI/src/Behaviors/FerroUI.Xaml.Interactions.Responsive" }
+ferroui-themes-simple = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Themes.Simple" }
+ferroui-themes-fluent = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Themes.Fluent" }
+ferroui-themes-winui = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Themes.WinUI" }
+ferroui-themes-macos = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Themes.MacOS" }
+ferroui-themes-material = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Themes.Material" }
+ferroui-opengl = { version = "=0.4.0", path = "FerroUI/src/FerroUI.OpenGL" }
+ferroui-metal = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Metal" }
+ferroui-remote-protocol = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Remote.Protocol" }
+ferroui-designer-support = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DesignerSupport" }
+ferroui-skia = { version = "=0.4.0", path = "FerroUI/src/Skia/FerroUI.Skia" }
+ferroui-vello = { version = "=0.4.0", path = "FerroUI/src/Vello/FerroUI.Vello" }
+ferroui-harfbuzz = { version = "=0.4.0", path = "FerroUI/src/HarfBuzz/FerroUI.HarfBuzz" }
+bitflags = "2"
+# A fast hasher for maps keyed by identities and short keys (the TreeDataGrid's recycle pools).
+rustc-hash = "2.1"
+smallvec = "1.16"
+# The bindings of the Windows API for the Windows platform backend (docs/porting/win32-platform.md,
+# section 2). Without features here: the backend names the API namespaces it calls.
+windows-sys = { version = "0.61.2" }
+# ANGLE for the Windows platform backend (docs/porting/win32-platform.md, section 6.2): compiled
+# from source by its build script, only with the feature `angle` of ferroui-win32.
+mozangle = { version = "=0.7.1" }
+# The X11 platform (docs/porting/x11-platform.md, section 2): Xlib and its extension libraries, loaded
+# at run time, and the C library for the event loop (epoll, the wake-up pipe) and shared memory.
+x11-dl = "2.21"
+libc = "0.2"
+# The Vulkan platform contracts (docs/porting/vulkan.md, section 3): the types, constants and
+# function tables of Vulkan. No default features: `loaded` opens the loader of the system at run
+# time (nothing is linked), `debug` prints the structures and results.
+ash = { version = "=0.38.0", default-features = false, features = ["loaded", "debug", "std"] }
+# D-Bus for the FreeDesktop services (docs/porting/x11-platform.md, section 3): pure Rust, its own
+# executor thread per connection (the default features), no Tokio. `futures-util` for the streams of
+# signals and for waiting on one of two futures.
+zbus = { version = "=5.19.0" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The Wayland platform (docs/porting/wayland-platform.md, section 2): the protocol bindings over
+# libwayland-client, which is opened at run time (`dlopen`), because EGL needs the display and the
+# surfaces of that library; the cursor themes; `libwayland-egl` and `libxkbcommon`, opened at run
+# time too. Pinned exactly; the licences are in the NOTICE.md of the crate.
+wayland-client = { version = "=0.31.15", features = ["system", "dlopen"] }
+wayland-backend = { version = "=0.3.17", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "unstable"] }
+wayland-cursor = { version = "=0.31.14" }
+wayland-egl = { version = "=0.32.11" }
+xkbcommon-dl = { version = "=0.4.2" }
+# What the smoke example of the Wayland platform drives a wlroots compositor with: the virtual
+# pointer and screen copy protocols, and the virtual keyboard protocol.
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+wayland-protocols-misc = { version = "=0.3.12", features = ["client"] }
+# The Android platform (docs/porting/android-platform.md, section 2.1): the declarations of the Java
+# Native Interface, which one module of the backend wraps in safe functions.
+jni-sys = { version = "=0.4.1" }
+paste = "1"
+cc = "1"
+skia-safe = { version = "0.153" }
+# The Vello render backend (docs/porting/vello-backend.md, section 2): exact versions, because the
+# renderers of the Vello project change their interfaces between minor releases. `vello_cpu` without
+# its default features: its thread pool is added by the backend on targets with threads (the
+# drawing context stays confined to the thread that draws; the workers render its scene), no PNG
+# support of its own for images (the backend decodes and encodes with `png`). Its `text`
+# feature draws glyph runs (`glifo`), and its `png` feature is on for the one thing it adds to
+# that: the bitmap glyphs of a colour font. `skrifa` is the version `glifo` links, for the outlines
+# of glyphs; `fontique` enumerates and matches the fonts of the system.
+kurbo = { version = "=0.13.1" }
+peniko = { version = "=0.6.1" }
+vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline", "text", "png"] }
+linesweeper = { version = "=0.5.0" }
+png = { version = "=0.18.1" }
+skrifa = { version = "=0.44.0" }
+glifo = { version = "=0.4.0", default-features = false, features = ["std"] }
+fontique = { version = "=0.12.0" }
+# The codecs of the Vello render backend beside PNG (vello-backend.md, section 1.4), one crate a
+# format, each with the features it needs and no more: JPEG is decoded by `zune-jpeg` (with its
+# SIMD paths, which are its default) and encoded by `jpeg-encoder`, GIF is decoded by `gif`
+# (without its color quantizer, which only its encoder uses), BMP and the bitmaps of an ICO by
+# `zune-bmp`; `zune-core` has the options and the readers of the two zune crates.
+zune-core = { version = "=0.5.3", default-features = false, features = ["std"] }
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std", "neon", "x86"] }
+zune-bmp = { version = "=0.5.2", default-features = false, features = ["std"] }
+jpeg-encoder = { version = "=0.7.1", default-features = false, features = ["std"] }
+gif = { version = "=0.14.2", default-features = false, features = ["std"] }
+# The GPU modes of the Vello backend (its features `hybrid` and `gpu`): the sparse-strips renderer on
+# the GPU and the compute renderer, both on `wgpu`, each without its default features. `wgpu` with the
+# graphics API of the one desktop platform that is built (Metal); Vulkan and Direct3D 12 join with
+# their platforms. No crate but the Vello backend names these, and only behind its features.
+# `vello_gpu` has two renderers: over `wgpu` (the feature `hybrid` of the backend adds its `wgpu`
+# feature) and over a WebGL2 context through `web-sys` (the feature `hybrid-webgl` adds its `webgl`
+# feature: the browser, docs/porting/vello-backend.md, section 12).
+vello_gpu = { version = "=0.3.0", default-features = false, features = ["std", "text"] }
+vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal"] }
+# The version of the `wasm-bindgen` command-line tool on PATH has to be this exact version.
+wasm-bindgen = "=0.2.129"
+# The bindings of the WebGL2 renderer of `vello_gpu`, at the versions that belong to that release
+# of `wasm-bindgen`; the Vello backend names them behind its feature `hybrid-webgl`.
+js-sys = "=0.3.106"
+web-sys = "=0.3.106"
+roxmltree = "0.20"
+harfbuzz-sys = { version = "0.8", default-features = false, features = ["bundled"] }
+rust_decimal = { version = "1.43", default-features = false }
+time = { version = "0.3", default-features = false }
+# The mounted volumes of the managed file chooser.
+sysinfo = { version = "0.37", default-features = false, features = ["disk"] }
+# The RFB server of the VNC server of the headless platform (docs/porting/headless-vnc.md, section 3):
+# zlib streams of the Tight encoding (pure Rust, `miniz_oxide`), DES of the VNC password challenge and
+# the random bytes of the challenge.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+des = { version = "0.9" }
+getrandom = { version = "0.4" }
+# <<< FerroUI workspace dependencies
+
+# >>> FerroUI profiles (written by FerroUI/scripts/apps/sync-workspace.py from FerroUI/Cargo.toml; do not edit)
+# The default release build is the one that is built most often, so it is set up for build time:
+# thin LTO over the default sixteen code generation units, which generates code on all cores.
+[profile.release]
+lto = "thin"
+
+# Optimised code for running an application locally (`cargo run --profile fast-release -p <app>`):
+# the optimisation level of release, without link-time optimisation across crates. The last step
+# of an executable then links the optimised crates instead of optimising the whole program again,
+# which took most of a release build of a large application. Not for measurements or shipping:
+# the benchmarks are measured with release, and what is shipped is built with dist.
+[profile.fast-release]
+inherits = "release"
+lto = false
+
+# The build that is shipped and measured (`cargo build --profile dist`, `scripts/perf-report.py
+# --profile dist`): whole-program optimisation in one code generation unit. The executables are
+# 10 to 14 % smaller than with thin LTO over four units and start no slower
+# (docs/porting/desktop-performance.md, section 6.2); the build takes about twice as long, because
+# every executable generates the code of the whole program on one core, and its link step needs
+# about 6 GB of memory.
+#
+# The symbol table is stripped (`strip = "symbols"`): it is a sixth to a quarter of an executable of
+# macOS or Linux, and nothing of the program reads it but the symbolisation of a panic backtrace, which
+# then shows addresses (docs/binary-size.md, section 4.3). On Windows the executable never holds the
+# symbols (they are in the PDB beside it), so the setting changes nothing there. Build with the
+# release profile for a backtrace with names.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# The WebAssembly module of the browser (scripts/build-browser.sh): optimised for size, because the
+# module is downloaded and compiled by every visitor (docs/porting/browser-platform.md, section 18).
+# The crates of the run-time XAML loader stay optimised for speed: at "z" the start-up of a themed
+# application took twice as long, because the theme markup is loaded through them.
+# Thin LTO, one code generation unit per crate: fat LTO generates the code of the whole program
+# (the compiled theme markup included) as one LLVM module, which needed about 15.5 GB of memory;
+# thin LTO keeps one module per crate and needs about 8 GB, for 0.16 MB more with gzip
+# (docs/porting/browser-platform.md, section 18, "Build memory").
+[profile.browser]
+inherits = "release"
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+
+# The property system, styling, layout and the controls run on every frame that changes the view
+# (a scrolled list detaches, clears, prepares and attaches a container per row). At "z" that code is
+# barely inlined; at "s" scrolling the TableView page of the catalog takes about 20 % less processor
+# time, for 3.0 MB more of module (0.76 MB with gzip; docs/porting/browser-platform.md, section 18,
+# "Run-time speed of the framework crates").
+[profile.browser.package.ferroui-base]
+opt-level = "s"
+
+[profile.browser.package.ferroui-controls]
+opt-level = "s"
+
+[profile.browser.package.xamlx]
+opt-level = 3
+
+[profile.browser.package.ferroui-markup-xaml-loader]
+opt-level = 3
+
+[profile.browser.package.ferroui-markup-xaml]
+opt-level = 3
+
+[profile.browser.package.ferroui-markup]
+opt-level = 3
+
+[profile.browser.package.roxmltree]
+opt-level = 3
+
+# The renderers of the Vello backend (in a module built with the feature `vello` of the browser
+# crate; no other module links them): flattening, strips, the fine rasterization of the CPU mode,
+# glyph outlines and the conversions of the backend are inner loops over every pixel or every curve
+# of a frame. At "z" a frame of the TableView page of the catalog took 330 ms in the CPU mode and
+# 27 ms in the hybrid mode (docs/porting/vello-backend.md, section 12.5).
+[profile.browser.package.ferroui-vello]
+opt-level = 3
+
+[profile.browser.package.vello_cpu]
+opt-level = 3
+
+[profile.browser.package.vello_common]
+opt-level = 3
+
+[profile.browser.package.vello_gpu]
+opt-level = 3
+
+[profile.browser.package.glifo]
+opt-level = 3
+
+[profile.browser.package.kurbo]
+opt-level = 3
+
+[profile.browser.package.fearless_simd]
+opt-level = 3
+
+[profile.browser.package.skrifa]
+opt-level = 3
+
+[profile.browser.package.read-fonts]
+opt-level = 3
+# <<< FerroUI profiles

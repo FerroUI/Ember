@@ -1,0 +1,27 @@
+[package]
+name = "ember-content"
+description = "Bounded HTML5 content parsing and native FerroUI rich text rendering for Ember"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+autobenches = false
+autoexamples = false
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["render"]
+render = ["dep:ferroui-base", "dep:ferroui-controls"]
+render-tests = ["render", "dep:sample-testing", "ferroui-controls/testing"]
+
+[dependencies]
+scraper = { version = "0.24", default-features = false }
+url = "2.5"
+ferroui-base = { workspace = true, optional = true }
+ferroui-controls = { workspace = true, optional = true }
+sample-testing = { path = "../FerroUI/samples/SampleTesting", optional = true }

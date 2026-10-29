@@ -1,0 +1,24 @@
+[package]
+name = "ember-android"
+description = "The Android host of Ember, the FerroUI Hacker News reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+autobenches = false
+autoexamples = false
+
+[lib]
+name = "ember_android"
+path = "application.rs"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+ember = { path = "../Ember" }
+ferroui-base = { workspace = true }
+ferroui-controls = { workspace = true }
+ferroui-android = { workspace = true }
+ferroui-fonts-inter = { workspace = true }

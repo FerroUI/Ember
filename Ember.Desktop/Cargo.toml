@@ -1,0 +1,24 @@
+[package]
+name = "ember-desktop"
+description = "The desktop host of Ember, the FerroUI Hacker News reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+autobenches = false
+autoexamples = false
+
+[[bin]]
+name = "ember-desktop"
+path = "program.rs"
+
+[dependencies]
+ember = { path = "../Ember" }
+ferroui-base = { workspace = true }
+ferroui-controls = { workspace = true }
+ferroui-desktop = { workspace = true }
+ferroui-fonts-inter = { workspace = true }
+sample-support = { path = "../FerroUI/samples/SampleSupport" }

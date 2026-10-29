@@ -1,0 +1,7 @@
+{
+  "name": "ferroui-ember-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "devDependencies": { "fake-indexeddb": "6.2.4" }
+}

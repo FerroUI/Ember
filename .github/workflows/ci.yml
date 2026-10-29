@@ -1,0 +1,39 @@
+name: CI
+
+# Build, tests, the browser site and its GitHub Pages deployment, with the shared workflow of
+# FerroUI (FerroUI/docs/apps.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  app:
+    uses: wieslawsoltes/FerroUI/.github/workflows/app.yml@browser/external-workspace
+    with:
+      # Repository, cache and persistent state; the parser without a renderer; the real control
+      # tree, layout, interaction and rich content.
+      test: |
+        -p ember-core
+        -p ember-content --no-default-features
+        -p ember -p ember-content --features ember-content/render-tests --lib
+      check: |
+        -p ember-desktop
+      # The browser platform bridge and the offline worker, against a deterministic IndexedDB.
+      script: |
+        npm ci --prefix Ember.Browser
+        npm test --prefix Ember.Browser
+      browser-package: ember-browser
+      # The offline application shell of the default site.
+      browser-script: node Ember.Browser/write-offline-manifest.mjs . --out "$SITE"

@@ -1,0 +1,12 @@
+{
+  "id": "./",
+  "name": "Ember — Hacker News",
+  "short_name": "Ember",
+  "description": "A thoughtful, touch-friendly Hacker News reader built with FerroUI.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4f0",
+  "theme_color": "#D95B32",
+  "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
