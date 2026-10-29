@@ -1,9 +1,10 @@
 # Ember
 
-Ember is a responsive Hacker News reader written in Rust with [FerroUI](https://github.com/wieslawsoltes/FerroUI):
-its retained control tree, compiled XAML, the WinUI 3 theme and composition animations. Desktop, browser,
-Android and iOS hosts share the same application; the browser runs it as WebAssembly rendered into a canvas,
-with offline reading through IndexedDB and an installable application shell.
+Ember is an adaptive, offline-capable Hacker News reader built with
+[FerroUI](https://github.com/wieslawsoltes/FerroUI), a Rust UI framework, in its WinUI 3 theme: compiled
+XAML, the retained control tree and composition animations. It runs on the desktop, Android, iOS and in
+the browser (WebAssembly), all hosts sharing the same application; in the browser it renders into a
+canvas, with offline reading through IndexedDB and an installable application shell.
 
 **Open it in the browser:** https://ferroui.github.io/Ember/
 
