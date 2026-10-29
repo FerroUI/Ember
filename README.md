@@ -53,6 +53,20 @@ python3 -m http.server 8080 --directory target/browser/ember-browser
 See [Ember.Browser/README.md](Ember.Browser/README.md) for the browser host, its storage and its offline
 behavior.
 
+### Android and iOS
+
+```sh
+# Android (the SDK and NDK of FerroUI/scripts/android/env.sh; ANDROID_HOME set)
+FERROUI_ANDROID_WORKSPACE=$PWD FerroUI/scripts/android/apk.sh package --package ember-android \
+    --label Ember --application-id org.ferroui.ember --permission android.permission.INTERNET
+# iOS simulator (macOS with Xcode)
+FERROUI_IOS_WORKSPACE=$PWD FerroUI/scripts/ios/bundle.sh --package ember-ios --bin ember-ios \
+    --name Ember --bundle-id org.ferroui.ember
+```
+
+The Android package installs on a device or emulator with `adb install`; the bundle on the simulator with
+`xcrun simctl install booted target/ios-bundles/ember-ios.app`.
+
 ## Test
 
 ```sh

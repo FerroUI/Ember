@@ -101,9 +101,17 @@ and failure diagnostics are written under `$CARGO_TARGET_DIR/ember-browser-smoke
 cargo run -p ember-desktop
 ```
 
-The Android and iOS hosts compile in this workspace; FerroUI's packaging scripts
-(`FerroUI/scripts/android/apk.sh`, `FerroUI/scripts/ios/bundle.sh`) do not yet package an
-application of another workspace.
+The Android and iOS hosts are packaged with FerroUI's scripts, see
+[docs/ember.md](../docs/ember.md#mobile-hosts):
+
+```sh
+# Android (the SDK and NDK of FerroUI/scripts/android/env.sh; ANDROID_HOME set)
+FERROUI_ANDROID_WORKSPACE=$PWD FerroUI/scripts/android/apk.sh package --package ember-android \
+    --label Ember --application-id org.ferroui.ember --permission android.permission.INTERNET
+# iOS simulator (macOS with Xcode)
+FERROUI_IOS_WORKSPACE=$PWD FerroUI/scripts/ios/bundle.sh --package ember-ios --bin ember-ios \
+    --name Ember --bundle-id org.ferroui.ember
+```
 
 Android stores the database under the activity's private files directory and requests
 the Internet permission. iOS uses `Library/Application Support/Ember` within its app

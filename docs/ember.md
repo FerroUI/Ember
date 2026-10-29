@@ -280,10 +280,19 @@ Open `http://localhost:8080/`. The build uses FerroUI's
 
 ### Mobile hosts
 
-The Android and iOS hosts (`Ember.Android`, `Ember.iOS`) compile in this workspace.
-FerroUI's packaging scripts (`FerroUI/scripts/android/apk.sh`,
-`FerroUI/scripts/ios/bundle.sh`) package applications of the FerroUI workspace; packaging
-an application of another workspace with them is not supported yet. Android packaging
+FerroUI's packaging scripts build the hosts of this workspace (FerroUI/docs/apps.md):
+
+```sh
+# Android (the SDK and NDK of FerroUI/scripts/android/env.sh; ANDROID_HOME set)
+FERROUI_ANDROID_WORKSPACE=$PWD FerroUI/scripts/android/apk.sh package --package ember-android \
+    --label Ember --application-id org.ferroui.ember --permission android.permission.INTERNET
+# iOS simulator (macOS with Xcode)
+FERROUI_IOS_WORKSPACE=$PWD FerroUI/scripts/ios/bundle.sh --package ember-ios --bin ember-ios \
+    --name Ember --bundle-id org.ferroui.ember
+```
+
+The APK is written to `<target>/android/ember-android-arm64-v8a-debug.apk` and the bundle to
+`<target>/ios-bundles/ember-ios.app`. Android packaging
 requires the SDK/NDK prerequisites of FerroUI; iOS packaging requires macOS/Xcode. Android stores data under the activity's private files
 directory. iOS uses `Library/Application Support/Ember` within its application
 sandbox. Signing and installation follow the existing platform scripts.
