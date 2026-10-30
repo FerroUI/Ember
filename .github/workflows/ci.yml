@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   app:
-    uses: wieslawsoltes/FerroUI/.github/workflows/app.yml@apps/mobile-and-browser-tests
+    uses: wieslawsoltes/FerroUI/.github/workflows/app.yml@main
     with:
       # Repository, cache and persistent state; the parser without a renderer; the real control
       # tree, layout, interaction and rich content.
