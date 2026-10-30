@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   app:
-    uses: wieslawsoltes/FerroUI/.github/workflows/app.yml@main
+    uses: wieslawsoltes/FerroUI/.github/workflows/app.yml@apps/mobile-and-browser-tests
     with:
       # Repository, cache and persistent state; the parser without a renderer; the real control
       # tree, layout, interaction and rich content.
@@ -37,3 +37,8 @@ jobs:
       browser-package: ember-browser
       # The offline application shell of the default site.
       browser-script: node Ember.Browser/write-offline-manifest.mjs . --out "$SITE"
+      # The Android and iOS hosts, packaged as in docs/ember.md (artifacts android-apk and ios-app).
+      android: >-
+        --package ember-android --label Ember --application-id org.ferroui.ember
+        --permission android.permission.INTERNET
+      ios: --package ember-ios --bin ember-ios --name Ember --bundle-id org.ferroui.ember
