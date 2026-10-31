@@ -74,7 +74,7 @@ impl HttpClient for FixtureHttp {
                 return Err(ReaderError::Network("fixture is offline".into()));
             }
             if url.contains("stories.json") {
-                return Ok(json!([1001, 1002, 1003, 1004, 1005, 1006]).to_string());
+                return Ok(json!((1001..=1018).collect::<Vec<_>>()).to_string());
             }
             if url.contains("/user/") {
                 return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2001]}).to_string());
@@ -107,6 +107,9 @@ impl HttpClient for FixtureHttp {
                 }
                 1006 => {
                     json!({"id":1006,"type":"job","title":"A small team is hiring systems engineers","by":"team","time":1792582000u64,"url":"https://example.com/jobs"})
+                }
+                1007..=1018 => {
+                    json!({"id":id,"type":"story","title":format!("Notebook entry {}",id-1000),"by":"editor","kids":[]})
                 }
                 2001 => {
                     json!({"id":2001,"type":"comment","parent":1001,"by":"lin","time":1792601000u64,"kids":[2002],"text":"<p>The best tools disappear into the work. You stop thinking about the interface and start thinking about the idea.</p><blockquote>A good tool changes how you see the problem.</blockquote>"})
@@ -194,8 +197,8 @@ fn click_in_view(shell: &Shell, window: &Window, control: &Control) {
             let in_viewer = Shell::bounds_of(window, control);
             let viewer = Shell::bounds_of(window, &scroll);
             let offset = scroll.offset();
-            let target = offset.y + (in_viewer.y - viewer.y)
-                - (viewer.height - in_viewer.height) / 2.0;
+            let target =
+                offset.y + (in_viewer.y - viewer.y) - (viewer.height - in_viewer.height) / 2.0;
             scroll.set_offset(ferroui_base::Vector::new(offset.x, target.max(0.0)));
             for _ in 0..4 {
                 shell.settle();
@@ -278,7 +281,9 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
         // The import was accepted before the store is read: a missed click and a lost write
         // would otherwise look the same.
         assert_eq!(
-            view.get_control::<TextBlock>("StatusText").text().as_deref(),
+            view.get_control::<TextBlock>("StatusText")
+                .text()
+                .as_deref(),
             Some("Reading library imported.")
         );
         let persisted = ready(inner.get("reader:state")).unwrap().unwrap();
@@ -344,7 +349,14 @@ fn phone_back_restores_more_and_thread_without_history_cycles() {
         Rc::new(Cell::new(false)),
     );
     click(&shell, &window, &view.get_control::<Button>("MobileMore"));
-    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    let settings = view
+        .get_visual_descendants()
+        .filter_map(|node| node.cast::<Button>())
+        .find(|button| {
+            AutomationProperties::get_name(button).as_deref() == Some("Appearance and settings")
+        })
+        .unwrap();
+    click_in_view(&shell, &window, &settings);
     click(&shell, &window, &view.get_control::<Button>("BackButton"));
     assert_eq!(
         view.get_control::<TextBlock>("DetailTitle")
@@ -357,7 +369,7 @@ fn phone_back_restores_more_and_thread_without_history_cycles() {
         .get_control::<ferroui_controls::Border>("FeedPane")
         .is_effectively_visible());
     click(&shell, &window, &first_story(&window));
-    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    click(&shell, &window, &view.get_control::<Button>("MobileMore"));
     click(&shell, &window, &view.get_control::<Button>("BackButton"));
     assert!(view
         .get_control::<Button>("SaveButton")
@@ -405,7 +417,7 @@ fn opening_a_story_preserves_feed_position_and_platform_back_returns_to_the_feed
         Rc::new(Cell::new(false)),
     );
     let stories = view.get_control::<ListBox>("Stories");
-    stories.scroll_into_view(5);
+    stories.scroll_into_view(stories.items().count() as i32 - 1);
     shell.settle();
     let scroll = stories
         .scroll()
@@ -515,6 +527,45 @@ fn phone_back_navigation_and_offline_reopen_keep_saved_content() {
         .text()
         .unwrap_or_default()
         .contains("4 comments"));
+    window.close();
+}
+
+#[test]
+fn tablet_search_and_phone_find_remain_reachable_across_resize() {
+    let (shell, window, view) = start(
+        800.0,
+        680.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let search = view.get_control::<Button>("CompactSearch");
+    assert!(search.is_effectively_visible());
+    click(&shell, &window, &search);
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Search")
+    );
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    click(&shell, &window, &first_story(&window));
+    window.set_width(360.0);
+    shell.settle();
+    assert!(!view
+        .get_control::<ferroui_controls::Border>("Masthead")
+        .is_effectively_visible());
+    let find = view.get_control::<TextBox>("ThreadFind");
+    assert!(!find.is_effectively_visible());
+    click(&shell, &window, &view.get_control::<Button>("FindButton"));
+    assert!(find.is_effectively_visible());
+    find.set_text(Some("tools"));
+    click(&shell, &window, &view.get_control::<Button>("CloseFind"));
+    assert!(!find.is_effectively_visible());
+    assert!(find.text().unwrap_or_default().is_empty());
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert!(view
+        .get_control::<ferroui_controls::Border>("FeedPane")
+        .is_effectively_visible());
     window.close();
 }
 

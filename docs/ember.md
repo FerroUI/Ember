@@ -53,12 +53,12 @@ The shell uses logical pixel breakpoints rather than identifying the device:
 
 | Available width | Layout |
 | --- | --- |
-| Below 900 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
-| 900–1239 | A 74-pixel icon rail, a 340-pixel story pane and the remaining width for detail. |
-| 1240 and above | A 202-pixel labeled rail, a 400-pixel story pane and the remaining width for detail. |
+| Below 760 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
+| 760–1119 | A 60-pixel icon rail, a 290-pixel story pane and the remaining width for detail. |
+| 1120 and above | A 172-pixel labeled rail, a 350-pixel story pane and the remaining width for detail. |
 
-The header search field appears from 1100 pixels; Search remains reachable through
-navigation at smaller widths. Primary buttons, navigation targets, comment actions
+At 1120 pixels the header shows the search field. At intermediate widths a search
+icon opens the search form. On phones Search is in the bottom navigation. Primary buttons, navigation targets, comment actions
 and links provide at least 44 logical pixels of height. Action rows wrap on narrow
 screens. Deep comments cap their visual indentation so text retains usable width.
 
@@ -66,7 +66,8 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | --- | --- |
 | `Ctrl+K` / `Command+K` | Open search. |
 | `Enter` in header search | Run the query. |
-| `Escape` | Navigate back. |
+| `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
+| `Escape` | Close Find and clear its query, or navigate back. |
 | `J` / `K` | Select the next/previous story. |
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the selected story's saved state. |

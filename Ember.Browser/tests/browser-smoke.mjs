@@ -114,12 +114,17 @@ await run([
             assert(screen.elements.some(element => element.name === "NavTop"), "Desktop navigation rail is absent");
             await byText(page, title);
             await page.waitFor("location.search.includes('item=101')");
-            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             assert(!(await page.evaluate("globalThis.__emberUnsafeHtml === true")), "HN content executed script");
+            await byName(page, "FindButton");
+            await byAutomation(page, "Find in thread");
+            await page.type("design notes");
+            await page.press("Escape");
+            assert(!(await state(page)).elements.some(e => e.name === "ThreadFind"), "Escape should close find without leaving the discussion");
             const shot = await page.screenshot(path.join(captures, "desktop-thread.png"));
             assert(colours(shot) > 40, "The screenshot does not contain a rendered reader");
             await byName(page, "ThemeButton");
-            await waitText(page, "Make Ember yours");
+            await waitText(page, "Appearance & reading");
             await page.screenshot(path.join(captures, "desktop-settings.png"));
             await applyTheme(page, 2);
             const dark = await page.screenshot(path.join(captures, "desktop-dark.png"));
@@ -185,7 +190,7 @@ await run([
             await page.waitFor(`performance.timeOrigin !== ${previousDocument}`);
             await page.waitForView();
             await page.waitFor("globalThis.ember?.emberState");
-            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             await waitText(page, title);
             await page.screenshot(path.join(captures, "phone-offline-thread.png"));
             await byName(page, "BackButton");
