@@ -586,12 +586,13 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
         (390.0, 844.0, true, "phone-dark"),
         (1024.0, 820.0, false, "tablet-custom"),
     ] {
-        let (shell, window, view) = start(
-            width,
-            height,
-            Rc::new(MemoryStore::default()),
-            Rc::new(Cell::new(false)),
-        );
+        // Capture the settled palette even when the composition server's wall clock
+        // advances more slowly than the test shell's synthetic frames.
+        let store = Rc::new(MemoryStore::default());
+        let mut state = ReaderState::default();
+        state.preferences.reduced_motion = true;
+        ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+        let (shell, window, view) = start(width, height, store, Rc::new(Cell::new(false)));
         if dark {
             ferroui_controls::Application::current()
                 .unwrap()
