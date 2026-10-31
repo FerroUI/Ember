@@ -371,7 +371,7 @@ fn reviewed_action(
     let trigger = button(label);
     trigger.classes().add("quiet");
     trigger.set_content(Some(Control::boxed(crate::widgets::nav_content(
-        icon, label, false, false,
+        icon, label, false,
     ))));
     parent.children().add(trigger.clone());
     let error = feedback(parent);

@@ -175,6 +175,9 @@
       <Setter Property="Theme" Value="{StaticResource EmberQuietButton}" />
       <Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Left" />
     </Style>
+    <Style Selector="Border#NavigationRail Button.nav"><Setter Property="Padding" Value="10,2" /></Style>
+    <Style Selector="Border.compact-rail Button.nav"><Setter Property="Padding" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Center" /></Style>
+    <Style Selector="Border.compact-rail TextBlock.nav-caption"><Setter Property="IsVisible" Value="False" /></Style>
     <Style Selector="ListBox.reader-list"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /></Style>
     <Style Selector="ListBox.thread-list"><Setter Property="ItemContainerTheme" Value="{StaticResource EmberConversationRow}" /></Style>
     <Style Selector="ListBox.reader-list ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="{DynamicResource EmberText}" /></Style>

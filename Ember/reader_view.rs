@@ -141,6 +141,7 @@ pub struct ReaderView {
     find_origin: Cell<Option<u64>>,
     focus_reading: Cell<bool>,
     layout_mode: Cell<Option<WorkspaceLayout>>,
+    layout_update_queued: Cell<bool>,
     back_handler: RefCell<Option<(WeakRef<TopLevel>, RoutedEventHandlerToken)>>,
 }
 ferro_class!(ReaderView: UserControl);
@@ -206,12 +207,14 @@ impl ReaderView {
             find_origin: Cell::new(None),
             focus_reading: Cell::new(false),
             layout_mode: Cell::new(None),
+            layout_update_queued: Cell::new(false),
             back_handler: RefCell::new(None),
         }
     }
     pub fn new() -> Ref<Self> {
         let this = instantiate(Self::construct());
         this.initialize_component();
+        this.populate_navigation();
         this.wire();
         this.configure_detail();
         ACTIVE.with(|v| *v.borrow_mut() = Some(this.downgrade()));
@@ -334,12 +337,30 @@ impl ReaderView {
             v.render_stories();
         });
         let weak = self.to_ref().downgrade();
-        self.property_changed(move |e| {
-            if e.property() == ferroui_base::Visual::bounds_property().as_property() {
-                if let Some(v) = weak.upgrade() {
-                    v.apply_layout();
-                }
+        self.size_changed(move |_, event| {
+            if event.new_size().width == event.previous_size().width {
+                return;
             }
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+            if view.layout_update_queued.replace(true) {
+                return;
+            }
+            // Bounds change during arrange. Let that pass finish before changing columns
+            // or hiding controls it has already queued, and use the latest viewport width.
+            let weak = view.downgrade();
+            Dispatcher::ui_thread().post_local(
+                move || {
+                    if let Some(view) = weak.upgrade() {
+                        view.layout_update_queued.set(false);
+                        if view.is_loaded() {
+                            view.apply_layout();
+                        }
+                    }
+                },
+                DispatcherPriority::LOADED,
+            );
         });
         let weak = self.to_ref().downgrade();
         self.textbox("SearchBox").add_handler(
@@ -2222,16 +2243,24 @@ impl ReaderView {
         self.get_control::<Grid>("ReaderColumn")
             .set_max_width(if reading { 820.0 } else { f64::INFINITY });
         let focus = self.button("FocusButton");
-        let (label, icon) = if reading {
-            ("Exit focus reading", "exit_focus")
-        } else {
-            ("Focus reading", "focus_reading")
-        };
-        focus.set_content(Some(Control::boxed(crate::icons::icon(icon))));
-        focus.classes().set("active", reading);
-        AutomationProperties::set_name(&focus, Some(label));
-        ToolTip::set_tip(&focus, Some(Rc::new(format!("{label} (F)")) as BoxedValue));
-        self.populate_navigation(mode == WorkspaceLayout::CompactRail);
+        if focus.classes().contains("active") != reading {
+            let (label, icon) = if reading {
+                ("Exit focus reading", "exit_focus")
+            } else {
+                ("Focus reading", "focus_reading")
+            };
+            focus.set_content(Some(Control::boxed(crate::icons::icon(icon))));
+            focus.classes().set("active", reading);
+            AutomationProperties::set_name(&focus, Some(label));
+            ToolTip::set_tip(&focus, Some(Rc::new(format!("{label} (F)")) as BoxedValue));
+        }
+        let compact = mode == WorkspaceLayout::CompactRail;
+        self.get_control::<Border>("NavigationRail")
+            .classes()
+            .set("compact-rail", compact);
+        for name in ["ExploreLabel", "LibraryLabel"] {
+            self.label(name).set_is_visible(!compact);
+        }
         self.update_navigation();
     }
     fn update_navigation(&self) {
@@ -2282,7 +2311,7 @@ impl ReaderView {
                     )),
         );
     }
-    fn populate_navigation(&self, compact: bool) {
+    fn populate_navigation(&self) {
         for (name, icon, label) in [
             ("NavTop", "home", "Front page"),
             ("NavNew", "clock", "Latest"),
@@ -2297,22 +2326,9 @@ impl ReaderView {
         ] {
             let button = self.button(name);
             ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
-            button.set_horizontal_content_alignment(if compact {
-                ferroui_base::layout::HorizontalAlignment::Center
-            } else {
-                ferroui_base::layout::HorizontalAlignment::Left
-            });
-            if compact {
-                button.set_padding(Thickness::uniform(0.0));
-            } else {
-                button.set_padding(Thickness::symmetric(10.0, 2.0));
-            }
             button.set_content(Some(Control::boxed(&widgets::nav_content(
-                icon, label, compact, false,
+                icon, label, false,
             ))));
-        }
-        for name in ["ExploreLabel", "LibraryLabel"] {
-            self.label(name).set_is_visible(!compact);
         }
         for (name, icon, label) in [
             ("MobileHome", "home", "Home"),
@@ -2325,7 +2341,7 @@ impl ReaderView {
             b.set_padding(Thickness::symmetric(2.0, 2.0));
             b.set_horizontal_content_alignment(ferroui_base::layout::HorizontalAlignment::Center);
             b.set_content(Some(Control::boxed(&widgets::nav_content(
-                icon, label, false, true,
+                icon, label, true,
             ))));
         }
     }

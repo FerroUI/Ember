@@ -199,19 +199,12 @@ pub(crate) fn action(label: &str, icon: &str, invoke: impl Fn() + 'static) -> Re
     button.set_min_height(44.0);
     button.set_horizontal_content_alignment(HorizontalAlignment::Left);
     button.classes().add("quiet");
-    button.set_content(Some(Control::boxed(&nav_content(
-        icon, label, false, false,
-    ))));
+    button.set_content(Some(Control::boxed(&nav_content(icon, label, false))));
     AutomationProperties::set_name(&button, Some(label));
     button.click(move |_, _| invoke());
     button
 }
-pub(crate) fn nav_content(
-    icon: &str,
-    label: &str,
-    compact: bool,
-    vertical: bool,
-) -> Ref<StackPanel> {
+pub(crate) fn nav_content(icon: &str, label: &str, vertical: bool) -> Ref<StackPanel> {
     let panel = stack(if vertical { 2.0 } else { 8.0 });
     panel.set_orientation(if vertical {
         Orientation::Vertical
@@ -221,16 +214,15 @@ pub(crate) fn nav_content(
     panel.set_vertical_alignment(VerticalAlignment::Center);
     let glyph = crate::icons::icon(icon);
     panel.children().add(glyph.upcast::<Control>());
-    if !compact {
-        let label = text(label, if vertical { 11.0 } else { 13.0 });
-        label.set_vertical_alignment(VerticalAlignment::Center);
-        label.set_horizontal_alignment(if vertical {
-            HorizontalAlignment::Center
-        } else {
-            HorizontalAlignment::Left
-        });
-        panel.children().add(label.upcast::<Control>());
-    }
+    let label = text(label, if vertical { 11.0 } else { 13.0 });
+    label.classes().add("nav-caption");
+    label.set_vertical_alignment(VerticalAlignment::Center);
+    label.set_horizontal_alignment(if vertical {
+        HorizontalAlignment::Center
+    } else {
+        HorizontalAlignment::Left
+    });
+    panel.children().add(label.upcast::<Control>());
     panel
 }
 pub(crate) fn scroll(control: Ref<Control>) -> Ref<Control> {
