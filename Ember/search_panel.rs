@@ -1,6 +1,6 @@
 //! Search and public-profile forms. Filters are data, never interpolated tags.
 use crate::widgets::{
-    combo, disclosure, field_pair, form_button as button, label as text, section,
+    combo, disclosure, field_pair, form_button as button, icon_button, label as text, section,
 };
 use ember_core::{validate_username, SearchKind, SearchQuery, SearchSort};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
@@ -9,7 +9,9 @@ use ferroui_base::media::TextTrimming;
 use ferroui_base::utilities::DateTime;
 use ferroui_base::{Ref, Thickness};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
-use ferroui_controls::{Button, Control, ScrollViewer, StackPanel, TextBox};
+use ferroui_controls::{
+    Button, ColumnDefinitions, Control, Grid, ScrollViewer, StackPanel, TextBox,
+};
 use std::rc::Rc;
 
 /// The longest text of a search field.
@@ -145,30 +147,53 @@ pub fn build(
     let submit = button("Search");
     submit.classes().add("accent");
     search.children().add(submit.clone());
-    if !recent_searches.is_empty() {
-        let recent = disclosure(&root, "Recent searches", false);
-        for term in recent_searches.iter().take(5) {
-            let input = words.downgrade();
-            let suggestion = button(term);
-            suggestion.classes().add("quiet");
-            suggestion.set_horizontal_alignment(HorizontalAlignment::Stretch);
-            suggestion.set_horizontal_content_alignment(HorizontalAlignment::Left);
-            let title = text(term, 13.0, false);
-            title.set_max_lines(1);
-            title.set_text_trimming(<dyn TextTrimming>::character_ellipsis());
-            suggestion.set_content(Some(Control::boxed(title)));
-            let term = term.clone();
-            suggestion.click(move |_, _| {
-                if let Some(input) = input.upgrade() {
-                    input.set_text(Some(&term));
-                    input.focus();
-                }
-            });
-            recent.children().add(suggestion);
-        }
-    }
     let reset = button("Clear filters");
     filters.children().add(reset.clone());
+    author.set_max_length(64);
+    let summary = text("", 12.0, true);
+    search.children().add(summary.clone());
+    let advanced = [author.clone(), points.clone(), comments.clone()];
+    let values = advanced.each_ref().map(|field| field.downgrade());
+    let weak_time = time.downgrade();
+    let clear = reset.downgrade();
+    let update_summary = Rc::new(move || {
+        let (Some(time), Some(clear)) = (weak_time.upgrade(), clear.upgrade()) else {
+            return;
+        };
+        let mut parts = Vec::new();
+        for (field, prefix) in values.iter().zip(["Author", "Points ≥", "Comments ≥"]) {
+            let Some(field) = field.upgrade() else {
+                continue;
+            };
+            let value = field.text().unwrap_or_default();
+            if !value.trim().is_empty() {
+                parts.push(format!("{prefix} {}", value.trim()));
+            }
+        }
+        if let Some(period) = match time.selected_index() {
+            1 => Some("Past 24 hours"),
+            2 => Some("Past week"),
+            3 => Some("Past month"),
+            4 => Some("Past year"),
+            5 => Some("Custom date range"),
+            _ => None,
+        } {
+            parts.push(period.to_owned());
+        }
+        clear.set_is_enabled(!parts.is_empty());
+        summary.set_text(Some(&parts.join(" · ")));
+        summary.set_is_visible(!parts.is_empty());
+    });
+    for field in &advanced {
+        let update = update_summary.clone();
+        field.property_changed(move |e| {
+            if e.property() == TextBox::text_property().as_property() {
+                update();
+            }
+        });
+    }
+    update_summary();
+    time.selection_changed(move |_, _| update_summary());
     {
         let fields = [
             author.clone(),
@@ -177,20 +202,19 @@ pub fn build(
             from_date.clone(),
             through_date.clone(),
         ];
-        let choices = [kind.clone(), sort.clone(), time.clone()];
+        let time = time.clone();
         let message = message.clone();
         reset.click(move |_, _| {
             for field in &fields {
                 field.set_text(Some(""));
             }
-            for choice in &choices {
-                choice.set_selected_index(0);
-            }
+            time.set_selected_index(0);
             message.set_is_visible(false);
         });
     }
     let original = query.clone();
-    bind_submit(&search, &submit, move || {
+    let recent_input = words.downgrade();
+    let run: Rc<dyn Fn()> = Rc::new(move || {
         let result = (|| -> Result<SearchQuery, String> {
             let mut q = original.clone();
             q.page = 0;
@@ -254,6 +278,49 @@ pub fn build(
             }
         }
     });
+    bind_submit(&search, &submit, run.clone());
+    if !recent_searches.is_empty() {
+        let recent = disclosure(&root, "Recent searches", false);
+        recent.children().add(text("Select a term to edit it, or use its search button to run it with the current filters.", 12.0, true));
+        for term in recent_searches.iter().take(20) {
+            let row = Grid::new();
+            row.set_column_definitions(
+                ColumnDefinitions::parse("*,Auto").expect("recent search columns"),
+            );
+            row.set_column_spacing(4.0);
+            let edit = button(term);
+            edit.classes().add("quiet");
+            edit.set_horizontal_alignment(HorizontalAlignment::Stretch);
+            edit.set_horizontal_content_alignment(HorizontalAlignment::Left);
+            let title = text(term, 13.0, false);
+            title.set_max_lines(1);
+            title.set_text_trimming(<dyn TextTrimming>::character_ellipsis());
+            edit.set_content(Some(Control::boxed(title)));
+            let input = recent_input.clone();
+            let value = term.clone();
+            edit.click(move |_, _| {
+                if let Some(input) = input.upgrade() {
+                    input.set_text(Some(&value));
+                    input.focus();
+                    input.bring_into_view();
+                }
+            });
+            row.children().add(edit);
+            let go = icon_button(&format!("Run search for {term}"), "search");
+            let input = recent_input.clone();
+            let value = term.clone();
+            let run = run.clone();
+            go.click(move |_, _| {
+                if let Some(input) = input.upgrade() {
+                    input.set_text(Some(&value));
+                    run();
+                }
+            });
+            Grid::set_column(&go, 1);
+            row.children().add(go);
+            recent.children().add(row);
+        }
+    }
     let people = disclosure(&root, "Find a person", false);
     let username = field(
         &people,
@@ -268,16 +335,20 @@ pub fn build(
     people.children().add(message.clone());
     let open = button("Open profile");
     people.children().add(open.clone());
-    bind_submit(&people, &open, move || {
-        let name = username.text().unwrap_or_default();
-        match validate_username(name.trim()) {
-            Ok(()) => on_profile(name.trim().to_owned()),
-            Err(error) => {
-                message.set_text(Some(&error.to_string()));
-                message.set_is_visible(true);
+    bind_submit(
+        &people,
+        &open,
+        Rc::new(move || {
+            let name = username.text().unwrap_or_default();
+            match validate_username(name.trim()) {
+                Ok(()) => on_profile(name.trim().to_owned()),
+                Err(error) => {
+                    message.set_text(Some(&error.to_string()));
+                    message.set_is_visible(true);
+                }
             }
-        }
-    });
+        }),
+    );
     root.children()
         .add(text("Search powered by Algolia", 12.0, true));
     let scroll = ScrollViewer::new();
@@ -286,8 +357,7 @@ pub fn build(
 }
 
 /// Restrict Enter to text fields in this form. Both forms share the same top level.
-fn bind_submit(scope: &StackPanel, button: &Button, submit: impl Fn() + 'static) {
-    let submit = Rc::new(submit);
+fn bind_submit(scope: &StackPanel, button: &Button, submit: Rc<dyn Fn()>) {
     let pointer = submit.clone();
     button.click(move |_, _| pointer());
     scope.add_handler(
@@ -387,7 +457,7 @@ mod tests {
         let result = last.clone();
         let search = build(
             &SearchQuery::default(),
-            &[],
+            &["adaptive layout".to_owned()],
             Rc::new(move |q| {
                 result.replace(Some(q));
             }),
@@ -469,6 +539,24 @@ mod tests {
                 ..Default::default()
             }
         );
+        filters.set_is_expanded(false);
+        let recent = named("Recent searches").cast::<Expander>().unwrap();
+        recent.set_is_expanded(true);
+        shell.settle();
+        click(&named("adaptive layout"));
+        assert_eq!(input.text().as_deref(), Some("adaptive layout"));
+        assert!(last.borrow().is_none());
+        named("Sort by")
+            .cast::<ComboBox>()
+            .unwrap()
+            .set_selected_index(1);
+        click(&named("Run search for adaptive layout"));
+        let q = last
+            .borrow_mut()
+            .take()
+            .expect("quick replay submits the recent term");
+        assert_eq!(q.query, "adaptive layout");
+        assert_eq!(q.sort, SearchSort::Recent);
         window.close();
     }
 
