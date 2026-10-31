@@ -1606,7 +1606,9 @@ impl ReaderView {
         self.navigate(DetailRoute::Profile(name.clone()));
         self.label("DetailEyebrow").set_text(Some("PROFILE"));
         self.label("DetailTitle").set_text(Some(&name));
-        self.show_content(widgets::text("Loading profile…", 18.0).upcast::<Control>());
+        let loading = widgets::muted("Loading profile…");
+        loading.set_margin(Thickness::uniform(18.0));
+        self.show_content(loading.upcast());
         let Some(repo) = self.repo() else {
             return;
         };
@@ -1623,6 +1625,9 @@ impl ReaderView {
                     }
                     match result {
                         Ok(loaded) => {
+                            if let Some(warning) = loaded.warning.as_deref() {
+                                v.status(warning);
+                            }
                             if let Some(user) = loaded.value {
                                 let panel = widgets::stack(10.0);
                                 panel.set_margin(Thickness::uniform(18.0));
@@ -1630,21 +1635,26 @@ impl ReaderView {
                                 panel
                                     .children()
                                     .add(widgets::heading(&user.id).upcast::<Control>());
-                                panel.children().add(
-                                    widgets::text(
-                                        &format!(
-                                            "{} karma · joined {} · {} submissions",
-                                            user.karma.unwrap_or(0),
-                                            ember_core::relative_time(
-                                                user.created,
-                                                services::now()
-                                            ),
-                                            user.submitted.len()
-                                        ),
-                                        13.0,
-                                    )
-                                    .upcast::<Control>(),
-                                );
+                                let mut facts = Vec::new();
+                                if let Some(karma) = user.karma {
+                                    facts.push(format!("{karma} karma"));
+                                }
+                                if user.created.is_some() {
+                                    facts.push(format!(
+                                        "Joined {}",
+                                        ember_core::relative_time(user.created, services::now())
+                                    ));
+                                }
+                                let count = user.submitted.len();
+                                facts.push(format!(
+                                    "{count} {}",
+                                    if count == 1 {
+                                        "submission"
+                                    } else {
+                                        "submissions"
+                                    }
+                                ));
+                                panel.children().add(widgets::muted(&facts.join(" · ")));
                                 let link = v.to_ref().downgrade();
                                 let options = crate::thread_view::render_options(&v.state.borrow());
                                 panel.children().add(ember_content::render(
@@ -1689,18 +1699,33 @@ impl ReaderView {
                                 );
                                 v.show_content(widgets::scroll(panel.upcast::<Control>()));
                             } else {
-                                v.show_content(
-                                    widgets::text("This user has no public profile.", 18.0)
-                                        .upcast::<Control>(),
-                                );
+                                let message = widgets::muted("This user has no public profile.");
+                                message.set_margin(Thickness::uniform(18.0));
+                                v.show_content(message.upcast());
                             }
                         }
                         Err(error) => {
                             v.status(&format!("Profile unavailable: {error}"));
-                            let text = widgets::text("This profile could not be loaded. Check the username or try again when you are online.", 17.0);
-                            text.set_margin(Thickness::uniform(28.0));
-                            v.show_content(text.upcast());
-                        },
+                            let panel = widgets::stack(8.0);
+                            panel.set_margin(Thickness::uniform(18.0));
+                            panel
+                                .children()
+                                .add(widgets::heading("Couldn’t load profile"));
+                            panel.children().add(widgets::muted(
+                                "Check the username or your connection, then try again.",
+                            ));
+                            let target = v.to_ref().downgrade();
+                            let retry = widgets::action("Try again", "refresh", move || {
+                                if let Some(view) = target.upgrade() {
+                                    view.show_profile(name.clone());
+                                }
+                            });
+                            retry.set_horizontal_alignment(
+                                ferroui_base::layout::HorizontalAlignment::Left,
+                            );
+                            panel.children().add(retry);
+                            v.show_content(panel.upcast());
+                        }
                     }
                 }
             }),
