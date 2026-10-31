@@ -375,3 +375,76 @@ fn split(value: &str) -> BTreeSet<String> {
         .map(str::to_owned)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferroui_controls::{ComboBox, Window};
+    use sample_testing::Shell;
+
+    #[test]
+    fn reading_steps_preview_and_apply_without_losing_custom_background() {
+        let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
+        let applied = Rc::new(RefCell::new(Preferences::default()));
+        let result = applied.clone();
+        let form = build(
+            &ReaderState::default(),
+            Rc::new(move |action| {
+                if let SettingsAction::Preferences(prefs) = action {
+                    result.replace(prefs);
+                }
+            }),
+        );
+        let window = Window::new();
+        window.set_width(720.0);
+        window.set_height(1120.0);
+        window.set_content(Some(Control::boxed(form)));
+        window.show();
+        shell.settle();
+        let named = |name: &str| {
+            window
+                .get_visual_descendants()
+                .filter_map(|v| v.cast::<Control>())
+                .find(|c| AutomationProperties::get_name(c).as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+
+        let size = named("Reading font size").cast::<NumberBox>().unwrap();
+        size.step_value(size.small_change());
+        let preview = window
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<TextBlock>())
+            .find(|v| {
+                v.text().as_deref() == Some("The best part of a story is often in the discussion.")
+            })
+            .unwrap();
+        assert_eq!(preview.font_size(), 17.0);
+        assert_eq!(preview.line_height(), 25.5);
+        let theme = named("Theme").cast::<ComboBox>().unwrap();
+        let background = named("Custom background").cast::<TextBox>().unwrap();
+        assert!(!background.is_effectively_visible());
+        theme.set_selected_index(3);
+        shell.settle();
+        assert!(background.is_effectively_visible());
+        background.set_text(Some("#29405D"));
+        let apply = || {
+            shell.click(
+                0,
+                Shell::bounds_of(&window, &named("Apply preferences")).center(),
+            );
+            shell.settle();
+        };
+        apply();
+        assert_eq!(applied.borrow().theme, ThemeMode::Custom);
+        theme.set_selected_index(1);
+        shell.settle();
+        apply();
+        assert_eq!(applied.borrow().theme, ThemeMode::Light);
+        assert_eq!(
+            applied.borrow().custom_background.as_deref(),
+            Some("#29405D")
+        );
+        assert_eq!(applied.borrow().font_size, 17.0);
+        window.close();
+    }
+}
