@@ -508,11 +508,12 @@ fn desktop_pointer_navigation_save_and_library_are_connected() {
     assert!(view
         .get_control::<Button>("SaveButton")
         .is_effectively_visible());
-    assert!(view
-        .get_control::<TextBlock>("DetailTitle")
-        .text()
-        .unwrap_or_default()
-        .contains("comments"));
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
     click(&shell, &window, &view.get_control::<Button>("SaveButton"));
     click(&shell, &window, &view.get_control::<Button>("NavSaved"));
     assert_eq!(title(&view), "Saved for later");
@@ -561,7 +562,7 @@ fn phone_back_navigation_and_offline_reopen_keep_saved_content() {
     assert_eq!(title(&view), "Saved for later");
     click(&shell, &window, &first_story(&window));
     assert!(view
-        .get_control::<TextBlock>("DetailTitle")
+        .get_control::<TextBlock>("DetailEyebrow")
         .text()
         .unwrap_or_default()
         .contains("4 comments"));

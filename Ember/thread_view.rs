@@ -467,6 +467,16 @@ fn scroll_anchor_into_view(list: &ListBox, index: i32) {
     }
 }
 
+pub(crate) fn discussion_title(story: &HnItem, show_dead: bool) -> String {
+    if story.deleted {
+        "[deleted]".to_owned()
+    } else if story.dead && !show_dead {
+        "[dead]".to_owned()
+    } else {
+        HtmlDocument::parse(story.title_text()).plain_text()
+    }
+}
+
 fn header(
     snapshot: &ThreadContext,
     reading: &ReadingContext,
@@ -498,13 +508,7 @@ fn header(
     );
     body.children().add(eyebrow);
 
-    let headline = if story.deleted {
-        "[deleted]".to_owned()
-    } else if story.dead && !reading.show_dead {
-        "[dead]".to_owned()
-    } else {
-        HtmlDocument::parse(story.title_text()).plain_text()
-    };
+    let headline = discussion_title(story, reading.show_dead);
     let title = label(&headline, (options.font_size * 1.55).clamp(23.0, 36.0));
     AutomationProperties::set_heading_level(&title, 1);
     title.set_font_weight(FontWeight::SemiBold);

@@ -1234,7 +1234,7 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
-        let title = if thread.root.kind == Some(ember_core::ItemKind::Job) {
+        let summary = if thread.root.kind == Some(ember_core::ItemKind::Job) {
             "Job listing".to_owned()
         } else {
             let count = thread.root.descendants.unwrap_or_else(|| {
@@ -1249,14 +1249,27 @@ impl ReaderView {
             let noun = if count == 1 { "comment" } else { "comments" };
             format!("{count} {noun}")
         };
-        self.label("DetailTitle").set_text(Some(&title));
-        self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
+        let headline = crate::thread_view::discussion_title(
+            &thread.root,
+            self.state.borrow().preferences.show_dead,
+        );
+        self.label("DetailTitle").set_text(Some(&headline));
+        self.label("DetailEyebrow").set_text(Some(&summary));
         if let Some(warning) = thread.warning.as_deref() {
             self.status(warning);
         }
-        self.state.borrow_mut().mark_read(id, services::now());
-        *self.thread.borrow_mut() = Some(thread);
-        self.changed();
+        // The cache preview, refresh and final network result are one visit.
+        if self.thread.replace(Some(thread)).is_none() {
+            if matches!(self.undo_story.get(), Some(UndoStoryEdit::Read { id: edited, .. }) if edited == id)
+            {
+                self.undo_story.set(None);
+                self.button("UndoStory").set_is_visible(false);
+                self.get_control::<Border>("StatusBar")
+                    .set_is_visible(false);
+            }
+            self.state.borrow_mut().mark_read(id, services::now());
+            self.changed();
+        }
         self.render_thread();
         self.render_stories();
     }
