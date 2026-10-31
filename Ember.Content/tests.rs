@@ -237,6 +237,33 @@ mod render {
     }
 
     #[test]
+    fn headings_and_formatted_link_captions_keep_their_native_structure() {
+        use ferroui_controls::automation::AutomationProperties;
+        use ferroui_controls::documents::Bold;
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let document = HtmlDocument::parse(
+            "<h3>Release notes</h3><p><a href='https://example.com'><b>Important</b> changes</a></p>"
+        );
+        let control = crate::render(&document, &crate::RenderOptions::default(), Rc::new(|_| {}));
+        let heading = control
+            .get_logical_descendants()
+            .find(|node| node.classes().contains("ember-html-heading"))
+            .expect("document heading");
+        assert_eq!(AutomationProperties::get_heading_level(&heading), 3);
+        let link = control
+            .get_logical_descendants()
+            .find_map(|node| node.cast::<HyperlinkButton>())
+            .unwrap();
+        assert_eq!(
+            AutomationProperties::get_name(&link).as_deref(),
+            Some("Important changes")
+        );
+        assert!(link.get_logical_descendants().any(|node| node.is::<Bold>()));
+    }
+
+    #[test]
     fn manually_constructed_model_cannot_bypass_url_check() {
         let clock = Rc::new(TestGlobalClock::default());
         let _app = UnitTestApplication::start(sample_testing::services(clock));

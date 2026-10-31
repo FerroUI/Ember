@@ -108,6 +108,7 @@ fn render_blocks(
                 heading_options.line_height = heading_options.font_size * 1.3;
                 let heading = paragraph(content, &heading_options, activate_link);
                 heading.set_font_weight(FontWeight::SemiBold);
+                AutomationProperties::set_heading_level(&heading, i32::from((*level).clamp(1, 6)));
                 heading.classes().add("ember-html-heading");
                 panel.children().add(heading);
             }
@@ -211,7 +212,7 @@ fn paragraph(
         text.set_line_spacing(extra_spacing);
     }
     let collection = InlineCollection::new();
-    add_inlines(inlines, &collection, options, activate_link);
+    add_inlines(inlines, &collection, options, Some(activate_link));
     text.set_inlines(Some(collection));
     text
 }
@@ -249,7 +250,7 @@ fn add_inlines(
     inlines: &[Inline],
     output: &InlineCollection,
     options: &RenderOptions,
-    activate_link: &Rc<dyn Fn(&str)>,
+    activate_link: Option<&Rc<dyn Fn(&str)>>,
 ) {
     for inline in inlines {
         match inline {
@@ -284,7 +285,12 @@ fn add_inlines(
                 output.add(run);
             }
             Inline::Link { url, content } => {
-                // Defense in depth: the public document model can be constructed manually.
+                // A caption keeps its native bold, italic and monospace runs, but
+                // never nests another interactive control inside its hyperlink.
+                let Some(activate) = activate_link else {
+                    add_inlines(content, output, options, None);
+                    continue;
+                };
                 let Some(destination) = crate::safe_link(url) else {
                     add_inlines(content, output, options, activate_link);
                     continue;
@@ -302,7 +308,16 @@ fn add_inlines(
                 }
                 let label = Inline::plain_text(content);
                 let caption = &link.caption;
-                caption.set_text(Some(&label));
+                if content
+                    .iter()
+                    .all(|inline| matches!(inline, Inline::Text(_)))
+                {
+                    caption.set_text(Some(&label));
+                } else {
+                    let formatted = InlineCollection::new();
+                    add_inlines(content, &formatted, options, None);
+                    caption.set_inlines(Some(formatted));
+                }
                 caption.set_text_wrapping(TextWrapping::Wrap);
                 caption.set_text_decorations(Some(TextDecorations::underline()));
                 if let Some(brush) = &options.link_brush {
@@ -318,7 +333,7 @@ fn add_inlines(
                 );
                 // Leave NavigateUri unset: only the host decides how to launch, route internal
                 // HN links, or copy a destination. There is never a second implicit launch.
-                let activate = activate_link.clone();
+                let activate = activate.clone();
                 link.click(move |_, _| activate(&destination));
                 output.add_control(link);
             }
