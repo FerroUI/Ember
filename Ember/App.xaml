@@ -6,26 +6,28 @@
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="EmberBackground" Color="#F5F5F2" />
-          <SolidColorBrush x:Key="EmberRail" Color="#EEEEEA" />
+          <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberLightAccentColor}" />
+          <SolidColorBrush x:Key="EmberBackground" Color="#FAF8F5" />
+          <SolidColorBrush x:Key="EmberRail" Color="#F1EFEC" />
           <SolidColorBrush x:Key="EmberSurface" Color="#FFFFFF" />
           <SolidColorBrush x:Key="EmberCard" Color="#FFFFFF" />
-          <SolidColorBrush x:Key="EmberBorder" Color="#E3E5E7" />
-          <SolidColorBrush x:Key="EmberText" Color="#20252B" />
-          <SolidColorBrush x:Key="EmberMuted" Color="#66717D" />
-          <SolidColorBrush x:Key="EmberTint" Color="#FFF0E7" />
-          <SolidColorBrush x:Key="EmberCode" Color="#F2F4F6" />
+          <SolidColorBrush x:Key="EmberBorder" Color="#DEDCD8" />
+          <SolidColorBrush x:Key="EmberText" Color="#242321" />
+          <SolidColorBrush x:Key="EmberMuted" Color="#625D57" />
+          <SolidColorBrush x:Key="EmberTint" Color="#FBECE3" />
+          <SolidColorBrush x:Key="EmberCode" Color="#F1EEEB" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
-          <SolidColorBrush x:Key="EmberBackground" Color="#181B1F" />
-          <SolidColorBrush x:Key="EmberRail" Color="#14171B" />
-          <SolidColorBrush x:Key="EmberSurface" Color="#1D2025" />
-          <SolidColorBrush x:Key="EmberCard" Color="#23272D" />
-          <SolidColorBrush x:Key="EmberBorder" Color="#343B44" />
-          <SolidColorBrush x:Key="EmberText" Color="#F3F3EF" />
-          <SolidColorBrush x:Key="EmberMuted" Color="#A9B1BD" />
-          <SolidColorBrush x:Key="EmberTint" Color="#382A23" />
-          <SolidColorBrush x:Key="EmberCode" Color="#15191F" />
+          <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberDarkAccentColor}" />
+          <SolidColorBrush x:Key="EmberBackground" Color="#1A1B1D" />
+          <SolidColorBrush x:Key="EmberRail" Color="#17181A" />
+          <SolidColorBrush x:Key="EmberSurface" Color="#202123" />
+          <SolidColorBrush x:Key="EmberCard" Color="#242527" />
+          <SolidColorBrush x:Key="EmberBorder" Color="#393A3C" />
+          <SolidColorBrush x:Key="EmberText" Color="#F5F1EC" />
+          <SolidColorBrush x:Key="EmberMuted" Color="#B6B2AE" />
+          <SolidColorBrush x:Key="EmberTint" Color="#3A2D26" />
+          <SolidColorBrush x:Key="EmberCode" Color="#191A1C" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
       <ControlTheme x:Key="{x:Type controls:StoryCard}" TargetType="controls:StoryCard">

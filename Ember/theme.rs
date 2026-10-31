@@ -11,6 +11,24 @@ pub(crate) fn set_accent(theme: &WinUITheme, hex: &str) {
         return;
     };
     let (d1, d2, d3, l1, l2, l3) = SystemAccentColors::calculate_accent_shades(accent);
+    // Small accent labels and selection indicators share one ink per theme.
+    // Use the lowest-contrast reading surface in each built-in palette.
+    for (key, surface, text) in [
+        (
+            "EmberLightAccentColor",
+            Color::from_rgb(232, 227, 222),
+            Color::from_rgb(0, 0, 0),
+        ),
+        (
+            "EmberDarkAccentColor",
+            Color::from_rgb(63, 54, 49),
+            Color::from_rgb(255, 255, 255),
+        ),
+    ] {
+        theme
+            .resources()
+            .set(key, Some(Rc::new(readable_ink(accent, text, &[surface]))));
+    }
     let keys = [
         SystemAccentColors::ACCENT_KEY,
         SystemAccentColors::ACCENT_DARK1_KEY,
@@ -77,7 +95,7 @@ pub(crate) fn apply(preferences: &Preferences) {
     }
 }
 
-const CUSTOM_KEYS: [&str; 9] = [
+const CUSTOM_KEYS: [&str; 10] = [
     "EmberBackground",
     "EmberRail",
     "EmberSurface",
@@ -87,10 +105,11 @@ const CUSTOM_KEYS: [&str; 9] = [
     "EmberMuted",
     "EmberTint",
     "EmberCode",
+    "EmberAccentInk",
 ];
 struct CustomPalette {
     dark: bool,
-    colors: [Color; 9],
+    colors: [Color; 10],
 }
 
 /// The base variant follows relative sRGB luminance. Derived reading surfaces
@@ -108,23 +127,27 @@ fn custom_palette(background: Color, accent: Color) -> CustomPalette {
     let tint = safe_surface(surface, accent, 0.14, text);
     let border = blend(background, text, 0.22);
     let surfaces = [background, rail, surface, card, tint, code];
-    let mut muted = text;
-    for step in 0..=20 {
-        let candidate = blend(blend(text, background, 0.35), text, step as f64 / 20.0);
+    let muted = readable_ink(blend(text, background, 0.35), text, &surfaces);
+    let accent_ink = readable_ink(accent, text, &surfaces);
+    CustomPalette {
+        dark,
+        colors: [
+            background, rail, surface, card, border, text, muted, tint, code, accent_ink,
+        ],
+    }
+}
+
+fn readable_ink(preferred: Color, fallback: Color, surfaces: &[Color]) -> Color {
+    for step in 0..=32 {
+        let candidate = blend(preferred, fallback, step as f64 / 32.0);
         if surfaces
             .iter()
             .all(|&surface| contrast(candidate, surface) >= 4.5)
         {
-            muted = candidate;
-            break;
+            return candidate;
         }
     }
-    CustomPalette {
-        dark,
-        colors: [
-            background, rail, surface, card, border, text, muted, tint, code,
-        ],
-    }
+    fallback
 }
 
 fn safe_surface(base: Color, target: Color, amount: f64, foreground: Color) -> Color {
@@ -167,6 +190,10 @@ mod tests {
         ] {
             let palette = custom_palette(Color::parse(hex).unwrap(), Color::from_rgb(255, 107, 53));
             for index in [0, 1, 2, 3, 7, 8] {
+                assert!(
+                    contrast(palette.colors[9], palette.colors[index]) >= 4.5,
+                    "{hex}, accent ink on surface {index}"
+                );
                 assert!(
                     contrast(palette.colors[5], palette.colors[index]) >= 4.5,
                     "{hex}, surface {index}"
