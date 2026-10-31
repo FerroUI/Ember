@@ -608,6 +608,135 @@ fn tablet_search_and_phone_find_remain_reachable_across_resize() {
 }
 
 #[test]
+fn focus_reading_keeps_the_discussion_and_layers_back_navigation() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
+    use ferroui_controls::{Border, Grid};
+    let store = Rc::new(MemoryStore::default());
+    let mut initial = ReaderState::default();
+    initial.preferences.reduced_motion = true;
+    ready(store.put("reader:state", &initial.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1440.0, 940.0, store, Rc::new(Cell::new(false)));
+    click(&shell, &window, &first_story(&window));
+    let focus = view.get_control::<Button>("FocusButton");
+    click(&shell, &window, &focus);
+    assert!(!view
+        .get_control::<Border>("NavigationRail")
+        .is_effectively_visible());
+    let column = view.get_control::<Grid>("ReaderColumn");
+    let bounds = Shell::bounds_of(&window, &column);
+    assert!(bounds.width <= 820.0 && bounds.x > 0.0);
+    assert!(
+        (bounds.center().x - view.bounds().width / 2.0).abs() < 2.0,
+        "long-form text should be centered"
+    );
+    click(&shell, &window, &view.get_control::<Button>("FindButton"));
+    let field = view.get_control::<TextBox>("ThreadFind");
+    field.set_text(Some("a"));
+    let enter = |modifiers| {
+        let mut event = KeyEventArgs::new();
+        event.key = Key::Enter;
+        event.key_modifiers = modifiers;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        field.raise_event(&event);
+        shell.settle();
+        assert!(event.handled());
+    };
+    enter(KeyModifiers::NONE);
+    let count = view.get_control::<TextBlock>("FindCount");
+    assert_eq!(count.text().as_deref(), Some("1 of 4 matching comments"));
+    enter(KeyModifiers::SHIFT);
+    assert_eq!(count.text().as_deref(), Some("4 of 4 matching comments"));
+    if let Some(path) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        let dir = std::path::PathBuf::from(path);
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&dir.join("focus-find.ppm"))
+            .unwrap();
+    }
+    window.set_width(360.0);
+    shell.settle();
+    let back = view.get_control::<Button>("BackButton");
+    click(&shell, &window, &back);
+    assert!(!field.is_effectively_visible());
+    assert!(!view
+        .get_control::<Border>("BottomNavigation")
+        .is_effectively_visible());
+    click(&shell, &window, &back);
+    assert!(view
+        .get_control::<Border>("BottomNavigation")
+        .is_effectively_visible());
+    assert!(view
+        .get_control::<Button>("SaveButton")
+        .is_effectively_visible());
+    click(&shell, &window, &back);
+    assert!(view
+        .get_control::<Border>("FeedPane")
+        .is_effectively_visible());
+    window.close();
+}
+
+#[test]
+fn story_menu_undo_restores_original_bookmark_order_and_preserves_history() {
+    use ferroui_base::input::ContextRequestedEventArgs;
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::MenuItem;
+    let store = Rc::new(MemoryStore::default());
+    let mut initial = ReaderState::default();
+    initial.toggle_saved(1002, 30);
+    initial.toggle_saved(1001, 45);
+    initial.mark_read(1001, 65);
+    ready(store.put("reader:state", &initial.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1280.0, 850.0, store.clone(), Rc::new(Cell::new(false)));
+    let saved_state =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    let command = |label: &str| {
+        let card = first_story(&window);
+        assert_eq!(card.tag().unwrap().downcast_ref::<u64>(), Some(&1001));
+        card.raise_event(&ContextRequestedEventArgs::new());
+        let menu = card.context_menu().unwrap();
+        let items = menu.items();
+        let action = (0..items.count())
+            .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+            .filter_map(|control| control.cast::<MenuItem>())
+            .find(|entry| {
+                entry
+                    .header()
+                    .is_some_and(|h| h.downcast_ref::<String>().map(String::as_str) == Some(label))
+            })
+            .unwrap_or_else(|| panic!("missing contextual action {label}"));
+        menu.close();
+        action.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        shell.settle();
+    };
+    click(&shell, &window, &view.get_control::<Button>("NavSaved"));
+    command("Remove from saved");
+    assert_eq!(saved_state().saved_ids(), vec![1002]);
+    click(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert_eq!(saved_state().items[&1001].saved_at, Some(45));
+    assert_eq!(saved_state().saved_ids(), vec![1001, 1002]);
+    click(&shell, &window, &view.get_control::<Button>("NavHistory"));
+    command("Mark unread");
+    assert!(!saved_state().is_read(1001));
+    assert_eq!(saved_state().history_ids(), vec![1001]);
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 1);
+    command("Hide story");
+    assert!(saved_state().items[&1001].hidden);
+    click(&shell, &window, &view.get_control::<Button>("NavHidden"));
+    command("Restore to feeds");
+    assert_eq!(
+        view.get_control::<TextBlock>("StatusText")
+            .text()
+            .as_deref(),
+        Some("Story restored to your feeds.")
+    );
+    click(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert!(saved_state().items[&1001].hidden);
+    assert!(!saved_state().is_read(1001));
+    window.close();
+}
+
+#[test]
 fn capture_real_control_tree_in_desktop_and_phone_themes() {
     for (width, height, dark, name) in [
         (1440.0, 940.0, false, "desktop-light"),
