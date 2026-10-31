@@ -20,8 +20,11 @@ rendered by Skia/HarfBuzz through the native test host.
 [Dark desktop](images/ember-desktop-dark.png) ·
 [Phone feed](images/ember-phone-dark.png) ·
 [Custom tablet theme](images/ember-tablet-custom.png) ·
-[Phone discussion](images/ember-phone-comments.png)
+[Phone discussion](images/ember-phone-comments.png) ·
+[Focus reading with Find](images/ember-focus-find.png)
 
+
+The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
 ## Reading and discovery
 
@@ -65,7 +68,9 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | `Ctrl+K` / `Command+K` | Open search. |
 | `Enter` in a search field | Run the query with its filters. In the username field, open that profile. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
-| `Escape` | Close Find and clear its query, or navigate back. |
+| `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
+| `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from the story menu. |
+| `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
 | `J` / `K` | Select the next/previous story. |
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the selected story's saved state. |
@@ -74,8 +79,9 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | Swipe a story right | Toggle hidden state after an 80-pixel horizontal swipe. |
 | Pull the feed heading down | Refresh after a 72-pixel touch/pen drag. |
 
-Letter shortcuts do not intercept typing in a text box. Every swipe action also
-has a button path. Browser story navigation updates the URL without reloading the
+Open a story’s context menu by right-clicking, pressing the keyboard menu key, or holding the row on a touch screen. From there you can save, hide, mark read or unread, or copy its HN link. **Undo** in the status bar restores the latest story edit, including a removed bookmark’s original position in Saved. Marking a story unread keeps its visit in History.
+
+Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Browser story navigation updates the URL without reloading the
 application, and Back/Forward routes through the reader. A browser URL with
 `?item=8863` opens that discussion. The desktop host accepts an initial HN URL as
 its first argument.
