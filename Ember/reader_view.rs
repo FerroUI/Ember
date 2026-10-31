@@ -726,32 +726,8 @@ impl ReaderView {
         let card = StoryCard::new();
         let state = self.state.borrow();
         card.set_tag(Some(Rc::new(item.id)));
-        let title = ember_content::HtmlDocument::parse(
-            item.title
-                .as_deref()
-                .or(item.text.as_deref())
-                .unwrap_or("Discussion"),
-        )
-        .plain_text();
-        card.set_headline(Some(&title));
-        card.set_domain(Some(&item.domain()));
-        card.set_metadata(Some(&format!(
-            "{} · {} · {} comments",
-            item.author(),
-            ember_core::relative_time(item.time, services::now()),
-            item.descendants.unwrap_or(0)
-        )));
-        card.set_score_label(Some(&format!("↑ {}", item.score.unwrap_or(0))));
+        card.set_item(item, services::now(), state.preferences.show_dead);
         self.update_card_state(&card, item.id, &state);
-        AutomationProperties::set_name(
-            &card,
-            Some(&format!(
-                "{}; {} points; {} comments",
-                title,
-                item.score.unwrap_or(0),
-                item.descendants.unwrap_or(0)
-            )),
-        );
         let id = item.id;
         let weak = self.to_ref().downgrade();
         card.click(move |_, _| {
@@ -763,22 +739,19 @@ impl ReaderView {
         card
     }
     fn update_card_state(&self, card: &StoryCard, id: u64, state: &ReaderState) {
-        card.set_status_label(Some(if state.is_saved(id) {
-            "SAVED"
-        } else if state.is_read(id) {
-            "READ"
-        } else {
-            ""
+        let read = state.is_read(id);
+        let saved = state.is_saved(id);
+        card.set_status_label(Some(if saved { "SAVED" } else if read { "READ" } else { "" }));
+        card.classes().set("read", read);
+        card.classes().set("saved", saved);
+        card.classes().set("compact", state.preferences.compact);
+        card.classes().set("selected", self.selected.get() == Some(id));
+        AutomationProperties::set_help_text(card, Some(match (saved, read) {
+            (true, true) => "Saved, read. Open discussion.",
+            (true, false) => "Saved. Open discussion.",
+            (false, true) => "Read. Open discussion.",
+            (false, false) => "Open discussion.",
         }));
-        card.classes()
-            .set("selected", self.selected.get() == Some(id));
-        if state.preferences.compact {
-            card.set_min_height(110.0);
-            card.set_padding(Thickness::uniform(12.0));
-        } else {
-            card.set_min_height(142.0);
-            card.set_padding(Thickness::symmetric(18.0, 16.0));
-        }
     }
     fn wire_card_swipe(&self, card: &StoryCard, id: u64) {
         let swipe = SwipeGestureRecognizer::new();
