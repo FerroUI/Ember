@@ -1,11 +1,13 @@
 //! Touch-sized preference and reading-data editor. Changes are committed through
 //! the owner so persistence failures remain visible to the user.
-use crate::widgets::{combo, form_button as button, label as text, section};
+use crate::widgets::{
+    action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
+};
 use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
 use ferroui_base::layout::HorizontalAlignment;
 use ferroui_base::{BoxedValue, Ref, Thickness};
-use ferroui_controls::automation::AutomationProperties;
-use ferroui_controls::{CheckBox, Control, ScrollViewer, StackPanel, TextBox};
+use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
+use ferroui_controls::{CheckBox, Control, ScrollViewer, StackPanel, TextBlock, TextBox};
 use std::{collections::BTreeSet, rc::Rc};
 
 /// The longest text of a settings field; the backup field takes up to 16 MiB.
@@ -25,7 +27,7 @@ fn field(
 pub enum SettingsAction {
     Preferences(Preferences),
     Mutes(MuteRules),
-    Export,
+    Export(Rc<dyn Fn(&str)>),
     Import(String),
     ClearCache,
     ClearHistory,
@@ -33,20 +35,15 @@ pub enum SettingsAction {
 
 pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<Control> {
     let root = StackPanel::new();
-    root.set_spacing(20.0);
-    root.set_margin(Thickness::uniform(22.0));
-    root.set_max_width(760.0);
+    root.set_spacing(10.0);
+    root.set_margin(Thickness::uniform(16.0));
+    root.set_max_width(720.0);
     root.set_horizontal_alignment(HorizontalAlignment::Stretch);
-    root.children().add(text("Make Ember yours", 28.0, false));
-    root.children().add(text(
-        "A quieter reading space, tuned to the way you browse.",
-        14.0,
-        true,
-    ));
 
     let appearance = section(&root, "Appearance & reading");
+    let (theme_field, accent_field) = field_pair(&appearance);
     let theme = combo(
-        &appearance,
+        &theme_field,
         "Theme",
         &["Follow system", "Light", "Dark", "Custom"],
         match state.preferences.theme {
@@ -57,62 +54,92 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         },
     );
     let accent = field(
-        &appearance,
+        &accent_field,
         "Accent color",
         &state.preferences.accent,
         "#FF6B35",
         false,
     );
+    let custom = stack(4.0);
+    custom.set_is_visible(theme.selected_index() == 3);
+    appearance.children().add(custom.clone());
     let background = field(
-        &appearance,
+        &custom,
         "Custom background",
         state.preferences.custom_background.as_deref().unwrap_or(""),
         "Optional, for example #172126",
         false,
     );
+    let weak_theme = theme.downgrade();
+    theme.selection_changed(move |_, _| {
+        if let Some(theme) = weak_theme.upgrade() {
+            custom.set_is_visible(theme.selected_index() == 3);
+        }
+    });
+    let (type_size, leading) = field_pair(&appearance);
     let font_size = field(
-        &appearance,
+        &type_size,
         "Reading font size",
         &state.preferences.font_size.to_string(),
         "12–32",
         false,
     );
     let line_height = field(
-        &appearance,
+        &leading,
         "Line spacing",
         &state.preferences.line_height.to_string(),
         "1.1–2.2",
         false,
     );
-    let compact = toggle(
-        &appearance,
-        "Compact story cards",
-        state.preferences.compact,
+    let preview = text(
+        "Reading preview
+The best part of a story is often in the discussion.",
+        state.preferences.font_size,
+        false,
     );
-    let motion = toggle(
-        &appearance,
-        "Reduce animation",
-        state.preferences.reduced_motion,
-    );
-    let show_dead = toggle(
-        &appearance,
-        "Show flagged comments",
-        state.preferences.show_dead,
-    );
-    let hide_read = toggle(
-        &appearance,
-        "Hide stories I have read",
-        state.preferences.hide_read,
-    );
+    preview.set_font_weight(ferroui_base::media::FontWeight::Normal);
+    preview.set_line_height(state.preferences.font_size * state.preferences.line_height);
+    appearance.children().add(preview.clone());
+    for input in [&font_size, &line_height] {
+        let preview = preview.downgrade();
+        let size = font_size.downgrade();
+        let spacing = line_height.downgrade();
+        input.property_changed(move |e| {
+            if e.property() != TextBox::text_property().as_property() {
+                return;
+            }
+            if let (Some(preview), Some(size), Some(spacing)) =
+                (preview.upgrade(), size.upgrade(), spacing.upgrade())
+            {
+                if let (Ok(size), Ok(factor)) = (
+                    parse_number(&size, "Font size", 12.0, 32.0),
+                    parse_number(&spacing, "Line spacing", 1.1, 2.2),
+                ) {
+                    preview.set_font_size(size);
+                    preview.set_line_height(size * factor);
+                }
+            }
+        });
+    }
+    let (density, feed) = field_pair(&appearance);
+    let compact = toggle(&density, "Compact layout", state.preferences.compact);
+    let motion = toggle(&density, "Reduce motion", state.preferences.reduced_motion);
+    let hide_read = toggle(&feed, "Hide read stories", state.preferences.hide_read);
+    let show_dead = toggle(&feed, "Show flagged items", state.preferences.show_dead);
+    let storage = disclosure(&appearance, "Offline storage limit", false);
     let cache_limit = field(
-        &appearance,
+        &storage,
         "Maximum cached items",
         &state.preferences.cache_max_items.to_string(),
         "100–100000",
         false,
     );
-    let validation = text("", 13.0, true);
-    appearance.children().add(validation.clone());
+    storage.children().add(text(
+        "Ember keeps downloaded discussions when trimming its cache.",
+        12.0,
+        true,
+    ));
+    let validation = feedback(&appearance);
     let apply = button("Apply preferences");
     apply.classes().add("accent");
     appearance.children().add(apply.clone());
@@ -134,10 +161,12 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
             p.accent = accent.trim().to_owned();
             let background = background.text().unwrap_or_default();
             let background = background.trim();
-            if !background.is_empty() && !valid_color(background) {
+            if p.theme == ThemeMode::Custom && !background.is_empty() && !valid_color(background) {
                 return Err("Use a six-digit hex background or leave it empty.".into());
             }
-            p.custom_background = (!background.is_empty()).then(|| background.to_owned());
+            if p.theme == ThemeMode::Custom {
+                p.custom_background = (!background.is_empty()).then(|| background.to_owned());
+            }
             p.font_size = parse_number(&font_size, "Font size", 12.0, 32.0)?;
             p.line_height = parse_number(&line_height, "Line spacing", 1.1, 2.2)?;
             p.cache_max_items = cache_limit
@@ -156,15 +185,15 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         })();
         match result {
             Ok(p) => {
-                validation.set_text(Some("Applying preferences…"));
+                validation.set_is_visible(false);
                 callback(SettingsAction::Preferences(p));
             }
-            Err(error) => validation.set_text(Some(&error)),
+            Err(error) => show_error(&validation, &error),
         }
     });
 
-    let filters = section(&root, "Keep your feed focused");
-    filters.children().add(text("Separate entries with commas or new lines. Domain filters include subdomains; usernames are case-sensitive.", 13.0, true));
+    let filters = disclosure(&root, "Muted domains, authors & keywords", false);
+    filters.children().add(text("Separate entries with commas or new lines. Muting a domain includes its subdomains. Usernames are case-sensitive.", 13.0, true));
     let domains = field(
         &filters,
         "Muted domains",
@@ -197,51 +226,95 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         }))
     });
 
-    let data = section(&root, "Your reading data");
-    data.children().add(text("Bookmarks, history, filters, and preferences stay on this device. Export a backup or paste a previous backup to restore it.", 13.0, true));
-    let json = field(
+    let data = section(&root, "Reading data");
+    data.children().add(text(
+        "Back up bookmarks, history, filters, and preferences on this device. Downloaded story content is stored separately.",
+        13.0, true,
+    ));
+    // Serialize on demand. A library can be up to 16 MiB and Settings opens on the UI thread.
+    let backup = stack(4.0);
+    backup.set_is_visible(false);
+    let output = crate::widgets::field(
+        &backup,
+        "Current backup JSON",
+        "",
+        "",
+        16 * 1024 * 1024,
+        true,
+    );
+    output.set_is_read_only(true);
+    let callback = on_action.clone();
+    let show_backup = backup.clone();
+    let export = action("Copy backup", "copy", move || {
+        let output = output.downgrade();
+        let panel = show_backup.downgrade();
+        callback(SettingsAction::Export(Rc::new(move |json| {
+            if let (Some(output), Some(panel)) = (output.upgrade(), panel.upgrade()) {
+                output.set_text(Some(json));
+                panel.set_is_visible(true);
+            }
+        })));
+    });
+    export.set_horizontal_alignment(HorizontalAlignment::Left);
+    data.children().add(export);
+    data.children().add(backup);
+    let json = crate::widgets::field(
         &data,
         "Reading data JSON",
         "",
-        "Paste an Ember backup to import",
+        "Paste an Ember backup to restore",
+        16 * 1024 * 1024,
         true,
     );
-    json.set_min_height(180.0);
-    json.set_max_height(320.0);
-    // The limit is raised before the backup is put in: the field's own limit would cut it.
-    json.set_max_length(16 * 1024 * 1024);
-    json.set_text(Some(&state.export_json().unwrap_or_default()));
-    let export = button("Copy backup");
+    data.children().add(text(
+        "Import replaces the reading data on this device.",
+        12.0,
+        true,
+    ));
+    let import_validation = feedback(&data);
     let callback = on_action.clone();
-    export.click(move |_, _| callback(SettingsAction::Export));
-    data.children().add(export);
-    let import = button("Import this backup");
-    let callback = on_action.clone();
-    let import_validation = text("", 13.0, true);
-    let message = import_validation.clone();
-    import.click(move |_, _| {
+    let import = action("Import this backup", "download", move || {
         let value = json.text().unwrap_or_default();
-        match ReaderState::import_json(&value) {
-            Ok(_) => {
-                message.set_text(Some("Importing backup…"));
-                callback(SettingsAction::Import(value));
-            }
-            Err(error) => message.set_text(Some(&error.to_string())),
+        if value.trim().is_empty() {
+            show_error(&import_validation, "Paste a backup first.");
+        } else {
+            import_validation.set_is_visible(false);
+            callback(SettingsAction::Import(value));
         }
     });
+    import.set_horizontal_alignment(HorizontalAlignment::Left);
     data.children().add(import);
-    data.children().add(import_validation);
+
+    let maintenance = disclosure(&root, "Clear local data", false);
+    maintenance.children().add(text("Clear the cache to remove downloaded stories and discussions. Bookmarks and preferences are kept.", 13.0, true));
     let clear = button("Clear cached content");
     let callback = on_action.clone();
     clear.click(move |_, _| callback(SettingsAction::ClearCache));
-    data.children().add(clear);
+    maintenance.children().add(clear);
+    maintenance.children().add(text(
+        "Clear history to remove reading positions, read markers, and recent searches.",
+        13.0,
+        true,
+    ));
     let history = button("Clear reading history");
     history.click(move |_, _| on_action(SettingsAction::ClearHistory));
-    data.children().add(history);
-    data.children().add(text("Clearing cached content keeps your preferences and bookmarks. Downloaded stories will need to be downloaded again.", 12.0, true));
+    maintenance.children().add(history);
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
     scroll.upcast()
+}
+
+fn feedback(parent: &StackPanel) -> Ref<TextBlock> {
+    let message = text("", 13.0, false);
+    message.set_is_visible(false);
+    AutomationProperties::set_live_setting(&message, AutomationLiveSetting::Polite);
+    parent.children().add(message.clone());
+    message
+}
+
+fn show_error(message: &TextBlock, value: &str) {
+    message.set_text(Some(value));
+    message.set_is_visible(true);
 }
 
 fn toggle(parent: &StackPanel, label: &str, value: bool) -> Ref<CheckBox> {
