@@ -12,17 +12,15 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-These captures use deterministic HN fixtures and the actual FerroUI control tree,
-rendered by Skia/HarfBuzz through the native test host.
+These captures use deterministic Hacker News fixtures and the actual FerroUI control tree. The phone discussion was captured in Chromium from the WebAssembly application. The native test host rendered the other previews with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
 [Dark desktop](images/ember-desktop-dark.png) ·
 [Phone feed](images/ember-phone-dark.png) ·
 [Custom tablet theme](images/ember-tablet-custom.png) ·
-[Phone discussion](images/ember-phone-comments.png) ·
+[Phone discussion in Chromium](images/ember-phone-comments.png) ·
 [Focus reading with Find](images/ember-focus-find.png)
-
 
 The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
