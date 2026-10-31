@@ -188,6 +188,17 @@ await run([
             await waitText(page, "Discussion downloaded. It is available offline in Saved stories.");
             await byName(page, "DismissStatus");
             await page.screenshot(path.join(captures, "phone-thread.png"));
+            // A live breakpoint crossing lays out an existing, virtualized discussion.
+            // Starting independent windows at these widths does not exercise this path.
+            for (const [width, height, rail] of [[700, 420, false], [760, 550, true], [390, 844, false]]) {
+                await page.resize(width, height);
+                await page.waitFor(`JSON.parse(ember.emberState()).width === ${width}`);
+                await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop') === ${rail}`);
+                assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '101'"), "Resizing changed the selected URL");
+                const resized = await state(page);
+                assert(resized.elements.some(e => e.name === "SaveButton" && e.hit), "Resizing lost the selected discussion");
+                assert(page.errors.length === 0, page.errors.join("\n"));
+            }
             await page.wheel(340, 600, 0, 440);
             await page.screenshot(path.join(captures, "phone-comments.png"));
             await page.wheel(340, 400, 0, -1000);
