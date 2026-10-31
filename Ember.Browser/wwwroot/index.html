@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
-    <meta name="theme-color" content="#D95B32">
-    <meta name="description" content="Ember is a thoughtful, touch-friendly Hacker News reader built with FerroUI.">
+    <meta name="theme-color" content="#FAF8F5" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1A1B1D" media="(prefers-color-scheme: dark)">
+    <meta name="description" content="Read Hacker News stories and discussions, save favorites, and take conversations offline.">
     <title>Ember — Hacker News</title>
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="./icon.svg">
@@ -12,13 +13,38 @@
 </head>
 <body>
     <main id="out" aria-label="Ember Hacker News reader">
-        <div class="ferroui-splash" role="status">
-            <img src="./icon.svg" width="64" height="64" alt="">
-            <h1>Ember</h1>
-            <p>A little curiosity, every day.</p>
-            <span class="loading-line" aria-hidden="true"></span>
+        <div class="boot-surface ferroui-splash" role="status">
+            <div class="boot-content">
+                <img src="./icon.svg" width="40" height="40" alt="">
+                <h1>Ember</h1>
+                <p>Opening your reader…</p>
+                <span class="loading-line" aria-hidden="true"></span>
+            </div>
         </div>
+        <noscript>
+            <div class="boot-surface">
+                <div class="boot-content">
+                    <h1>Ember</h1>
+                    <p>Turn on JavaScript to open this reader.</p>
+                    <a href="https://news.ycombinator.com/">Read Hacker News</a>
+                </div>
+            </div>
+        </noscript>
     </main>
+    <template id="startup-error">
+        <section class="boot-surface" aria-labelledby="error-title">
+            <div class="boot-content">
+                <img src="./icon.svg" width="40" height="40" alt="">
+                <h1 id="error-title" tabindex="-1">Ember couldn’t open</h1>
+                <p></p>
+                <button type="button">Reload reader</button>
+                <details>
+                    <summary>Technical details</summary>
+                    <pre></pre>
+                </details>
+            </div>
+        </section>
+    </template>
     <script type="module" src="./main.js"></script>
 </body>
 </html>
