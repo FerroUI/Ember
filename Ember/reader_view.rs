@@ -362,7 +362,20 @@ impl ReaderView {
                     return;
                 }
                 if e.key_modifiers != KeyModifiers::NONE
-                    || e.source().is_some_and(|s| s.cast::<TextBox>().is_some())
+                    || !matches!(
+                        *v.detail.borrow(),
+                        DetailRoute::Welcome | DetailRoute::Thread(_)
+                    )
+                    || e.source()
+                        .and_then(|s| s.cast::<ferroui_base::Visual>())
+                        .is_some_and(|source| {
+                            std::iter::once(source.clone())
+                                .chain(source.get_visual_ancestors())
+                                .any(|v| {
+                                    v.cast::<TextBox>().is_some()
+                                        || v.cast::<ferroui_controls::ComboBox>().is_some()
+                                })
+                        })
                 {
                     return;
                 }
@@ -1430,6 +1443,17 @@ impl ReaderView {
         }
     }
     fn show_search(&self) {
+        if *self.detail.borrow() == DetailRoute::Search {
+            if let Some(query) = self
+                .get_control::<ContentControl>("DetailHost")
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<TextBox>())
+                .find(|input| input.name().as_deref() == Some("SearchTerms"))
+            {
+                query.focus();
+                return;
+            }
+        }
         self.navigate(DetailRoute::Search);
         self.label("DetailEyebrow").set_text(Some("DISCOVER"));
         self.label("DetailTitle").set_text(Some("Search"));

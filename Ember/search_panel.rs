@@ -34,6 +34,7 @@ pub fn build(
         &query.query,
         "Stories, comments, or a phrase",
     );
+    words.set_name(Some("SearchTerms".to_owned()));
     let weak_words = words.downgrade();
     words.loaded(move |_, _| {
         if let Some(input) = weak_words.upgrade() {
