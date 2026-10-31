@@ -74,7 +74,7 @@ impl HttpClient for FixtureHttp {
                 return Err(ReaderError::Network("fixture is offline".into()));
             }
             if url.contains("stories.json") {
-                return Ok(json!((1001..=1018).collect::<Vec<_>>()).to_string());
+                return Ok(json!((1001..=1012).collect::<Vec<_>>()).to_string());
             }
             if url.contains("/user/") {
                 return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2001]}).to_string());
@@ -108,8 +108,16 @@ impl HttpClient for FixtureHttp {
                 1006 => {
                     json!({"id":1006,"type":"job","title":"A small team is hiring systems engineers","by":"team","time":1792582000u64,"url":"https://example.com/jobs"})
                 }
-                1007..=1018 => {
-                    json!({"id":id,"type":"story","title":format!("Notebook entry {}",id-1000),"by":"editor","kids":[]})
+                1007..=1012 => {
+                    let (title, author) = [
+                        ("How railway clocks kept a continent on time", "mira"),
+                        ("A tour of the smallest possible typeface", "glyph"),
+                        ("Building a pocket field recorder", "noor"),
+                        ("The shape of a well-used keyboard", "lin"),
+                        ("Rendering a city map one tile at a time", "ada"),
+                        ("What a compiler can learn from a checksum", "turing"),
+                    ][(id - 1007) as usize];
+                    json!({"id":id,"type":"story","title":title,"by":author,"time":1792580000u64,"url":format!("https://example.org/notes/{id}"),"score":85-(id-1007)*5,"descendants":0,"kids":[]})
                 }
                 2001 => {
                     json!({"id":2001,"type":"comment","parent":1001,"by":"lin","time":1792601000u64,"kids":[2002],"text":"<p>The best tools disappear into the work. You stop thinking about the interface and start thinking about the idea.</p><blockquote>A good tool changes how you see the problem.</blockquote>"})
