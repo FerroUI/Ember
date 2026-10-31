@@ -95,6 +95,23 @@
           <Setter Property="BorderBrush" Value="{DynamicResource EmberAccentInk}" />
         </Style>
       </ControlTheme>
+      <!-- A thread is a document. Its embedded commands provide their own interaction
+           feedback; hovering a paragraph must not tint the entire reading column. -->
+      <ControlTheme x:Key="EmberConversationRow" TargetType="ListBoxItem">
+        <Setter Property="KeyboardNavigation.TabNavigation" Value="Local" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+          <ControlTemplate>
+            <ContentPresenter Name="PART_ContentPresenter"
+                              TemplatedControl.IsTemplateFocusTarget="True"
+                              Background="Transparent"
+                              Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                              Foreground="{TemplateBinding Foreground}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" />
+          </ControlTemplate>
+        </Setter>
+      </ControlTheme>
       <ControlTheme x:Key="EmberQuietButton" TargetType="Button">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource EmberText}" />
@@ -146,6 +163,7 @@
       <Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Left" />
     </Style>
     <Style Selector="ListBox.reader-list"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /></Style>
+    <Style Selector="ListBox.thread-list"><Setter Property="ItemContainerTheme" Value="{StaticResource EmberConversationRow}" /></Style>
     <Style Selector="ListBox.reader-list ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="{DynamicResource EmberText}" /></Style>
     <Style Selector="TextBox"><Setter Property="MinHeight" Value="44" /></Style>
     <Style Selector="ComboBox"><Setter Property="MinHeight" Value="44" /></Style>

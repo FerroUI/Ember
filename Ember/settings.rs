@@ -4,7 +4,7 @@ use crate::widgets::{
     action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
 };
 use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
-use ferroui_base::layout::HorizontalAlignment;
+use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
 use ferroui_base::{BoxedValue, Ref, Thickness};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::{
@@ -325,6 +325,8 @@ fn toggle(parent: &StackPanel, label: &str, value: bool) -> Ref<CheckBox> {
     input.set_content(Some(Rc::new(label.to_owned()) as BoxedValue));
     input.set_is_checked(Some(value));
     input.set_min_height(44.0);
+    input.set_vertical_content_alignment(VerticalAlignment::Center);
+    input.set_padding(Thickness::new(8.0, 0.0, 0.0, 0.0));
     AutomationProperties::set_name(&input, Some(label));
     parent.children().add(input.clone());
     input
