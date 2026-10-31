@@ -30,14 +30,14 @@ Chrome, using the same reader controls and deterministic API fixtures.
 | Area | Implemented behavior |
 | --- | --- |
 | Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Algolia full-text search for stories, comments, all items, Ask HN, Show HN and polls; relevance or newest order; author, minimum points/comments, recent time presets and a custom UTC date range. |
+| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. Recent searches recalls the last five terms. |
 | Discussion | Ranked, newest or oldest branches; branch and top-level collapse; local comment search with ancestor context; parent navigation; deleted/dead item handling; new-comment indicators and restored reading position. |
 | Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
 | Profiles | User biography, karma, account creation information and submissions through the public HN API. |
 | Local library | Saved stories, read history, hidden stories, domain/user/keyword mutes, and hide-read filtering. |
 | Offline reading | Cache fallback for visited content; an explicit Download discussion action verifies that the complete loaded discussion is persisted before reporting completion. |
 | Sharing and accounts | Copy the canonical discussion link, open the article or HN page, and open HN for sign-in, voting, replies and submission. |
-| Appearance | System, light, dark and custom themes; custom accent/background; reading font size and line height; compact density and reduced motion. |
+| Appearance | System, light, dark and custom themes, an accent color, and an optional custom background. Adjust reading size and line spacing in the live preview. Compact layout and reduced motion are independent preferences. |
 | Data controls | Versioned JSON export/import of local reading state, cache clearing and history clearing. |
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
@@ -65,7 +65,7 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | Input | Action |
 | --- | --- |
 | `Ctrl+K` / `Command+K` | Open search. |
-| `Enter` in header search | Run the query. |
+| `Enter` in a search field | Run the query with its filters. In the username field, open that profile. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
 | `Escape` | Close Find and clear its query, or navigate back. |
 | `J` / `K` | Select the next/previous story. |
@@ -121,11 +121,11 @@ store. The versioned `ReaderState` contains preferences, saved/read/hidden state
 timestamps, collapsed branches, seen comments, reading anchors, mute rules,
 recent searches and the downloaded-discussion manifest. JSON import validates the
 schema and normalizes preferences; an unsupported future version is rejected.
-Export contains this local state, not all cached article/comment payloads.
-Settings displays the JSON in a multiline editor; Copy backup sends it to the
-platform clipboard so it can be pasted into a file. Import reads JSON pasted into
-that editor and replaces local reading state after validation. These controls do
-not present a native file picker or copy the database itself.
+In Settings, **Copy backup** generates the JSON, displays a selectable copy, and sends it
+to the platform clipboard. Paste a backup into **Reading data JSON** and choose
+**Import this backup** to replace local reading state after validation. Cached
+article and comment payloads are stored separately. **Clear reading history** also
+clears recent searches.
 
 Native hosts use a bundled SQLite database, schema version 1, with WAL enabled. A
 dedicated worker owns the connection. Operations resolve after their transaction

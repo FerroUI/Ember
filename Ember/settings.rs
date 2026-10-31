@@ -7,8 +7,11 @@ use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
 use ferroui_base::layout::HorizontalAlignment;
 use ferroui_base::{BoxedValue, Ref, Thickness};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
-use ferroui_controls::{CheckBox, Control, ScrollViewer, StackPanel, TextBlock, TextBox};
-use std::{collections::BTreeSet, rc::Rc};
+use ferroui_controls::{
+    CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode, ScrollViewer, StackPanel,
+    TextBlock, TextBox,
+};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 /// The longest text of a settings field; the backup field takes up to 16 MiB.
 const FIELD_LENGTH: i32 = 8192;
@@ -77,27 +80,29 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         }
     });
     let (type_size, leading) = field_pair(&appearance);
-    let font_size = field(
+    let font_size = reading_number(
         &type_size,
         "Reading font size",
-        &state.preferences.font_size.to_string(),
-        "12–32",
-        false,
+        state.preferences.font_size,
+        12.0,
+        32.0,
+        1.0,
     );
-    let line_height = field(
+    let line_height = reading_number(
         &leading,
         "Line spacing",
-        &state.preferences.line_height.to_string(),
-        "1.1–2.2",
-        false,
+        state.preferences.line_height,
+        1.1,
+        2.2,
+        0.1,
     );
-    let preview = text(
-        "Reading preview
-The best part of a story is often in the discussion.",
+    appearance
+        .children()
+        .add(text("Reading preview", 12.0, true));
+    let preview = crate::widgets::text(
+        "The best part of a story is often in the discussion.",
         state.preferences.font_size,
-        false,
     );
-    preview.set_font_weight(ferroui_base::media::FontWeight::Normal);
     preview.set_line_height(state.preferences.font_size * state.preferences.line_height);
     appearance.children().add(preview.clone());
     for input in [&font_size, &line_height] {
@@ -105,18 +110,15 @@ The best part of a story is often in the discussion.",
         let size = font_size.downgrade();
         let spacing = line_height.downgrade();
         input.property_changed(move |e| {
-            if e.property() != TextBox::text_property().as_property() {
+            if e.property() != NumberBox::value_property().as_property() {
                 return;
             }
             if let (Some(preview), Some(size), Some(spacing)) =
                 (preview.upgrade(), size.upgrade(), spacing.upgrade())
             {
-                if let (Ok(size), Ok(factor)) = (
-                    parse_number(&size, "Font size", 12.0, 32.0),
-                    parse_number(&spacing, "Line spacing", 1.1, 2.2),
-                ) {
-                    preview.set_font_size(size);
-                    preview.set_line_height(size * factor);
+                if size.value().is_finite() && spacing.value().is_finite() {
+                    preview.set_font_size(size.value());
+                    preview.set_line_height(size.value() * spacing.value());
                 }
             }
         });
@@ -143,11 +145,11 @@ The best part of a story is often in the discussion.",
     let apply = button("Apply preferences");
     apply.classes().add("accent");
     appearance.children().add(apply.clone());
-    let previous = state.preferences.clone();
+    let current = RefCell::new(state.preferences.clone());
     let callback = on_action.clone();
     apply.click(move |_, _| {
         let result = (|| -> Result<Preferences, String> {
-            let mut p = previous.clone();
+            let mut p = current.borrow().clone();
             p.theme = match theme.selected_index() {
                 1 => ThemeMode::Light,
                 2 => ThemeMode::Dark,
@@ -167,8 +169,8 @@ The best part of a story is often in the discussion.",
             if p.theme == ThemeMode::Custom {
                 p.custom_background = (!background.is_empty()).then(|| background.to_owned());
             }
-            p.font_size = parse_number(&font_size, "Font size", 12.0, 32.0)?;
-            p.line_height = parse_number(&line_height, "Line spacing", 1.1, 2.2)?;
+            p.font_size = reading_value(&font_size, "Font size")?;
+            p.line_height = reading_value(&line_height, "Line spacing")?;
             p.cache_max_items = cache_limit
                 .text()
                 .unwrap_or_default()
@@ -186,6 +188,7 @@ The best part of a story is often in the discussion.",
         match result {
             Ok(p) => {
                 validation.set_is_visible(false);
+                current.replace(p.clone());
                 callback(SettingsAction::Preferences(p));
             }
             Err(error) => show_error(&validation, &error),
@@ -329,16 +332,38 @@ fn toggle(parent: &StackPanel, label: &str, value: bool) -> Ref<CheckBox> {
 fn valid_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
-fn parse_number(input: &TextBox, label: &str, minimum: f64, maximum: f64) -> Result<f64, String> {
+fn reading_number(
+    parent: &StackPanel,
+    label: &str,
+    value: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+) -> Ref<NumberBox> {
+    let input = NumberBox::new();
+    input.set_header(Some(Rc::new(label.to_owned()) as BoxedValue));
+    input.set_minimum(min);
+    input.set_maximum(max);
+    input.set_small_change(step);
+    input.set_numeric_value(value);
+    input.set_spin_button_placement_mode(NumberBoxSpinButtonPlacementMode::Inline);
+    AutomationProperties::set_name(&input, Some(label));
+    parent.children().add(input.clone());
     input
-        .text()
-        .unwrap_or_default()
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value >= minimum && *value <= maximum)
-        .ok_or_else(|| format!("{label} must be between {minimum} and {maximum}."))
 }
+
+fn reading_value(input: &NumberBox, label: &str) -> Result<f64, String> {
+    if input.validate_input() && input.value().is_finite() {
+        Ok(input.value())
+    } else {
+        Err(format!(
+            "{label} must be between {} and {}.",
+            input.minimum(),
+            input.maximum()
+        ))
+    }
+}
+
 fn join(values: &BTreeSet<String>) -> String {
     values.iter().cloned().collect::<Vec<_>>().join("\n")
 }
