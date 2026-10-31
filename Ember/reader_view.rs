@@ -93,6 +93,7 @@ pub struct ReaderView {
     history: RefCell<Vec<DetailRoute>>,
     stories: RefCell<Vec<HnItem>>,
     rendered_stories: RefCell<Vec<HnItem>>,
+    rendered_show_dead: Cell<bool>,
     search_story_ids: RefCell<BTreeMap<u64, u64>>,
     selected: Cell<Option<u64>>,
     // An Algolia comment result and its containing discussion have different identities.
@@ -154,6 +155,7 @@ impl ReaderView {
             history: RefCell::new(Vec::new()),
             stories: RefCell::new(Vec::new()),
             rendered_stories: RefCell::new(Vec::new()),
+            rendered_show_dead: Cell::new(false),
             search_story_ids: RefCell::new(BTreeMap::new()),
             selected: Cell::new(None),
             selected_row: Cell::new(None),
@@ -806,7 +808,9 @@ impl ReaderView {
         let state = self.state.borrow();
         let stories = self.visible_stories();
         let list = self.get_control::<ListBox>("Stories");
-        if *self.rendered_stories.borrow() != stories {
+        let visibility_changed = self.rendered_show_dead.replace(state.preferences.show_dead)
+            != state.preferences.show_dead;
+        if visibility_changed || *self.rendered_stories.borrow() != stories {
             let scroll = list.scroll().and_then(|s| s.cast::<ScrollViewer>());
             let offset = scroll.as_ref().map(|s| s.offset()).unwrap_or_default();
             let focused = list.is_keyboard_focus_within();
