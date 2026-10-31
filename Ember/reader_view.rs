@@ -1529,18 +1529,15 @@ impl ReaderView {
                 }
                 Err(error) => self.status(&error.to_string()),
             },
-            SettingsAction::Import(json) => match ReaderState::import_json(&json) {
-                Ok(state) => {
-                    crate::theme::apply(&state.preferences);
-                    *self.state.borrow_mut() = state;
-                    self.state_ready.set(true);
-                    self.changed();
-                    self.render_stories();
-                    self.show_settings();
-                    self.status("Reading library imported.");
-                }
-                Err(error) => self.status(&format!("Import rejected: {error}")),
-            },
+            SettingsAction::Import(state) => {
+                crate::theme::apply(&state.preferences);
+                *self.state.borrow_mut() = state;
+                self.state_ready.set(true);
+                self.changed();
+                self.render_stories();
+                self.show_settings();
+                self.status("Reading library imported.");
+            }
             SettingsAction::ClearHistory => {
                 self.state.borrow_mut().recent_searches.clear();
                 for entry in self.state.borrow_mut().items.values_mut() {

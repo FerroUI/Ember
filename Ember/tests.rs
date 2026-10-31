@@ -286,6 +286,12 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
             })
             .expect("real Settings import action");
         click_in_view(&shell, &window, &import);
+        assert_eq!(ready(inner.get("reader:state")).unwrap().unwrap(), original.export_json().unwrap());
+        let replace = view.get_visual_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|button| AutomationProperties::get_name(button).as_deref() == Some("Replace reading data"))
+            .expect("reviewed backup confirmation");
+        click_in_view(&shell, &window, &replace);
         // The import was accepted before the store is read: a missed click and a lost write
         // would otherwise look the same.
         assert_eq!(
