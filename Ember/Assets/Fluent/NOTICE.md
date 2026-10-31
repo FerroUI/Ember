@@ -4,8 +4,8 @@ These SVGs and their extracted `d` path data in `../../icons.rs` are from
 [Microsoft Fluent System Icons](https://github.com/microsoft/fluentui-system-icons),
 24 px regular variants. Copyright (c) 2020 Microsoft Corporation; MIT License (see
 [LICENSE](LICENSE)). Downloaded on 2026-10-21 from the paths listed below. Ember
-scales the vectors to 20 logical pixels and uses the inherited FerroUI foreground.
-No icon font or platform-specific glyph mapping is required.
+renders the vectors at 18 logical pixels using the inherited FerroUI foreground.
+The disclosure action uses Chevron Up rotated 180 degrees when its contents are collapsed.
 
 | Icon | Upstream source | SHA-256 of retained SVG |
 |---|---|---|
