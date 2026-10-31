@@ -297,6 +297,24 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
                 AutomationProperties::get_name(button).as_deref() == Some("Replace reading data")
             })
             .expect("reviewed backup confirmation");
+        input.set_text(Some("unfinished backup"));
+        shell.settle();
+        assert!(
+            !replace.is_effectively_visible(),
+            "editing invalidates the reviewed snapshot"
+        );
+        assert!(import.is_enabled());
+        click_in_view(&shell, &window, &import);
+        assert!(
+            !replace.is_effectively_visible(),
+            "invalid JSON cannot be confirmed"
+        );
+        assert_eq!(
+            ready(inner.get("reader:state")).unwrap().unwrap(),
+            original.export_json().unwrap()
+        );
+        input.set_text(Some(&imported.export_json().unwrap()));
+        click_in_view(&shell, &window, &import);
         click_in_view(&shell, &window, &replace);
         // The import was accepted before the store is read: a missed click and a lost write
         // would otherwise look the same.

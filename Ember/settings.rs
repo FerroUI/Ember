@@ -4,12 +4,13 @@ use crate::widgets::{
     action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
 };
 use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
+use ferroui_base::input::{InputElement, Key, KeyEventArgs};
 use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
-use ferroui_base::{BoxedValue, Ref, Thickness};
+use ferroui_base::{BoxedValue, Ref, Thickness, WeakRef};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::{
-    CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode, ScrollViewer, StackPanel,
-    TextBlock, TextBox,
+    Button, CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode, ScrollViewer,
+    StackPanel, TextBlock, TextBox, WrapPanel,
 };
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
@@ -26,12 +27,11 @@ fn field(
     crate::widgets::field(parent, label, value, placeholder, FIELD_LENGTH, multiline)
 }
 
-#[derive(Clone)]
 pub enum SettingsAction {
     Preferences(Preferences),
     Mutes(MuteRules),
     Export(Rc<dyn Fn(&str)>),
-    Import(String),
+    Import(ReaderState),
     ClearCache,
     ClearHistory,
 }
@@ -269,42 +269,186 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         16 * 1024 * 1024,
         true,
     );
-    data.children().add(text(
-        "Import replaces the reading data on this device.",
-        12.0,
-        true,
-    ));
-    let import_validation = feedback(&data);
-    let callback = on_action.clone();
-    let import = action("Import this backup", "download", move || {
-        let value = json.text().unwrap_or_default();
-        if value.trim().is_empty() {
-            show_error(&import_validation, "Paste a backup first.");
-        } else {
-            import_validation.set_is_visible(false);
-            callback(SettingsAction::Import(value));
+    let review = Rc::new(RefCell::new(None::<PendingReview>));
+    let edited = review.clone();
+    json.property_changed(move |e| {
+        if e.property() == TextBox::text_property().as_property()
+            && edited
+                .borrow()
+                .as_ref()
+                .is_some_and(|review| matches!(review.action, SettingsAction::Import(_)))
+        {
+            finish_review(&edited, false);
         }
     });
-    import.set_horizontal_alignment(HorizontalAlignment::Left);
-    data.children().add(import);
+    reviewed_action(
+        &data,
+        &review,
+        ("Import this backup", "download"),
+        "Replace reading data",
+        move || {
+            let value = json.text().unwrap_or_default();
+            if value.trim().is_empty() {
+                return Err("Paste an Ember backup first.".to_owned());
+            }
+            let state = ReaderState::import_json(&value).map_err(|error| error.to_string())?;
+            let saved = state
+                .items
+                .values()
+                .filter(|item| item.saved_at.is_some())
+                .count();
+            let read = state
+                .items
+                .values()
+                .filter(|item| item.last_opened_at.is_some())
+                .count();
+            let stories = if saved == 1 { "story" } else { "stories" };
+            let entries = if read == 1 { "entry" } else { "entries" };
+            let summary = format!("Replace this device’s library, filters, and preferences? The backup contains {saved} saved {stories} and {read} history {entries}.");
+            Ok((summary, SettingsAction::Import(state)))
+        },
+        &on_action,
+    );
 
     let maintenance = disclosure(&root, "Clear local data", false);
-    maintenance.children().add(text("Clear the cache to remove downloaded stories and discussions. Bookmarks and preferences are kept.", 13.0, true));
-    let clear = button("Clear cached content");
-    let callback = on_action.clone();
-    clear.click(move |_, _| callback(SettingsAction::ClearCache));
-    maintenance.children().add(clear);
-    maintenance.children().add(text(
-        "Clear history to remove reading positions, read markers, and recent searches.",
-        13.0,
-        true,
-    ));
-    let history = button("Clear reading history");
-    history.click(move |_, _| on_action(SettingsAction::ClearHistory));
-    maintenance.children().add(history);
+    reviewed_action(
+        &maintenance,
+        &review,
+        ("Clear cached content", "download"),
+        "Remove cached content",
+        || {
+            Ok(("Remove downloaded discussions and cached stories from this device? You can download them again. Bookmarks, history, and preferences are kept.".into(), SettingsAction::ClearCache))
+        },
+        &on_action,
+    );
+    reviewed_action(
+        &maintenance,
+        &review,
+        ("Clear reading history", "history"),
+        "Remove reading history",
+        || {
+            Ok(("Remove read markers, reading positions, and recent searches from this device? Bookmarks and downloaded discussions are kept.".into(), SettingsAction::ClearHistory))
+        },
+        &on_action,
+    );
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
     scroll.upcast()
+}
+
+struct PendingReview {
+    trigger: WeakRef<Button>,
+    panel: WeakRef<StackPanel>,
+    action: SettingsAction,
+}
+
+// Taking the action before dispatch prevents repeated input from applying it twice.
+fn finish_review(
+    review: &RefCell<Option<PendingReview>>,
+    restore_focus: bool,
+) -> Option<SettingsAction> {
+    let pending = review.borrow_mut().take()?;
+    if let Some(panel) = pending.panel.upgrade() {
+        panel.set_is_visible(false);
+    }
+    if let Some(trigger) = pending.trigger.upgrade() {
+        trigger.set_is_enabled(true);
+        if restore_focus {
+            trigger.focus();
+        }
+    }
+    Some(pending.action)
+}
+
+fn reviewed_action(
+    parent: &StackPanel,
+    review: &Rc<RefCell<Option<PendingReview>>>,
+    (label, icon): (&str, &str),
+    confirm_label: &str,
+    prepare: impl Fn() -> Result<(String, SettingsAction), String> + 'static,
+    on_action: &Rc<dyn Fn(SettingsAction)>,
+) {
+    let trigger = button(label);
+    trigger.classes().add("quiet");
+    trigger.set_content(Some(Control::boxed(crate::widgets::nav_content(
+        icon, label, false, false,
+    ))));
+    parent.children().add(trigger.clone());
+    let error = feedback(parent);
+    let panel = stack(6.0);
+    panel.set_is_visible(false);
+    parent.children().add(panel.clone());
+    let prompt = text("", 13.0, false);
+    AutomationProperties::set_live_setting(&prompt, AutomationLiveSetting::Polite);
+    panel.children().add(prompt.clone());
+    let buttons = WrapPanel::new();
+    buttons.set_item_spacing(8.0);
+    buttons.set_line_spacing(4.0);
+    let cancel = button("Cancel");
+    AutomationProperties::set_name(&cancel, Some(&format!("Cancel {label}")));
+    let confirm = button(confirm_label);
+    buttons.children().add(cancel.clone());
+    buttons.children().add(confirm.clone());
+    panel.children().add(buttons);
+
+    let state = review.clone();
+    let target = trigger.downgrade();
+    let host = panel.downgrade();
+    let first = cancel.downgrade();
+    trigger.click(move |_, _| {
+        let (Some(trigger), Some(panel), Some(cancel)) =
+            (target.upgrade(), host.upgrade(), first.upgrade())
+        else {
+            return;
+        };
+        if !trigger.is_enabled() {
+            return;
+        }
+        finish_review(&state, false);
+        match prepare() {
+            Ok((description, action)) => {
+                state.replace(Some(PendingReview {
+                    trigger: target.clone(),
+                    panel: host.clone(),
+                    action,
+                }));
+                error.set_is_visible(false);
+                prompt.set_text(Some(&description));
+                trigger.set_is_enabled(false);
+                panel.set_is_visible(true);
+                cancel.focus();
+                cancel.bring_into_view();
+            }
+            Err(message) => show_error(&error, &message),
+        }
+    });
+    let state = review.clone();
+    cancel.click(move |_, _| {
+        finish_review(&state, true);
+    });
+    let state = review.clone();
+    panel.add_handler(
+        InputElement::key_down_event(),
+        move |_, e: &KeyEventArgs| {
+            if e.key == Key::Escape {
+                e.set_handled(true);
+                finish_review(&state, true);
+            }
+        },
+    );
+    let state = review.clone();
+    let target = trigger.downgrade();
+    let callback = on_action.clone();
+    confirm.click(move |_, _| {
+        if target
+            .upgrade()
+            .is_some_and(|trigger| !trigger.is_enabled())
+        {
+            if let Some(action) = finish_review(&state, true) {
+                callback(action);
+            }
+        }
+    });
 }
 
 fn feedback(parent: &StackPanel) -> Ref<TextBlock> {
@@ -383,6 +527,77 @@ mod tests {
     use super::*;
     use ferroui_controls::{ComboBox, Window};
     use sample_testing::Shell;
+
+    #[test]
+    fn destructive_actions_require_one_confirmation_and_restore_focus_on_cancel() {
+        let shell = Shell::start(&crate::SAMPLE, 400.0, 600.0, || crate::App::new().upcast());
+        let host = stack(6.0);
+        let review = Rc::new(RefCell::new(None));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let changes = events.clone();
+        let callback: Rc<dyn Fn(SettingsAction)> =
+            Rc::new(move |action| changes.borrow_mut().push(action));
+        reviewed_action(
+            &host,
+            &review,
+            ("Clear cache", "download"),
+            "Remove cache",
+            || Ok(("Clear downloads?".into(), SettingsAction::ClearCache)),
+            &callback,
+        );
+        reviewed_action(
+            &host,
+            &review,
+            ("Clear history", "history"),
+            "Remove history",
+            || Ok(("Clear history?".into(), SettingsAction::ClearHistory)),
+            &callback,
+        );
+        let window = Window::new();
+        window.set_content(Some(Control::boxed(host)));
+        window.show();
+        shell.settle();
+        let named = |name: &str| {
+            window
+                .get_visual_descendants()
+                .filter_map(|v| v.cast::<Button>())
+                .find(|v| AutomationProperties::get_name(v).as_deref() == Some(name))
+                .unwrap()
+        };
+        let click = |name| {
+            shell.click(0, Shell::bounds_of(&window, &named(name)).center());
+            shell.settle();
+        };
+        let origin = Shell::bounds_of(&window, &named("Clear cache")).center();
+        shell.click(0, origin);
+        shell.settle();
+        shell.click(0, origin);
+        shell.settle();
+        assert!(events.borrow().is_empty());
+        assert!(!named("Clear cache").is_enabled());
+        assert!(named("Remove cache").is_effectively_visible());
+        click("Clear history");
+        assert!(named("Clear cache").is_enabled());
+        assert!(!named("Remove cache").is_effectively_visible());
+        let cancel = named("Cancel Clear history");
+        assert!(cancel.is_focused());
+        let mut escape = KeyEventArgs::new();
+        escape.key = Key::Escape;
+        escape.set_routed_event(Some(InputElement::key_down_event()));
+        cancel.raise_event(&escape);
+        shell.settle();
+        assert!(escape.handled());
+        assert!(named("Clear history").is_focused());
+        assert!(events.borrow().is_empty());
+        click("Clear history");
+        click("Remove history");
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [SettingsAction::ClearHistory]
+        ));
+        assert!(!named("Remove history").is_effectively_visible());
+        window.close();
+    }
 
     #[test]
     fn reading_steps_preview_and_apply_without_losing_custom_background() {

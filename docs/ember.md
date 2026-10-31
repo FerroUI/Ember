@@ -28,7 +28,7 @@ rendered by Skia/HarfBuzz through the native test host.
 | Area | Implemented behavior |
 | --- | --- |
 | Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. Recent searches recalls the last five terms. |
+| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. Recent searches keeps up to 20 terms. Select a term to edit it or use its search icon to run it with the current filters. Clearing advanced filters preserves the search scope and sort order. |
 | Discussion | Ranked, newest or oldest branches; branch and top-level collapse; local comment search with ancestor context; parent navigation; deleted/dead item handling; new-comment indicators and restored reading position. |
 | Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
 | Profiles | User biography, karma, account creation information and submissions through the public HN API. |
@@ -121,9 +121,11 @@ recent searches and the downloaded-discussion manifest. JSON import validates th
 schema and normalizes preferences; an unsupported future version is rejected.
 In Settings, **Copy backup** generates the JSON, displays a selectable copy, and sends it
 to the platform clipboard. Paste a backup into **Reading data JSON** and choose
-**Import this backup** to replace local reading state after validation. Cached
-article and comment payloads are stored separately. **Clear reading history** also
-clears recent searches.
+**Import this backup** to review its saved-story and history counts. Choose
+**Replace reading data** to restore that snapshot. Editing the pasted JSON
+dismisses the pending import. Cached article and comment payloads are stored
+separately. Clearing the cache or reading history also has an inline review.
+Clearing history removes recent searches.
 
 Native hosts use a bundled SQLite database, schema version 1, with WAL enabled. A
 dedicated worker owns the connection. Operations resolve after their transaction
