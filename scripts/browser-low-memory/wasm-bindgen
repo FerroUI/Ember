@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Emscripten invokes this shim only for Ember's opt-in development build.
+set -euo pipefail
+
+# Pass through --version (also checked by FerroUI), --help, and other CLI uses.
+if [[ "${1:-}" != *.wasm ]]; then
+    exec "$EMBER_REAL_BINDGEN" "$@"
+fi
+
+input="$1"
+shift
+temp="$(mktemp -d "${TMPDIR:-/tmp}/ember-bindgen.XXXXXXXX")"
+trap 'rm -rf -- "$temp"' EXIT
+# wasm-bindgen derives its glue names from the module filename.
+optimized="$temp/${input##*/}"
+"$EMBER_WASM_OPT" "$input" -O1 --enable-exception-handling --disable-compact-imports \
+    --strip-debug --duplicate-function-elimination --remove-unused-module-elements -o "$optimized"
+
+# --keep-debug builds a map for every instruction even in a stripped module.
+args=()
+for arg in "$@"; do
+    [[ "$arg" == --keep-debug ]] || args+=("$arg")
+done
+"$EMBER_REAL_BINDGEN" "$optimized" "${args[@]}" --remove-name-section --no-demangle

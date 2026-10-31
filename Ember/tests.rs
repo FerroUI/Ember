@@ -74,7 +74,7 @@ impl HttpClient for FixtureHttp {
                 return Err(ReaderError::Network("fixture is offline".into()));
             }
             if url.contains("stories.json") {
-                return Ok(json!([1001, 1002, 1003, 1004, 1005, 1006]).to_string());
+                return Ok(json!((1001..=1012).collect::<Vec<_>>()).to_string());
             }
             if url.contains("/user/") {
                 return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2001]}).to_string());
@@ -107,6 +107,17 @@ impl HttpClient for FixtureHttp {
                 }
                 1006 => {
                     json!({"id":1006,"type":"job","title":"A small team is hiring systems engineers","by":"team","time":1792582000u64,"url":"https://example.com/jobs"})
+                }
+                1007..=1012 => {
+                    let (title, author) = [
+                        ("How railway clocks kept a continent on time", "mira"),
+                        ("A tour of the smallest possible typeface", "glyph"),
+                        ("Building a pocket field recorder", "noor"),
+                        ("The shape of a well-used keyboard", "lin"),
+                        ("Rendering a city map one tile at a time", "ada"),
+                        ("What a compiler can learn from a checksum", "turing"),
+                    ][(id - 1007) as usize];
+                    json!({"id":id,"type":"story","title":title,"by":author,"time":1792580000u64,"url":format!("https://example.org/notes/{id}"),"score":85-(id-1007)*5,"descendants":0,"kids":[]})
                 }
                 2001 => {
                     json!({"id":2001,"type":"comment","parent":1001,"by":"lin","time":1792601000u64,"kids":[2002],"text":"<p>The best tools disappear into the work. You stop thinking about the interface and start thinking about the idea.</p><blockquote>A good tool changes how you see the problem.</blockquote>"})
@@ -194,8 +205,8 @@ fn click_in_view(shell: &Shell, window: &Window, control: &Control) {
             let in_viewer = Shell::bounds_of(window, control);
             let viewer = Shell::bounds_of(window, &scroll);
             let offset = scroll.offset();
-            let target = offset.y + (in_viewer.y - viewer.y)
-                - (viewer.height - in_viewer.height) / 2.0;
+            let target =
+                offset.y + (in_viewer.y - viewer.y) - (viewer.height - in_viewer.height) / 2.0;
             scroll.set_offset(ferroui_base::Vector::new(offset.x, target.max(0.0)));
             for _ in 0..4 {
                 shell.settle();
@@ -275,10 +286,42 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
             })
             .expect("real Settings import action");
         click_in_view(&shell, &window, &import);
+        assert_eq!(
+            ready(inner.get("reader:state")).unwrap().unwrap(),
+            original.export_json().unwrap()
+        );
+        let replace = view
+            .get_visual_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|button| {
+                AutomationProperties::get_name(button).as_deref() == Some("Replace reading data")
+            })
+            .expect("reviewed backup confirmation");
+        input.set_text(Some("unfinished backup"));
+        shell.settle();
+        assert!(
+            !replace.is_effectively_visible(),
+            "editing invalidates the reviewed snapshot"
+        );
+        assert!(import.is_enabled());
+        click_in_view(&shell, &window, &import);
+        assert!(
+            !replace.is_effectively_visible(),
+            "invalid JSON cannot be confirmed"
+        );
+        assert_eq!(
+            ready(inner.get("reader:state")).unwrap().unwrap(),
+            original.export_json().unwrap()
+        );
+        input.set_text(Some(&imported.export_json().unwrap()));
+        click_in_view(&shell, &window, &import);
+        click_in_view(&shell, &window, &replace);
         // The import was accepted before the store is read: a missed click and a lost write
         // would otherwise look the same.
         assert_eq!(
-            view.get_control::<TextBlock>("StatusText").text().as_deref(),
+            view.get_control::<TextBlock>("StatusText")
+                .text()
+                .as_deref(),
             Some("Reading library imported.")
         );
         let persisted = ready(inner.get("reader:state")).unwrap().unwrap();
@@ -344,7 +387,14 @@ fn phone_back_restores_more_and_thread_without_history_cycles() {
         Rc::new(Cell::new(false)),
     );
     click(&shell, &window, &view.get_control::<Button>("MobileMore"));
-    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    let settings = view
+        .get_visual_descendants()
+        .filter_map(|node| node.cast::<Button>())
+        .find(|button| {
+            AutomationProperties::get_name(button).as_deref() == Some("Appearance and settings")
+        })
+        .unwrap();
+    click_in_view(&shell, &window, &settings);
     click(&shell, &window, &view.get_control::<Button>("BackButton"));
     assert_eq!(
         view.get_control::<TextBlock>("DetailTitle")
@@ -357,7 +407,7 @@ fn phone_back_restores_more_and_thread_without_history_cycles() {
         .get_control::<ferroui_controls::Border>("FeedPane")
         .is_effectively_visible());
     click(&shell, &window, &first_story(&window));
-    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    click(&shell, &window, &view.get_control::<Button>("MobileMore"));
     click(&shell, &window, &view.get_control::<Button>("BackButton"));
     assert!(view
         .get_control::<Button>("SaveButton")
@@ -405,7 +455,7 @@ fn opening_a_story_preserves_feed_position_and_platform_back_returns_to_the_feed
         Rc::new(Cell::new(false)),
     );
     let stories = view.get_control::<ListBox>("Stories");
-    stories.scroll_into_view(5);
+    stories.scroll_into_view(stories.items().count() as i32 - 1);
     shell.settle();
     let scroll = stories
         .scroll()
@@ -458,11 +508,12 @@ fn desktop_pointer_navigation_save_and_library_are_connected() {
     assert!(view
         .get_control::<Button>("SaveButton")
         .is_effectively_visible());
-    assert!(view
-        .get_control::<TextBlock>("DetailTitle")
-        .text()
-        .unwrap_or_default()
-        .contains("comments"));
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
     click(&shell, &window, &view.get_control::<Button>("SaveButton"));
     click(&shell, &window, &view.get_control::<Button>("NavSaved"));
     assert_eq!(title(&view), "Saved for later");
@@ -511,10 +562,197 @@ fn phone_back_navigation_and_offline_reopen_keep_saved_content() {
     assert_eq!(title(&view), "Saved for later");
     click(&shell, &window, &first_story(&window));
     assert!(view
-        .get_control::<TextBlock>("DetailTitle")
+        .get_control::<TextBlock>("DetailEyebrow")
         .text()
         .unwrap_or_default()
         .contains("4 comments"));
+    window.close();
+}
+
+#[test]
+fn tablet_search_and_phone_find_remain_reachable_across_resize() {
+    let (shell, window, view) = start(
+        800.0,
+        680.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let search = view.get_control::<Button>("CompactSearch");
+    assert!(search.is_effectively_visible());
+    click(&shell, &window, &search);
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Search")
+    );
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    click(&shell, &window, &first_story(&window));
+    window.set_width(360.0);
+    shell.settle();
+    assert!(!view
+        .get_control::<ferroui_controls::Border>("Masthead")
+        .is_effectively_visible());
+    let find = view.get_control::<TextBox>("ThreadFind");
+    assert!(!find.is_effectively_visible());
+    click(&shell, &window, &view.get_control::<Button>("FindButton"));
+    assert!(find.is_effectively_visible());
+    find.set_text(Some("tools"));
+    click(&shell, &window, &view.get_control::<Button>("CloseFind"));
+    assert!(!find.is_effectively_visible());
+    assert!(find.text().unwrap_or_default().is_empty());
+    let nav = view.get_control::<Button>("NavTop");
+    let original_content = nav.content().unwrap();
+    for width in [700.0, 760.0, 1024.0, 1120.0, 390.0] {
+        window.set_width(width);
+        shell.settle();
+        assert!(Rc::ptr_eq(&original_content, &nav.content().unwrap()));
+        assert_eq!(nav.is_effectively_visible(), width >= 760.0);
+        assert!(view
+            .get_control::<Button>("SaveButton")
+            .is_effectively_visible());
+        if width >= 760.0 {
+            let caption = nav
+                .get_visual_descendants()
+                .filter_map(|v| v.cast::<TextBlock>())
+                .find(|v| v.classes().contains("nav-caption"))
+                .expect("retained rail caption");
+            assert_eq!(caption.is_effectively_visible(), width >= 1120.0);
+        }
+    }
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert!(view
+        .get_control::<ferroui_controls::Border>("FeedPane")
+        .is_effectively_visible());
+    window.close();
+}
+
+#[test]
+fn focus_reading_keeps_the_discussion_and_layers_back_navigation() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
+    use ferroui_controls::{Border, Grid};
+    let store = Rc::new(MemoryStore::default());
+    let mut initial = ReaderState::default();
+    initial.preferences.reduced_motion = true;
+    ready(store.put("reader:state", &initial.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1440.0, 940.0, store, Rc::new(Cell::new(false)));
+    click(&shell, &window, &first_story(&window));
+    let focus = view.get_control::<Button>("FocusButton");
+    click(&shell, &window, &focus);
+    assert!(!view
+        .get_control::<Border>("NavigationRail")
+        .is_effectively_visible());
+    let column = view.get_control::<Grid>("ReaderColumn");
+    let bounds = Shell::bounds_of(&window, &column);
+    assert!(bounds.width <= 820.0 && bounds.x > 0.0);
+    assert!(
+        (bounds.center().x - view.bounds().width / 2.0).abs() < 2.0,
+        "long-form text should be centered"
+    );
+    click(&shell, &window, &view.get_control::<Button>("FindButton"));
+    let field = view.get_control::<TextBox>("ThreadFind");
+    field.set_text(Some("a"));
+    let enter = |modifiers| {
+        let mut event = KeyEventArgs::new();
+        event.key = Key::Enter;
+        event.key_modifiers = modifiers;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        field.raise_event(&event);
+        shell.settle();
+        assert!(event.handled());
+    };
+    enter(KeyModifiers::NONE);
+    let count = view.get_control::<TextBlock>("FindCount");
+    assert_eq!(count.text().as_deref(), Some("1 of 4 matching comments"));
+    enter(KeyModifiers::SHIFT);
+    assert_eq!(count.text().as_deref(), Some("4 of 4 matching comments"));
+    if let Some(path) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        let dir = std::path::PathBuf::from(path);
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&dir.join("focus-find.ppm"))
+            .unwrap();
+    }
+    window.set_width(360.0);
+    shell.settle();
+    let back = view.get_control::<Button>("BackButton");
+    click(&shell, &window, &back);
+    assert!(!field.is_effectively_visible());
+    assert!(!view
+        .get_control::<Border>("BottomNavigation")
+        .is_effectively_visible());
+    click(&shell, &window, &back);
+    assert!(view
+        .get_control::<Border>("BottomNavigation")
+        .is_effectively_visible());
+    assert!(view
+        .get_control::<Button>("SaveButton")
+        .is_effectively_visible());
+    click(&shell, &window, &back);
+    assert!(view
+        .get_control::<Border>("FeedPane")
+        .is_effectively_visible());
+    window.close();
+}
+
+#[test]
+fn story_menu_undo_restores_original_bookmark_order_and_preserves_history() {
+    use ferroui_base::input::ContextRequestedEventArgs;
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::MenuItem;
+    let store = Rc::new(MemoryStore::default());
+    let mut initial = ReaderState::default();
+    initial.toggle_saved(1002, 30);
+    initial.toggle_saved(1001, 45);
+    initial.mark_read(1001, 65);
+    ready(store.put("reader:state", &initial.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1280.0, 850.0, store.clone(), Rc::new(Cell::new(false)));
+    let saved_state =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    let command = |label: &str| {
+        let card = first_story(&window);
+        assert_eq!(card.tag().unwrap().downcast_ref::<u64>(), Some(&1001));
+        card.raise_event(&ContextRequestedEventArgs::new());
+        let menu = card.context_menu().unwrap();
+        let items = menu.items();
+        let action = (0..items.count())
+            .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+            .filter_map(|control| control.cast::<MenuItem>())
+            .find(|entry| {
+                entry
+                    .header()
+                    .is_some_and(|h| h.downcast_ref::<String>().map(String::as_str) == Some(label))
+            })
+            .unwrap_or_else(|| panic!("missing contextual action {label}"));
+        menu.close();
+        action.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        shell.settle();
+    };
+    click(&shell, &window, &view.get_control::<Button>("NavSaved"));
+    command("Remove from saved");
+    assert_eq!(saved_state().saved_ids(), vec![1002]);
+    click(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert_eq!(saved_state().items[&1001].saved_at, Some(45));
+    assert_eq!(saved_state().saved_ids(), vec![1001, 1002]);
+    click(&shell, &window, &view.get_control::<Button>("NavHistory"));
+    command("Mark unread");
+    assert!(!saved_state().is_read(1001));
+    assert_eq!(saved_state().history_ids(), vec![1001]);
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 1);
+    command("Hide story");
+    assert!(saved_state().items[&1001].hidden);
+    click(&shell, &window, &view.get_control::<Button>("NavHidden"));
+    command("Restore to feeds");
+    assert_eq!(
+        view.get_control::<TextBlock>("StatusText")
+            .text()
+            .as_deref(),
+        Some("Story restored to your feeds.")
+    );
+    click(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert!(saved_state().items[&1001].hidden);
+    assert!(!saved_state().is_read(1001));
     window.close();
 }
 
@@ -527,12 +765,13 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
         (390.0, 844.0, true, "phone-dark"),
         (1024.0, 820.0, false, "tablet-custom"),
     ] {
-        let (shell, window, view) = start(
-            width,
-            height,
-            Rc::new(MemoryStore::default()),
-            Rc::new(Cell::new(false)),
-        );
+        // Capture the settled palette even when the composition server's wall clock
+        // advances more slowly than the test shell's synthetic frames.
+        let store = Rc::new(MemoryStore::default());
+        let mut state = ReaderState::default();
+        state.preferences.reduced_motion = true;
+        ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+        let (shell, window, view) = start(width, height, store, Rc::new(Cell::new(false)));
         if dark {
             ferroui_controls::Application::current()
                 .unwrap()
@@ -546,7 +785,7 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
                 ..Default::default()
             });
         }
-        if width > 900.0 {
+        if width >= 760.0 {
             click(&shell, &window, &first_story(&window));
         }
         shell.settle();
@@ -561,12 +800,28 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
                 .last_frame(0)
                 .save_ppm(&path.join(format!("{name}.ppm")))
                 .unwrap();
-            if width < 900.0 {
+            if width < 760.0 {
                 click(&shell, &window, &first_story(&window));
                 shell.settle();
                 shell
                     .last_frame(0)
                     .save_ppm(&path.join(format!("{name}-thread.ppm")))
+                    .unwrap();
+                click(&shell, &window, &view.get_control::<Button>("MobileMore"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-more.ppm")))
+                    .unwrap();
+                click(&shell, &window, &view.get_control::<Button>("MobileSearch"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-search.ppm")))
+                    .unwrap();
+            } else {
+                click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-settings.ppm")))
                     .unwrap();
             }
         }

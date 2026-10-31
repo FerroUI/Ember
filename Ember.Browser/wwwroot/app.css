@@ -1,17 +1,42 @@
-/* Only the app's loading/error surface is HTML. The reader itself is FerroUI. */
-:root { color-scheme: light dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
-html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f6f4f0; }
+/* The reader itself is a FerroUI control tree. */
+:root {
+    color-scheme: light dark;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    --paper: #FAF8F5;
+    --ink: #242321;
+    --muted: #625D57;
+    --line: #DEDCD8;
+    --accent: #983C1E;
+}
+@media (prefers-color-scheme: dark) {
+    :root { --paper: #1A1B1D; --ink: #F5F1EC; --muted: #B6B2AE; --line: #393A3C; --accent: #FFB28C; }
+}
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--paper); color: var(--ink); }
 #out { position: relative; width: 100%; height: 100%; height: 100dvh; }
-.ferroui-splash, .boot-error { box-sizing: border-box; position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; background: #f6f4f0; color: #242423; text-align: center; }
+.boot-surface {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+    background: var(--paper);
+}
+.boot-content { width: min(100%, 28rem); margin: auto; text-align: center; }
+.boot-content img { display: block; margin: 0 auto; }
+.boot-content h1 { margin: 14px 0 4px; font-size: 1.625rem; font-weight: 650; letter-spacing: -.035em; text-wrap: balance; }
+.boot-content h1:focus { outline: none; }
+.boot-content p { margin: 6px 0 16px; color: var(--muted); line-height: 1.5; }
+.boot-content a { color: var(--accent); }
 .ferroui-splash { pointer-events: none; }
-.ferroui-splash h1 { font-size: 36px; font-weight: 650; letter-spacing: -1.5px; margin: 16px 0 4px; }
-.ferroui-splash p { color: #716b63; margin: 8px 0 28px; }
-.loading-line { width: 96px; height: 3px; border-radius: 3px; background: #e6ddd5; overflow: hidden; }
-.loading-line::after { content: ""; display: block; width: 50%; height: 100%; border-radius: inherit; background: #d95b32; animation: ember-loading 1.2s ease-in-out infinite alternate; }
 .ferroui-splash.splash-close { display: none; }
-.boot-error h1 { font-size: 24px; }
-.boot-error p { max-width: 500px; line-height: 1.6; overflow-wrap: anywhere; }
-.boot-error button { border: 0; background: #bd4622; color: white; padding: 12px 24px; min-height: 48px; border-radius: 8px; font: inherit; cursor: pointer; }
-@keyframes ember-loading { from { transform: translateX(-60%); } to { transform: translateX(160%); } }
-@media (prefers-color-scheme: dark) { html, body, .ferroui-splash, .boot-error { background: #181a1c; color: #f4f0e9; } .ferroui-splash p { color: #b5afa6; } .loading-line { background: #35312e; } }
-@media (prefers-reduced-motion: reduce) { .loading-line::after { animation: none; width: 100%; } }
+.loading-line { display: block; width: 88px; height: 3px; margin: auto; border-radius: 3px; background: var(--line); overflow: hidden; }
+.loading-line::after { content: ""; display: block; width: 40%; height: 100%; border-radius: inherit; background: var(--accent); animation: loading 1.1s ease-in-out infinite alternate; }
+@keyframes loading { to { transform: translateX(150%); } }
+@media (prefers-reduced-motion: reduce) { .loading-line::after { animation: none; } }
+.boot-content button { min-height: 44px; border: 1px solid transparent; border-radius: 6px; padding: 7px 18px; background: var(--ink); color: var(--paper); font: inherit; font-weight: 600; cursor: pointer; }
+.boot-content :is(button, summary, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.boot-content details { margin-top: 16px; color: var(--muted); font-size: .875rem; }
+.boot-content summary { width: fit-content; margin: auto; padding: 12px 4px; cursor: pointer; }
+.boot-content pre { padding: 12px; margin: 0; border: 1px solid var(--line); border-radius: 6px; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }

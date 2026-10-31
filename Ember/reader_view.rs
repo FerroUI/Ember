@@ -19,13 +19,13 @@ use ferroui_base::{
     ferro_class, ferro_class_info, ferro_impl_classes, instantiate, BoxedValue, FerroObjectImpl,
     Ref, StyledElementImpl, Thickness, VisualImpl, WeakRef,
 };
-use ferroui_controls::automation::AutomationProperties;
+use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::primitives::TemplatedControlImpl;
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
-    Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, Control, ControlImpl,
-    ControlImplExt, Grid, ListBox, ScrollViewer, StackPanel, TextBlock, TextBox, TopLevel,
-    UserControl,
+    Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, ContextMenu, Control,
+    ControlImpl, ControlImplExt, Grid, ListBox, MenuItem, ScrollViewer, StackPanel, TextBlock,
+    TextBox, ToolTip, TopLevel, UserControl,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +48,28 @@ enum DetailRoute {
     Settings,
     Search,
     More,
+}
+
+#[derive(Clone, Copy)]
+enum StoryFlag {
+    Saved,
+    Hidden,
+    Read,
+}
+
+#[derive(Clone, Copy)]
+enum UndoStoryEdit {
+    Saved { id: u64, saved_at: Option<u64> },
+    Hidden { id: u64, hidden: bool },
+    Read { id: u64, read_at: Option<u64> },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceLayout {
+    Phone,
+    CompactRail,
+    LabeledRail,
+    Reading,
 }
 
 ferroui_base::ferro_thread_local! {
@@ -87,14 +109,19 @@ pub struct ReaderView {
     state_ready: Cell<bool>,
     started: Cell<bool>,
     revision: Cell<u64>,
+    undo_story: Cell<Option<UndoStoryEdit>>,
     saving: Cell<bool>,
     feed: RefCell<FeedRoute>,
     detail: RefCell<DetailRoute>,
     history: RefCell<Vec<DetailRoute>>,
     stories: RefCell<Vec<HnItem>>,
     rendered_stories: RefCell<Vec<HnItem>>,
+    rendered_show_dead: Cell<bool>,
     search_story_ids: RefCell<BTreeMap<u64, u64>>,
     selected: Cell<Option<u64>>,
+    // An Algolia comment result and its containing discussion have different identities.
+    selected_row: Cell<Option<u64>>,
+    pending_comment: Cell<Option<u64>>,
     next: Cell<Option<usize>>,
     feed_generation: Cell<u64>,
     detail_generation: Cell<u64>,
@@ -108,7 +135,13 @@ pub struct ReaderView {
     thread_budget: Cell<usize>,
     thread_sort: Cell<ThreadSort>,
     find_revision: Cell<u64>,
-    layout_mode: Cell<u8>,
+    applied_find_query: RefCell<String>,
+    find_match_id: Cell<Option<u64>>,
+    // Unfiltered reading position (the root identifies the story header).
+    find_origin: Cell<Option<u64>>,
+    focus_reading: Cell<bool>,
+    layout_mode: Cell<Option<WorkspaceLayout>>,
+    layout_update_queued: Cell<bool>,
     back_handler: RefCell<Option<(WeakRef<TopLevel>, RoutedEventHandlerToken)>>,
 }
 ferro_class!(ReaderView: UserControl);
@@ -145,14 +178,18 @@ impl ReaderView {
             state_ready: Cell::new(false),
             started: Cell::new(false),
             revision: Cell::new(0),
+            undo_story: Cell::new(None),
             saving: Cell::new(false),
             feed: RefCell::new(FeedRoute::Feed(FeedKind::Top)),
             detail: RefCell::new(DetailRoute::Welcome),
             history: RefCell::new(Vec::new()),
             stories: RefCell::new(Vec::new()),
             rendered_stories: RefCell::new(Vec::new()),
+            rendered_show_dead: Cell::new(false),
             search_story_ids: RefCell::new(BTreeMap::new()),
             selected: Cell::new(None),
+            selected_row: Cell::new(None),
+            pending_comment: Cell::new(None),
             next: Cell::new(None),
             feed_generation: Cell::new(0),
             detail_generation: Cell::new(0),
@@ -165,14 +202,21 @@ impl ReaderView {
             thread_budget: Cell::new(120),
             thread_sort: Cell::new(ThreadSort::Ranked),
             find_revision: Cell::new(0),
-            layout_mode: Cell::new(255),
+            applied_find_query: RefCell::new(String::new()),
+            find_match_id: Cell::new(None),
+            find_origin: Cell::new(None),
+            focus_reading: Cell::new(false),
+            layout_mode: Cell::new(None),
+            layout_update_queued: Cell::new(false),
             back_handler: RefCell::new(None),
         }
     }
     pub fn new() -> Ref<Self> {
         let this = instantiate(Self::construct());
         this.initialize_component();
+        this.populate_navigation();
         this.wire();
+        this.configure_detail();
         ACTIVE.with(|v| *v.borrow_mut() = Some(this.downgrade()));
         let weak = this.downgrade();
         this.show_content(widgets::welcome(move || {
@@ -203,13 +247,28 @@ impl ReaderView {
         });
     }
     fn wire(&self) {
+        AutomationProperties::set_live_setting(
+            &self.label("StatusText"),
+            AutomationLiveSetting::Polite,
+        );
+        AutomationProperties::set_live_setting(
+            &self.label("FindCount"),
+            AutomationLiveSetting::Polite,
+        );
         for (name, icon) in [
             ("SearchButton", "search"),
+            ("CompactSearch", "search"),
+            ("ThreadRefresh", "refresh"),
+            ("FindButton", "search"),
+            ("FocusButton", "focus_reading"),
+            ("CloseFind", "dismiss"),
+            ("FindPrevious", "chevron_up"),
+            ("FindNext", "chevron_down"),
+            ("DismissStatus", "dismiss"),
             ("RefreshButton", "refresh"),
             ("ThemeButton", "settings"),
             ("BackButton", "back"),
             ("SaveButton", "bookmark"),
-            ("CollapseButton", "collapse"),
             ("DownloadButton", "download"),
         ] {
             self.button(name)
@@ -231,17 +290,27 @@ impl ReaderView {
         self.on("MobileSaved", |v| v.select_feed(FeedRoute::Saved));
         self.on("NavHistory", |v| v.select_feed(FeedRoute::History));
         self.on("NavHidden", |v| v.select_feed(FeedRoute::Hidden));
-        self.on("NavSettings", |v| v.show_settings());
+        self.on("NavMore", |v| v.show_more());
+        self.on("CompactSearch", |v| v.show_search());
         self.on("ThemeButton", |v| v.show_settings());
         self.on("MobileSearch", |v| v.show_search());
         self.on("MobileMore", |v| v.show_more());
-        self.on("SearchButton", |v| {
-            v.run_search(SearchQuery {
-                query: v.textbox("SearchBox").text().unwrap_or_default(),
-                ..Default::default()
-            })
-        });
+        self.on("SearchButton", |v| v.submit_quick_search());
         self.on("RefreshButton", |v| v.refresh());
+        self.on("ThreadRefresh", |v| {
+            if let DetailRoute::Thread(id) = *v.detail.borrow() {
+                v.fetch_thread(id, FetchMode::Refresh);
+            }
+        });
+        self.on("FindButton", |v| {
+            v.set_find_open(!v.get_control::<Border>("ThreadTools").is_visible())
+        });
+        self.on("FocusButton", |v| {
+            v.set_focus_reading(!v.focus_reading.get())
+        });
+        self.on("FindNext", |v| v.step_find(1));
+        self.on("FindPrevious", |v| v.step_find(-1));
+        self.on("CloseFind", |v| v.set_find_open(false));
         self.on("RetryButton", |v| v.refresh());
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
@@ -251,12 +320,13 @@ impl ReaderView {
         self.on("BackButton", |v| v.go_back());
         self.on("SaveButton", |v| {
             if let Some(id) = v.selected.get() {
-                v.toggle_save(id);
+                v.toggle_story_flag(id, StoryFlag::Saved);
             }
         });
-        self.on("CollapseButton", |v| v.toggle_collapse_all());
         self.on("DownloadButton", |v| v.download());
+        self.on("UndoStory", |v| v.undo_story_edit());
         self.on("DismissStatus", |v| {
+            v.undo_story.set(None);
             v.get_control::<Border>("StatusBar").set_is_visible(false)
         });
         self.on("UnreadButton", |v| {
@@ -267,22 +337,62 @@ impl ReaderView {
             v.render_stories();
         });
         let weak = self.to_ref().downgrade();
-        self.property_changed(move |e| {
-            if e.property() == ferroui_base::Visual::bounds_property().as_property() {
-                if let Some(v) = weak.upgrade() {
-                    v.apply_layout();
-                }
+        self.size_changed(move |_, event| {
+            if event.new_size().width == event.previous_size().width {
+                return;
             }
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+            if view.layout_update_queued.replace(true) {
+                return;
+            }
+            // Bounds change during arrange. Let that pass finish before changing columns
+            // or hiding controls it has already queued, and use the latest viewport width.
+            let weak = view.downgrade();
+            Dispatcher::ui_thread().post_local(
+                move || {
+                    if let Some(view) = weak.upgrade() {
+                        view.layout_update_queued.set(false);
+                        if view.is_loaded() {
+                            view.apply_layout();
+                        }
+                    }
+                },
+                DispatcherPriority::LOADED,
+            );
         });
         let weak = self.to_ref().downgrade();
         self.textbox("SearchBox").add_handler(
             InputElement::key_down_event(),
             move |_, e: &KeyEventArgs| {
                 if e.key == Key::Enter {
-                    if let Some(v) = weak.upgrade() {
-                        v.run_search(SearchQuery {
-                            query: v.textbox("SearchBox").text().unwrap_or_default(),
-                            ..Default::default()
+                    if let Some(v) = weak
+                        .upgrade()
+                        .filter(|v| !v.textbox("SearchBox").is_composing_text())
+                    {
+                        v.submit_quick_search();
+                        e.set_handled(true);
+                    }
+                }
+            },
+        );
+        let weak = self.to_ref().downgrade();
+        self.textbox("ThreadFind").add_handler(
+            InputElement::key_down_event(),
+            move |_, e: &KeyEventArgs| {
+                if e.key == Key::Enter
+                    && (e.key_modifiers == KeyModifiers::NONE
+                        || e.key_modifiers == KeyModifiers::SHIFT)
+                {
+                    if let Some(view) = weak
+                        .upgrade()
+                        .filter(|v| !v.textbox("ThreadFind").is_composing_text())
+                    {
+                        view.step_find(if e.key_modifiers == KeyModifiers::SHIFT {
+                            -1
+                        } else {
+                            1
                         });
                         e.set_handled(true);
                     }
@@ -302,7 +412,9 @@ impl ReaderView {
                                 .upgrade()
                                 .filter(|view| view.find_revision.get() == revision)
                             {
-                                view.render_thread();
+                                if view.applied_find_query.borrow().as_str() != view.find_query() {
+                                    view.render_thread();
+                                }
                             }
                         },
                         Duration::from_millis(180),
@@ -326,25 +438,57 @@ impl ReaderView {
                     e.set_handled(true);
                     return;
                 }
-                if e.key == Key::Escape {
-                    v.go_back();
+                if ctrl && e.key == Key::F && matches!(*v.detail.borrow(), DetailRoute::Thread(_)) {
+                    v.set_find_open(true);
                     e.set_handled(true);
                     return;
                 }
-                if e.source().is_some_and(|s| s.cast::<TextBox>().is_some()) {
+                if e.key == Key::Escape {
+                    if v.get_control::<Border>("ThreadTools").is_visible() {
+                        v.set_find_open(false);
+                    } else if *v.detail.borrow() != DetailRoute::Welcome {
+                        v.go_back();
+                    } else {
+                        return;
+                    }
+                    e.set_handled(true);
+                    return;
+                }
+                if e.key_modifiers != KeyModifiers::NONE
+                    || !matches!(
+                        *v.detail.borrow(),
+                        DetailRoute::Welcome | DetailRoute::Thread(_)
+                    )
+                    || e.source()
+                        .and_then(|s| s.cast::<ferroui_base::Visual>())
+                        .is_some_and(|source| {
+                            std::iter::once(source.clone())
+                                .chain(source.get_visual_ancestors())
+                                .any(|v| {
+                                    v.cast::<TextBox>().is_some()
+                                        || v.cast::<ferroui_controls::ComboBox>().is_some()
+                                })
+                        })
+                {
                     return;
                 }
                 match e.key {
+                    Key::F if matches!(*v.detail.borrow(), DetailRoute::Thread(_)) => {
+                        v.set_focus_reading(!v.focus_reading.get())
+                    }
                     Key::R => v.refresh(),
                     Key::S => {
-                        if let Some(id) = v.selected.get() {
-                            v.toggle_save(id);
+                        if let DetailRoute::Thread(id) = *v.detail.borrow() {
+                            v.toggle_story_flag(id, StoryFlag::Saved);
                         }
                     }
                     Key::J => v.move_selection(1),
                     Key::K => v.move_selection(-1),
                     Key::O => {
-                        if let Some(item) = v.current_item() {
+                        if let Some(item) = v
+                            .current_item()
+                            .filter(|_| matches!(*v.detail.borrow(), DetailRoute::Thread(_)))
+                        {
                             v.open_url(
                                 &item.article_url().unwrap_or_else(|| item.discussion_url()),
                             );
@@ -385,9 +529,9 @@ impl ReaderView {
                 distance.set(e.delta().y);
                 view.label("FeedSummary")
                     .set_text(Some(if e.delta().y >= 72.0 {
-                        "RELEASE TO REFRESH"
+                        "Release to refresh"
                     } else {
-                        "PULL TO REFRESH"
+                        "Pull to refresh"
                     }));
                 e.set_handled(true);
             }
@@ -477,6 +621,8 @@ impl ReaderView {
         }));
     }
     fn status(&self, message: &str) {
+        self.undo_story.set(None);
+        self.button("UndoStory").set_is_visible(false);
         self.label("StatusText").set_text(Some(message));
         self.get_control::<Border>("StatusBar").set_is_visible(true);
     }
@@ -552,8 +698,6 @@ impl ReaderView {
         self.search_story_ids.borrow_mut().clear();
         self.next.set(None);
         self.back_to_feed(true);
-        self.selected.set(None);
-        self.render_stories();
         self.load_feed(0, FetchMode::CacheFirst);
     }
     fn refresh(&self) {
@@ -570,45 +714,143 @@ impl ReaderView {
         self.feed_generation.set(generation);
         self.busy.set(true);
         self.button("LoadMoreButton").set_is_enabled(false);
+        self.button("RetryButton").set_is_visible(false);
+        if self.stories.borrow().is_empty() {
+            self.empty("Loading stories…", "Checking for stories on this device.");
+        }
         let route = self.feed.borrow().clone();
         let title = match &route {
             FeedRoute::Feed(f) => f.title(),
             FeedRoute::Saved => "Saved for later",
-            FeedRoute::History => "Your reading trail",
+            FeedRoute::History => "Reading history",
             FeedRoute::Hidden => "Hidden stories",
             FeedRoute::Search(_) => "Search results",
         };
         self.label("FeedTitle").set_text(Some(title));
-        self.label("FeedSummary")
-            .set_text(Some("UPDATING YOUR READING LIST…"));
-        let state = self.state.borrow().clone();
+        self.label("FeedSummary").set_text(Some("Updating…"));
+        // Refresh a local collection without discarding already loaded pages.
+        let local_page_size = if offset == 0 {
+            self.stories.borrow().len().max(30)
+        } else {
+            30
+        };
+        let local_ids = match &route {
+            FeedRoute::Saved => self.state.borrow().saved_ids(),
+            FeedRoute::History => self.state.borrow().history_ids(),
+            FeedRoute::Hidden => self
+                .state
+                .borrow()
+                .items
+                .iter()
+                .filter_map(|(&id, item)| item.hidden.then_some(id))
+                .collect(),
+            _ => Vec::new(),
+        };
         let weak = self.to_ref().downgrade();
-        drop(Dispatcher::ui_thread().invoke_async_task_local(move||async move{
-            if offset==0 && mode!=FetchMode::Offline {
-                if let FeedRoute::Feed(kind)=route {
-                    if let Ok(cached)=repo.load_feed(kind,0,30,services::now(),FetchMode::Offline).await {
-                        if !cached.items.is_empty(){if let Some(v)=weak.upgrade(){if v.feed_generation.get()==generation{v.accept_items(cached.items,0,cached.next_offset,cached.total,cached.source,None);}}}
+        drop(
+            Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                if offset == 0 && mode != FetchMode::Offline {
+                    if let FeedRoute::Feed(kind) = route {
+                        if let Ok(cached) = repo
+                            .load_feed(kind, 0, 30, services::now(), FetchMode::Offline)
+                            .await
+                        {
+                            if let Some(view) = weak.upgrade().filter(|v| {
+                                v.feed_generation.get() == generation && !cached.items.is_empty()
+                            }) {
+                                view.accept_items(
+                                    cached.items,
+                                    0,
+                                    cached.next_offset,
+                                    cached.total,
+                                    cached.source,
+                                    None,
+                                );
+                            }
+                        }
                     }
                 }
-            }
-            let result=match route {
-                FeedRoute::Feed(kind)=>repo.load_feed(kind,offset,30,services::now(),mode).await.map(|p|(p.items,p.next_offset,p.total,p.source,p.warning,BTreeMap::new())),
-                FeedRoute::Search(mut query)=>{query.page=offset;repo.search(&query,services::now(),mode).await.map(|p|(p.items,(p.page+1<p.pages).then_some(p.page+1),p.total,p.source,p.warning,p.story_ids))},
-                local=>{
-                    let ids=match local{FeedRoute::Saved=>state.saved_ids(),FeedRoute::History=>state.history_ids(),_=>state.items.iter().filter_map(|(&id,s)|s.hidden.then_some(id)).collect()};
-                    let total=ids.len();let end=(offset+30).min(total);let slice=ids.get(offset..end).unwrap_or_default();
-                    let batch=repo.load_items(slice,services::now(),mode).await;
-                    Ok((batch.items,(end<total).then_some(end),total,batch.source,batch.warning,BTreeMap::new()))
-                }
-            };
-            if let Some(v)=weak.upgrade(){if v.feed_generation.get()!=generation{return;}
-                v.busy.set(false);v.button("LoadMoreButton").set_is_enabled(true);
+                let result = match route {
+                    FeedRoute::Feed(kind) => repo
+                        .load_feed(kind, offset, 30, services::now(), mode)
+                        .await
+                        .map(|page| {
+                            (
+                                page.items,
+                                page.next_offset,
+                                page.total,
+                                page.source,
+                                page.warning,
+                                BTreeMap::new(),
+                            )
+                        }),
+                    FeedRoute::Search(mut query) => {
+                        query.page = offset;
+                        repo.search(&query, services::now(), mode)
+                            .await
+                            .map(|page| {
+                                let next = (page.page + 1 < page.pages).then_some(page.page + 1);
+                                (
+                                    page.items,
+                                    next,
+                                    page.total,
+                                    page.source,
+                                    page.warning,
+                                    page.story_ids,
+                                )
+                            })
+                    }
+                    FeedRoute::Saved | FeedRoute::History | FeedRoute::Hidden => {
+                        let ids = local_ids;
+                        let end = offset.saturating_add(local_page_size).min(ids.len());
+                        let batch = repo
+                            .load_items(
+                                ids.get(offset..end).unwrap_or_default(),
+                                services::now(),
+                                mode,
+                            )
+                            .await;
+                        Ok((
+                            batch.items,
+                            (end < ids.len()).then_some(end),
+                            ids.len(),
+                            batch.source,
+                            batch.warning,
+                            BTreeMap::new(),
+                        ))
+                    }
+                };
+                let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| v.feed_generation.get() == generation)
+                else {
+                    return;
+                };
+                view.busy.set(false);
+                view.button("LoadMoreButton").set_is_enabled(true);
                 match result {
-                    Ok((items,next,total,source,warning,story_ids))=>{v.search_story_ids.borrow_mut().extend(story_ids);v.accept_items(items,offset,next,total,source,warning);},
-                    Err(error)=>{v.label("FeedSummary").set_text(Some("UPDATE UNAVAILABLE · TRY REFRESH"));v.button("LoadMoreButton").set_is_visible(v.next.get().is_some());v.status(&format!("Could not refresh: {error}. Cached stories remain available."));v.empty("The signal is taking a moment","Check your connection and try again. Saved and previously loaded stories are still on this device.");}
+                    Ok((items, next, total, source, warning, story_ids)) => {
+                        if offset == 0 {
+                            view.search_story_ids.borrow_mut().clear();
+                        }
+                        view.search_story_ids.borrow_mut().extend(story_ids);
+                        view.accept_items(items, offset, next, total, source, warning);
+                    }
+                    Err(error) => {
+                        view.label("FeedSummary")
+                            .set_text(Some("Update unavailable"));
+                        view.button("RetryButton").set_is_visible(true);
+                        view.button("LoadMoreButton")
+                            .set_is_visible(view.next.get().is_some());
+                        view.status(&format!("Could not refresh: {error}"));
+                        view.empty(
+                            "Couldn’t load stories",
+                            "Check your connection and try again.",
+                        );
+                    }
                 }
-            }
-        }));
+            }),
+        );
     }
     fn accept_items(
         &self,
@@ -628,23 +870,32 @@ impl ReaderView {
         }
         self.next.set(next);
         self.button("LoadMoreButton").set_is_visible(next.is_some());
-        self.label("FeedSummary").set_text(Some(&format!(
-            "{} STORIES · {}",
-            total,
-            match source {
-                DataSource::Network => "JUST UPDATED",
-                DataSource::Cache => "ON YOUR DEVICE",
-                DataSource::StaleCache => "OFFLINE CACHE",
+        let route = self.feed.borrow();
+        let noun = if matches!(*route, FeedRoute::Search(_)) {
+            if total == 1 {
+                "result"
+            } else {
+                "results"
             }
-        )));
-        self.label("FeedSubtitle")
-            .set_text(Some(match &*self.feed.borrow() {
-                FeedRoute::Saved => "Your reading list, always close by.",
-                FeedRoute::History => "Pick up a conversation you remember.",
-                FeedRoute::Hidden => "Open a story to restore it to your feeds.",
-                FeedRoute::Search(_) => "Search by Algolia · select a result to read.",
-                _ => "Good stories. Better conversations.",
-            }));
+        } else if total == 1 {
+            "story"
+        } else {
+            "stories"
+        };
+        let origin = match source {
+            DataSource::Network => "Updated",
+            DataSource::Cache => "On this device",
+            DataSource::StaleCache => "Offline copy",
+        };
+        let count = match &*route {
+            FeedRoute::Search(q) if !q.query.is_empty() => {
+                format!("{total} {noun} for “{}”", q.query)
+            }
+            _ => format!("{total} {noun}"),
+        };
+        self.label("FeedSummary")
+            .set_text(Some(&format!("{count} · {origin}")));
+        drop(route);
         if let Some(warning) = warning {
             self.status(&warning);
         }
@@ -663,7 +914,10 @@ impl ReaderView {
             .iter()
             .filter(|item| match &*route {
                 FeedRoute::Saved => state.is_saved(item.id),
-                FeedRoute::History => state.is_read(item.id),
+                FeedRoute::History => state
+                    .items
+                    .get(&item.id)
+                    .is_some_and(|s| s.last_opened_at.is_some()),
                 FeedRoute::Hidden => state.items.get(&item.id).is_some_and(|local| local.hidden),
                 _ => state.is_visible(item),
             })
@@ -671,10 +925,12 @@ impl ReaderView {
             .collect()
     }
     fn render_stories(&self) {
-        let state = self.state.borrow().clone();
+        let state = self.state.borrow();
         let stories = self.visible_stories();
         let list = self.get_control::<ListBox>("Stories");
-        if *self.rendered_stories.borrow() != stories {
+        let visibility_changed = self.rendered_show_dead.replace(state.preferences.show_dead)
+            != state.preferences.show_dead;
+        if visibility_changed || *self.rendered_stories.borrow() != stories {
             let scroll = list.scroll().and_then(|s| s.cast::<ScrollViewer>());
             let offset = scroll.as_ref().map(|s| s.offset()).unwrap_or_default();
             let focused = list.is_keyboard_focus_within();
@@ -715,43 +971,51 @@ impl ReaderView {
         let empty = list.items().count() == 0;
         self.get_control::<StackPanel>("FeedEmpty")
             .set_is_visible(empty);
+        let route = self.feed.borrow();
+        let filterable = matches!(*route, FeedRoute::Feed(_) | FeedRoute::Search(_));
         if empty && !self.busy.get() {
-            self.empty("A little breathing room","No stories match this view yet. Try another feed, clear your filters, or save a story from the front page.");
+            let (title, message) = match &*route {
+                FeedRoute::Saved => (
+                    "No saved stories",
+                    "Bookmark a story to read it here later.",
+                ),
+                FeedRoute::History => (
+                    "No reading history",
+                    "Stories appear here when you open a discussion.",
+                ),
+                FeedRoute::Hidden => (
+                    "No hidden stories",
+                    "Stories you hide can be restored here.",
+                ),
+                _ if !self.stories.borrow().is_empty() => (
+                    "No visible stories",
+                    "Change the unread filter or mute rules, or load more stories.",
+                ),
+                FeedRoute::Search(_) => (
+                    "No results",
+                    "Try a different search term or broaden your filters.",
+                ),
+                _ => ("No stories yet", "Refresh to check for new stories."),
+            };
+            self.empty(title, message);
         }
-        self.button("UnreadButton")
-            .classes()
-            .set("accent", state.preferences.hide_read);
+        let unread = self.button("UnreadButton");
+        unread.set_is_visible(filterable);
+        unread.classes().set("active", state.preferences.hide_read);
+        let label = if state.preferences.hide_read {
+            "Show all stories"
+        } else {
+            "Show unread only"
+        };
+        AutomationProperties::set_name(&unread, Some(label));
+        ToolTip::set_tip(&unread, Some(Rc::new(label.to_owned()) as BoxedValue));
     }
     fn story_card(&self, item: &HnItem) -> Ref<StoryCard> {
         let card = StoryCard::new();
         let state = self.state.borrow();
         card.set_tag(Some(Rc::new(item.id)));
-        let title = ember_content::HtmlDocument::parse(
-            item.title
-                .as_deref()
-                .or(item.text.as_deref())
-                .unwrap_or("Discussion"),
-        )
-        .plain_text();
-        card.set_headline(Some(&title));
-        card.set_domain(Some(&item.domain()));
-        card.set_metadata(Some(&format!(
-            "{} · {} · {} comments",
-            item.author(),
-            ember_core::relative_time(item.time, services::now()),
-            item.descendants.unwrap_or(0)
-        )));
-        card.set_score_label(Some(&format!("↑ {}", item.score.unwrap_or(0))));
+        card.set_item(item, services::now(), state.preferences.show_dead);
         self.update_card_state(&card, item.id, &state);
-        AutomationProperties::set_name(
-            &card,
-            Some(&format!(
-                "{}; {} points; {} comments",
-                title,
-                item.score.unwrap_or(0),
-                item.descendants.unwrap_or(0)
-            )),
-        );
         let id = item.id;
         let weak = self.to_ref().downgrade();
         card.click(move |_, _| {
@@ -760,25 +1024,112 @@ impl ReaderView {
             }
         });
         self.wire_card_swipe(&card, id);
+        self.attach_story_menu(&card, item);
         card
     }
     fn update_card_state(&self, card: &StoryCard, id: u64, state: &ReaderState) {
-        card.set_status_label(Some(if state.is_saved(id) {
+        let read = state.is_read(id);
+        let saved = state.is_saved(id);
+        card.set_status_label(Some(if saved {
             "SAVED"
-        } else if state.is_read(id) {
+        } else if read {
             "READ"
         } else {
             ""
         }));
+        card.classes().set("read", read);
+        card.classes().set("saved", saved);
+        card.classes().set("compact", state.preferences.compact);
         card.classes()
-            .set("selected", self.selected.get() == Some(id));
-        if state.preferences.compact {
-            card.set_min_height(110.0);
-            card.set_padding(Thickness::uniform(12.0));
-        } else {
-            card.set_min_height(142.0);
-            card.set_padding(Thickness::symmetric(18.0, 16.0));
-        }
+            .set("selected", self.selected_row.get() == Some(id));
+        AutomationProperties::set_help_text(
+            card,
+            Some(match (saved, read) {
+                (true, true) => "Saved, read. Open discussion.",
+                (true, false) => "Saved. Open discussion.",
+                (false, true) => "Read. Open discussion.",
+                (false, false) => "Open discussion.",
+            }),
+        );
+    }
+    fn attach_story_menu(&self, card: &StoryCard, item: &HnItem) {
+        let menu = ContextMenu::new();
+        let owner = self.to_ref().downgrade();
+        let weak_menu = menu.downgrade();
+        let id = item.id;
+        let url = item.article_url();
+        // Resolve state on opening. Scrolling a feed never constructs a menu's command tree.
+        menu.opening(move |_| {
+            let (Some(view), Some(menu)) = (owner.upgrade(), weak_menu.upgrade()) else {
+                return;
+            };
+            menu.items().clear();
+            let add = |label: &str, icon: &str, command: Box<dyn Fn(&ReaderView)>| {
+                let entry = MenuItem::new();
+                entry.set_header(Some(Rc::new(label.to_owned())));
+                entry.set_icon(Some(Control::boxed(crate::icons::icon(icon))));
+                let owner = view.downgrade();
+                entry.click(move |_, _| {
+                    if let Some(view) = owner.upgrade() {
+                        command(&view);
+                    }
+                });
+                menu.items().add(Some(Control::boxed(entry)));
+            };
+            add(
+                "Open discussion",
+                "chat",
+                Box::new(move |v| v.open_item(id)),
+            );
+            if let Some(url) = url.clone() {
+                add("Open article", "open", Box::new(move |v| v.open_url(&url)));
+            }
+            let state = view.state.borrow();
+            let hidden = state.items.get(&id).is_some_and(|item| item.hidden);
+            for (label, icon, flag) in [
+                (
+                    if state.is_saved(id) {
+                        "Remove from saved"
+                    } else {
+                        "Save for later"
+                    },
+                    "bookmark",
+                    StoryFlag::Saved,
+                ),
+                (
+                    if state.is_read(id) {
+                        "Mark unread"
+                    } else {
+                        "Mark read"
+                    },
+                    "check",
+                    StoryFlag::Read,
+                ),
+                (
+                    if hidden {
+                        "Restore to feeds"
+                    } else {
+                        "Hide story"
+                    },
+                    "eye_off",
+                    StoryFlag::Hidden,
+                ),
+            ] {
+                add(
+                    label,
+                    icon,
+                    Box::new(move |v| v.toggle_story_flag(id, flag)),
+                );
+            }
+            add(
+                "Copy HN link",
+                "copy",
+                Box::new(move |v| {
+                    v.copy_text(&ember_core::item_url(id), "Hacker News link copied.")
+                }),
+            );
+        });
+        card.set_context_menu(menu);
     }
     fn wire_card_swipe(&self, card: &StoryCard, id: u64) {
         let swipe = SwipeGestureRecognizer::new();
@@ -797,12 +1148,9 @@ impl ReaderView {
             let delta = distance.replace(0.0);
             if let Some(v) = weak.upgrade() {
                 if delta < -80.0 {
-                    v.toggle_save(id);
+                    v.toggle_story_flag(id, StoryFlag::Saved);
                 } else if delta > 80.0 {
-                    v.state.borrow_mut().toggle_hidden(id);
-                    v.changed();
-                    v.render_stories();
-                    v.status("Story hidden. Restore it from Hidden stories.");
+                    v.toggle_story_flag(id, StoryFlag::Hidden);
                 }
             }
         });
@@ -820,16 +1168,19 @@ impl ReaderView {
     fn open_item(&self, id: u64) {
         self.open_item_internal(id, true);
     }
-    fn open_item_internal(&self, id: u64, publish: bool) {
+    fn open_item_internal(&self, row: u64, publish: bool) {
         let id = self
             .search_story_ids
             .borrow()
-            .get(&id)
+            .get(&row)
             .copied()
-            .unwrap_or(id);
+            .unwrap_or(row);
+        self.selected_row.set(Some(row));
+        self.pending_comment.set((row != id).then_some(row));
         self.navigate(DetailRoute::Thread(id));
         self.selected.set(Some(id));
         self.thread_budget.set(120);
+        self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
         self.thread.borrow_mut().take();
         self.thread_control.borrow_mut().take();
         let loading = widgets::stack(16.0);
@@ -904,19 +1255,42 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
-        self.label("DetailTitle").set_text(Some(&format!(
-            "{} comments · {}",
-            thread.root.descendants.unwrap_or(thread.items.len() as u64),
-            thread.root.author()
-        )));
-        self.label("DetailEyebrow")
-            .set_text(Some("IN CONVERSATION"));
+        let summary = if thread.root.kind == Some(ember_core::ItemKind::Job) {
+            "Job listing".to_owned()
+        } else {
+            let count = thread.root.descendants.unwrap_or_else(|| {
+                thread
+                    .items
+                    .values()
+                    .filter(|item| {
+                        item.id != id && item.kind == Some(ember_core::ItemKind::Comment)
+                    })
+                    .count() as u64
+            });
+            let noun = if count == 1 { "comment" } else { "comments" };
+            format!("{count} {noun}")
+        };
+        let headline = crate::thread_view::discussion_title(
+            &thread.root,
+            self.state.borrow().preferences.show_dead,
+        );
+        self.label("DetailTitle").set_text(Some(&headline));
+        self.label("DetailEyebrow").set_text(Some(&summary));
         if let Some(warning) = thread.warning.as_deref() {
             self.status(warning);
         }
-        self.state.borrow_mut().mark_read(id, services::now());
-        *self.thread.borrow_mut() = Some(thread);
-        self.changed();
+        // The cache preview, refresh and final network result are one visit.
+        if self.thread.replace(Some(thread)).is_none() {
+            if matches!(self.undo_story.get(), Some(UndoStoryEdit::Read { id: edited, .. }) if edited == id)
+            {
+                self.undo_story.set(None);
+                self.button("UndoStory").set_is_visible(false);
+                self.get_control::<Border>("StatusBar")
+                    .set_is_visible(false);
+            }
+            self.state.borrow_mut().mark_read(id, services::now());
+            self.changed();
+        }
         self.render_thread();
         self.render_stories();
     }
@@ -924,24 +1298,43 @@ impl ReaderView {
         if !matches!(*self.detail.borrow(), DetailRoute::Thread(_)) {
             return;
         }
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         if Some(thread.root.id) != self.selected.get() {
             return;
         }
-        let state = self.state.borrow().clone();
-        let query = self.textbox("ThreadFind").text().unwrap_or_default();
-        let anchor = match self.thread_control.borrow().as_ref() {
+        let state = self.state.borrow();
+        let query = self.find_query();
+        let target = self
+            .pending_comment
+            .get()
+            .filter(|id| thread.items.contains_key(id));
+        if target.is_some() {
+            self.pending_comment.set(None);
+        }
+        let mut anchor = target.or_else(|| match self.thread_control.borrow().as_ref() {
             Some(control) => crate::thread_view::viewport_anchor(control),
             None => state
                 .items
                 .get(&thread.root.id)
                 .and_then(|local| local.scroll_anchor),
-        };
+        });
+        if self.applied_find_query.borrow().as_str() != query {
+            self.find_match_id.set(None);
+        }
+        if query.is_empty() {
+            if let Some(original) = self.find_origin.take() {
+                anchor = Some(original);
+            }
+        } else if self.find_origin.get().is_none() {
+            self.find_origin.set(Some(anchor.unwrap_or(thread.root.id)));
+        }
+        self.applied_find_query.replace(query.clone());
         let weak = self.to_ref().downgrade();
         let control = crate::thread_view::build(
-            &thread,
+            thread,
             &state,
             &query,
             self.thread_sort.get(),
@@ -951,9 +1344,18 @@ impl ReaderView {
                 }
             }),
         );
+        drop(state);
+        drop(snapshot);
         self.show_content(control.clone());
-        if let Some(id) = anchor {
-            crate::thread_view::restore_anchor(&control, id);
+        if !query.is_empty() {
+            let result =
+                crate::thread_view::select_find_match(&control, self.find_match_id.get(), 0);
+            self.show_find_result(result, true);
+        } else {
+            self.show_find_result(None, false);
+            if let Some(id) = anchor {
+                crate::thread_view::restore_anchor(&control, id);
+            }
         }
         *self.thread_control.borrow_mut() = Some(control);
         self.update_save_button();
@@ -964,7 +1366,8 @@ impl ReaderView {
         let DetailRoute::Thread(id) = route else {
             return;
         };
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         if thread.root.id != id {
@@ -978,7 +1381,11 @@ impl ReaderView {
         let mut state = self.state.borrow_mut();
         let local = state.items.entry(id).or_default();
         local.seen_comments.extend(thread.items.keys().copied());
-        local.scroll_anchor = anchor;
+        local.scroll_anchor = self
+            .find_origin
+            .get()
+            .or(anchor)
+            .filter(|&anchor| anchor != id);
         drop(state);
         self.changed();
     }
@@ -986,6 +1393,7 @@ impl ReaderView {
         match action {
             ThreadAction::OpenUrl(url) => self.open_url(&url),
             ThreadAction::Profile(user) => self.show_profile(user),
+            ThreadAction::ToggleAll => self.toggle_collapse_all(),
             ThreadAction::ToggleCollapse(id) => {
                 if let Some(root) = self.selected.get() {
                     let mut state = self.state.borrow_mut();
@@ -998,11 +1406,7 @@ impl ReaderView {
                     self.render_thread();
                 }
             }
-            ThreadAction::Save => {
-                if let Some(id) = self.selected.get() {
-                    self.toggle_save(id);
-                }
-            }
+            ThreadAction::FocusReading => self.set_focus_reading(true),
             ThreadAction::Share => {
                 if let Some(id) = self.selected.get() {
                     self.copy_text(&ember_core::item_url(id), "Discussion link copied.");
@@ -1010,14 +1414,7 @@ impl ReaderView {
             }
             ThreadAction::Hide => {
                 if let Some(id) = self.selected.get() {
-                    let hidden = self.state.borrow_mut().toggle_hidden(id);
-                    self.changed();
-                    self.render_stories();
-                    self.status(if hidden {
-                        "Story hidden. Find it under Hidden stories."
-                    } else {
-                        "Story restored to your feeds."
-                    });
+                    self.toggle_story_flag(id, StoryFlag::Hidden);
                 }
             }
             ThreadAction::MuteDomain => {
@@ -1045,7 +1442,8 @@ impl ReaderView {
         }
     }
     fn toggle_collapse_all(&self) {
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         let mut state = self.state.borrow_mut();
@@ -1059,28 +1457,116 @@ impl ReaderView {
         self.changed();
         self.render_thread();
     }
-    fn toggle_save(&self, id: u64) {
+    fn toggle_story_flag(&self, id: u64, flag: StoryFlag) {
         if !self.state_ready.get() {
-            self.status("Saving is paused because reading data could not be restored. Import a backup in Settings to recover it.");
+            self.status("Reading data is unavailable. Open Settings to restore a backup.");
             return;
         }
-        let saved = self.state.borrow_mut().toggle_saved(id, services::now());
+        let mut state = self.state.borrow_mut();
+        let (before, message) = match flag {
+            StoryFlag::Saved => {
+                let saved_at = state.items.get(&id).and_then(|local| local.saved_at);
+                let saved = state.toggle_saved(id, services::now());
+                (
+                    UndoStoryEdit::Saved { id, saved_at },
+                    if saved {
+                        "Added to Saved stories. Download the thread to keep all its comments offline."
+                    } else {
+                        "Removed from Saved stories."
+                    },
+                )
+            }
+            StoryFlag::Hidden => {
+                let hidden = state.toggle_hidden(id);
+                (
+                    UndoStoryEdit::Hidden {
+                        id,
+                        hidden: !hidden,
+                    },
+                    if hidden {
+                        "Story hidden."
+                    } else {
+                        "Story restored to your feeds."
+                    },
+                )
+            }
+            StoryFlag::Read => {
+                let local = state.items.entry(id).or_default();
+                let previous = local.read_at;
+                local.read_at = previous.is_none().then(services::now);
+                (
+                    UndoStoryEdit::Read {
+                        id,
+                        read_at: previous,
+                    },
+                    if previous.is_some() {
+                        "Marked unread."
+                    } else {
+                        "Marked read."
+                    },
+                )
+            }
+        };
+        drop(state);
+        self.update_after_story_edit(id, flag);
+        self.status(message);
+        self.undo_story.set(Some(before));
+        self.button("UndoStory").set_is_visible(true);
+    }
+    fn undo_story_edit(&self) {
+        let Some(edit) = self.undo_story.take() else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        let (id, flag) = match edit {
+            UndoStoryEdit::Saved { id, saved_at } => {
+                state.items.entry(id).or_default().saved_at = saved_at;
+                (id, StoryFlag::Saved)
+            }
+            UndoStoryEdit::Hidden { id, hidden } => {
+                state.items.entry(id).or_default().hidden = hidden;
+                (id, StoryFlag::Hidden)
+            }
+            UndoStoryEdit::Read { id, read_at } => {
+                state.items.entry(id).or_default().read_at = read_at;
+                (id, StoryFlag::Read)
+            }
+        };
+        drop(state);
+        self.update_after_story_edit(id, flag);
+        self.status("Change undone.");
+    }
+    fn update_after_story_edit(&self, id: u64, flag: StoryFlag) {
         self.changed();
         self.render_stories();
-        self.update_save_button();
-        self.render_thread();
-        self.status(if saved {
-            "Added to Saved stories. Download the thread to keep all its comments offline."
-        } else {
-            "Removed from Saved stories."
-        });
+        if matches!(
+            (&*self.feed.borrow(), flag),
+            (FeedRoute::Saved, StoryFlag::Saved) | (FeedRoute::Hidden, StoryFlag::Hidden)
+        ) {
+            self.load_feed(0, FetchMode::CacheFirst);
+        }
+        if self.selected.get() == Some(id) {
+            if matches!(flag, StoryFlag::Hidden) {
+                self.render_thread();
+            }
+            self.update_save_button();
+        }
     }
     fn update_save_button(&self) {
         let saved = self
             .selected
             .get()
             .is_some_and(|id| self.state.borrow().is_saved(id));
-        self.button("SaveButton").classes().set("accent", saved);
+        self.button("SaveButton").classes().set("active", saved);
+        let tip = if saved {
+            "Remove saved story (S)"
+        } else {
+            "Save story (S)"
+        };
+        ToolTip::set_tip(
+            &self.button("SaveButton"),
+            Some(Rc::new(tip.to_owned()) as BoxedValue),
+        );
         AutomationProperties::set_name(
             &self.button("SaveButton"),
             Some(if saved {
@@ -1167,9 +1653,75 @@ impl ReaderView {
     }
     fn configure_detail(&self) {
         let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
+        if !thread {
+            self.focus_reading.set(false);
+        }
         self.get_control::<Border>("ThreadTools")
-            .set_is_visible(thread);
-        self.button("SaveButton").set_is_visible(thread);
+            .set_is_visible(false);
+        self.button("FindButton").classes().set("active", false);
+        self.find_origin.set(None);
+        self.applied_find_query.borrow_mut().clear();
+        self.show_find_result(None, false);
+        for name in ["SaveButton", "FindButton", "DownloadButton"] {
+            self.button(name).set_is_visible(thread);
+        }
+        self.get_control::<Border>("DetailHeader")
+            .set_is_visible(*self.detail.borrow() != DetailRoute::Welcome);
+    }
+    fn find_query(&self) -> String {
+        self.textbox("ThreadFind")
+            .text()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+    }
+    fn step_find(&self, direction: i32) {
+        let query = self.find_query();
+        if query.is_empty() {
+            return;
+        }
+        if self.applied_find_query.borrow().as_str() != query {
+            self.render_thread();
+            if direction > 0 {
+                return;
+            }
+        }
+        if let Some(control) = self.thread_control.borrow().as_ref() {
+            let result =
+                crate::thread_view::select_find_match(control, self.find_match_id.get(), direction);
+            self.show_find_result(result, true);
+        }
+    }
+    fn show_find_result(&self, result: Option<crate::thread_view::FindMatch>, searching: bool) {
+        self.find_match_id.set(result.map(|m| m.id));
+        for name in ["FindPrevious", "FindNext"] {
+            self.button(name)
+                .set_is_enabled(result.is_some_and(|m| m.total > 1));
+        }
+        let label = self.label("FindCount");
+        label.set_is_visible(searching);
+        if searching {
+            let message = match result {
+                Some(m) if m.total == 1 => "1 matching comment".to_owned(),
+                Some(m) => format!("{} of {} matching comments", m.ordinal, m.total),
+                None => "No matches in loaded comments".to_owned(),
+            };
+            label.set_text(Some(&message));
+        }
+    }
+    fn set_find_open(&self, open: bool) {
+        self.get_control::<Border>("ThreadTools")
+            .set_is_visible(open);
+        self.button("FindButton").classes().set("active", open);
+        if open {
+            self.textbox("ThreadFind").focus();
+        } else {
+            self.textbox("ThreadFind").set_text(Some(""));
+            if !self.applied_find_query.borrow().is_empty() {
+                self.render_thread();
+            }
+            self.button("FindButton").focus();
+        }
     }
     fn show_content(&self, control: Ref<Control>) {
         self.get_control::<ContentControl>("DetailHost")
@@ -1178,6 +1730,8 @@ impl ReaderView {
     fn back_to_feed(&self, publish: bool) {
         self.remember_thread();
         self.history.borrow_mut().clear();
+        self.selected.set(None);
+        self.selected_row.set(None);
         self.detail.replace(DetailRoute::Welcome);
         self.detail_generation
             .set(self.detail_generation.get().wrapping_add(1));
@@ -1188,17 +1742,24 @@ impl ReaderView {
                 v.show_search();
             }
         }));
-        self.label("DetailEyebrow")
-            .set_text(Some("THE READING ROOM"));
-        self.label("DetailTitle")
-            .set_text(Some("A space for good conversations"));
+        self.label("DetailEyebrow").set_text(Some("READER"));
+        self.label("DetailTitle").set_text(Some("Discussion"));
         self.apply_layout();
         self.update_navigation();
+        self.render_stories();
         if publish {
             self.publish_location(None);
         }
     }
     fn go_back(&self) {
+        if self.get_control::<Border>("ThreadTools").is_visible() {
+            self.set_find_open(false);
+            return;
+        }
+        if self.focus_reading.get() {
+            self.set_focus_reading(false);
+            return;
+        }
         let route = self.history.borrow_mut().pop();
         self.remember_thread();
         // Restoring a route must not put the outgoing page back onto the history stack.
@@ -1221,12 +1782,32 @@ impl ReaderView {
             }
         });
     }
+    fn submit_quick_search(&self) {
+        let query = self.textbox("SearchBox").text().unwrap_or_default();
+        if query.trim().is_empty() {
+            self.show_search();
+        } else {
+            self.run_search(SearchQuery {
+                query,
+                ..Default::default()
+            });
+        }
+    }
     fn show_search(&self) {
+        if *self.detail.borrow() == DetailRoute::Search {
+            if let Some(query) = self
+                .get_control::<ContentControl>("DetailHost")
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<TextBox>())
+                .find(|input| input.name().as_deref() == Some("SearchTerms"))
+            {
+                query.focus();
+                return;
+            }
+        }
         self.navigate(DetailRoute::Search);
-        self.label("DetailEyebrow")
-            .set_text(Some("FOLLOW YOUR CURIOSITY"));
-        self.label("DetailTitle")
-            .set_text(Some("Search and discovery"));
+        self.label("DetailEyebrow").set_text(Some("DISCOVER"));
+        self.label("DetailTitle").set_text(Some("Search"));
         let query = match &*self.feed.borrow() {
             FeedRoute::Search(q) => q.clone(),
             _ => SearchQuery {
@@ -1238,6 +1819,7 @@ impl ReaderView {
         let profile = self.to_ref().downgrade();
         self.show_content(crate::search_panel::build(
             &query,
+            &self.state.borrow().recent_searches,
             Rc::new(move |query| {
                 if let Some(v) = weak.upgrade() {
                     v.run_search(query);
@@ -1249,7 +1831,6 @@ impl ReaderView {
                 }
             }),
         ));
-        self.animate_detail();
     }
     fn run_search(&self, mut query: SearchQuery) {
         query.query = query.query.trim().to_owned();
@@ -1261,10 +1842,8 @@ impl ReaderView {
     }
     fn show_settings(&self) {
         self.navigate(DetailRoute::Settings);
-        self.label("DetailEyebrow")
-            .set_text(Some("MAKE YOURSELF AT HOME"));
-        self.label("DetailTitle")
-            .set_text(Some("Appearance and reading preferences"));
+        self.label("DetailEyebrow").set_text(Some("READER"));
+        self.label("DetailTitle").set_text(Some("Settings"));
         let weak = self.to_ref().downgrade();
         self.show_content(crate::settings::build(
             &self.state.borrow(),
@@ -1284,6 +1863,7 @@ impl ReaderView {
                 self.changed();
                 self.render_stories();
                 self.prune_cache();
+                self.status("Preferences applied.");
             }
             SettingsAction::Mutes(mutes) => {
                 self.state.borrow_mut().mutes = mutes;
@@ -1291,26 +1871,24 @@ impl ReaderView {
                 self.render_stories();
                 self.status("Mute rules updated.");
             }
-            SettingsAction::Export => match self.state.borrow().export_json() {
-                Ok(json) => self.copy_text(
-                    &json,
-                    "Reading library JSON copied. Paste it into a file to back it up.",
-                ),
+            SettingsAction::Export(show_json) => match self.state.borrow().export_json() {
+                Ok(json) => {
+                    show_json(&json);
+                    self.copy_text(&json, "Backup copied.");
+                }
                 Err(error) => self.status(&error.to_string()),
             },
-            SettingsAction::Import(json) => match ReaderState::import_json(&json) {
-                Ok(state) => {
-                    crate::theme::apply(&state.preferences);
-                    *self.state.borrow_mut() = state;
-                    self.state_ready.set(true);
-                    self.changed();
-                    self.render_stories();
-                    self.show_settings();
-                    self.status("Reading library imported.");
-                }
-                Err(error) => self.status(&format!("Import rejected: {error}")),
-            },
+            SettingsAction::Import(state) => {
+                crate::theme::apply(&state.preferences);
+                *self.state.borrow_mut() = state;
+                self.state_ready.set(true);
+                self.changed();
+                self.render_stories();
+                self.show_settings();
+                self.status("Reading library imported.");
+            }
             SettingsAction::ClearHistory => {
+                self.state.borrow_mut().recent_searches.clear();
                 for entry in self.state.borrow_mut().items.values_mut() {
                     entry.read_at = None;
                     entry.last_opened_at = None;
@@ -1332,13 +1910,12 @@ impl ReaderView {
     }
     fn show_more(&self) {
         self.navigate(DetailRoute::More);
-        self.label("DetailEyebrow").set_text(Some("YOUR NEXT STOP"));
+        self.label("DetailEyebrow").set_text(Some("NAVIGATION"));
         self.label("DetailTitle").set_text(Some("Explore Ember"));
-        let panel = widgets::stack(12.0);
-        panel.set_margin(Thickness::uniform(24.0));
-        panel
-            .children()
-            .add(widgets::heading("A little more to explore").upcast::<Control>());
+        let panel = widgets::stack(3.0);
+        panel.set_max_width(620.0);
+        panel.set_margin(Thickness::uniform(15.0));
+        panel.children().add(widgets::muted("FEEDS"));
         for (label, icon, kind) in [
             ("Best stories", "star", FeedKind::Best),
             ("Ask HN", "chat", FeedKind::Ask),
@@ -1355,6 +1932,7 @@ impl ReaderView {
                 .upcast::<Control>(),
             );
         }
+        panel.children().add(widgets::muted("LIBRARY"));
         for (label, icon, route) in [
             ("Reading history", "history", FeedRoute::History),
             ("Hidden stories", "eye_off", FeedRoute::Hidden),
@@ -1378,6 +1956,7 @@ impl ReaderView {
             })
             .upcast::<Control>(),
         );
+        panel.children().add(widgets::muted("HACKER NEWS"));
         for (label, url) in [
             ("Sign in on Hacker News", ember_core::login_url()),
             ("Submit on Hacker News", ember_core::submit_url()),
@@ -1397,10 +1976,11 @@ impl ReaderView {
     }
     fn show_profile(&self, name: String) {
         self.navigate(DetailRoute::Profile(name.clone()));
-        self.label("DetailEyebrow")
-            .set_text(Some("PEOPLE OF HACKER NEWS"));
+        self.label("DetailEyebrow").set_text(Some("PROFILE"));
         self.label("DetailTitle").set_text(Some(&name));
-        self.show_content(widgets::text("Loading profile…", 18.0).upcast::<Control>());
+        let loading = widgets::muted("Loading profile…");
+        loading.set_margin(Thickness::uniform(18.0));
+        self.show_content(loading.upcast());
         let Some(repo) = self.repo() else {
             return;
         };
@@ -1417,27 +1997,36 @@ impl ReaderView {
                     }
                     match result {
                         Ok(loaded) => {
+                            if let Some(warning) = loaded.warning.as_deref() {
+                                v.status(warning);
+                            }
                             if let Some(user) = loaded.value {
-                                let panel = widgets::stack(20.0);
-                                panel.set_margin(Thickness::uniform(28.0));
+                                let panel = widgets::stack(10.0);
+                                panel.set_margin(Thickness::uniform(18.0));
+                                panel.set_max_width(660.0);
                                 panel
                                     .children()
                                     .add(widgets::heading(&user.id).upcast::<Control>());
-                                panel.children().add(
-                                    widgets::text(
-                                        &format!(
-                                            "{} karma · joined {} · {} submissions",
-                                            user.karma.unwrap_or(0),
-                                            ember_core::relative_time(
-                                                user.created,
-                                                services::now()
-                                            ),
-                                            user.submitted.len()
-                                        ),
-                                        13.0,
-                                    )
-                                    .upcast::<Control>(),
-                                );
+                                let mut facts = Vec::new();
+                                if let Some(karma) = user.karma {
+                                    facts.push(format!("{karma} karma"));
+                                }
+                                if user.created.is_some() {
+                                    facts.push(format!(
+                                        "Joined {}",
+                                        ember_core::relative_time(user.created, services::now())
+                                    ));
+                                }
+                                let count = user.submitted.len();
+                                facts.push(format!(
+                                    "{count} {}",
+                                    if count == 1 {
+                                        "submission"
+                                    } else {
+                                        "submissions"
+                                    }
+                                ));
+                                panel.children().add(widgets::muted(&facts.join(" · ")));
                                 let link = v.to_ref().downgrade();
                                 let options = crate::thread_view::render_options(&v.state.borrow());
                                 panel.children().add(ember_content::render(
@@ -1451,14 +2040,14 @@ impl ReaderView {
                                         }
                                     }),
                                 ));
-                                for (label, kind) in [
-                                    ("Read their stories", SearchKind::Stories),
-                                    ("Read their comments", SearchKind::Comments),
+                                for (label, icon, kind) in [
+                                    ("Stories", "home", SearchKind::Stories),
+                                    ("Comments", "chat", SearchKind::Comments),
                                 ] {
                                     let username = user.id.clone();
                                     let target = v.to_ref().downgrade();
                                     panel.children().add(
-                                        widgets::action(label, "person", move || {
+                                        widgets::action(label, icon, move || {
                                             if let Some(v) = target.upgrade() {
                                                 v.run_search(SearchQuery {
                                                     author: Some(username.clone()),
@@ -1482,18 +2071,33 @@ impl ReaderView {
                                 );
                                 v.show_content(widgets::scroll(panel.upcast::<Control>()));
                             } else {
-                                v.show_content(
-                                    widgets::text("This user has no public profile.", 18.0)
-                                        .upcast::<Control>(),
-                                );
+                                let message = widgets::muted("This user has no public profile.");
+                                message.set_margin(Thickness::uniform(18.0));
+                                v.show_content(message.upcast());
                             }
                         }
                         Err(error) => {
                             v.status(&format!("Profile unavailable: {error}"));
-                            let text = widgets::text("This profile could not be loaded. Check the username or try again when you are online.", 17.0);
-                            text.set_margin(Thickness::uniform(28.0));
-                            v.show_content(text.upcast());
-                        },
+                            let panel = widgets::stack(8.0);
+                            panel.set_margin(Thickness::uniform(18.0));
+                            panel
+                                .children()
+                                .add(widgets::heading("Couldn’t load profile"));
+                            panel.children().add(widgets::muted(
+                                "Check the username or your connection, then try again.",
+                            ));
+                            let target = v.to_ref().downgrade();
+                            let retry = widgets::action("Try again", "refresh", move || {
+                                if let Some(view) = target.upgrade() {
+                                    view.show_profile(name.clone());
+                                }
+                            });
+                            retry.set_horizontal_alignment(
+                                ferroui_base::layout::HorizontalAlignment::Left,
+                            );
+                            panel.children().add(retry);
+                            v.show_content(panel.upcast());
+                        }
                     }
                 }
             }),
@@ -1551,7 +2155,7 @@ impl ReaderView {
             return;
         }
         let current = self
-            .selected
+            .selected_row
             .get()
             .and_then(|id| stories.iter().position(|v| v.id == id))
             .map(|v| v as i32)
@@ -1563,50 +2167,101 @@ impl ReaderView {
         self.get_control::<ListBox>("Stories")
             .scroll_into_view(index);
     }
+    fn set_focus_reading(&self, enabled: bool) {
+        if !matches!(*self.detail.borrow(), DetailRoute::Thread(_))
+            || self.focus_reading.replace(enabled) == enabled
+        {
+            return;
+        }
+        let anchor = self
+            .thread_control
+            .borrow()
+            .as_ref()
+            .and_then(|c| crate::thread_view::viewport_anchor(c));
+        self.apply_layout();
+        if let (Some(anchor), Some(thread)) = (anchor, self.thread_control.borrow().as_ref()) {
+            crate::thread_view::restore_anchor(thread, anchor);
+        }
+        let focus = self.button("FocusButton");
+        if focus.is_effectively_visible() {
+            focus.focus();
+        } else {
+            self.button("BackButton").focus();
+        }
+    }
     fn apply_layout(&self) {
         let width = if self.bounds().width > 0.0 {
             self.bounds().width
         } else {
             1440.0
         };
-        let mode = if width < 900.0 {
-            0
-        } else if width < 1240.0 {
-            1
+        let mode = if self.focus_reading.get() {
+            WorkspaceLayout::Reading
+        } else if width < 760.0 {
+            WorkspaceLayout::Phone
+        } else if width < 1120.0 {
+            WorkspaceLayout::CompactRail
         } else {
-            2
+            WorkspaceLayout::LabeledRail
         };
+        let phone = mode == WorkspaceLayout::Phone;
+        let reading = mode == WorkspaceLayout::Reading;
+        let split = !phone && !reading;
         let detail = *self.detail.borrow() != DetailRoute::Welcome;
+        let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
         self.get_control::<Border>("NavigationRail")
-            .set_is_visible(mode > 0);
+            .set_is_visible(split);
         self.get_control::<Border>("BottomNavigation")
-            .set_is_visible(mode == 0);
+            .set_is_visible(phone);
         self.get_control::<Border>("FeedPane")
-            .set_is_visible(mode > 0 || !detail);
+            .set_is_visible(split || (phone && !detail));
         self.get_control::<Border>("DetailPane")
-            .set_is_visible(mode > 0 || detail);
+            .set_is_visible(split || detail);
+        self.get_control::<Border>("Masthead")
+            .set_is_visible(split || (phone && !detail));
+        self.button("ThreadRefresh").set_is_visible(phone && thread);
+        self.button("FocusButton").set_is_visible(!phone && thread);
         self.get_control::<Border>("SearchHost")
-            .set_is_visible(width >= 1100.0);
-        self.label("BrandSubtitle").set_is_visible(mode > 0);
-        let grid = self.get_control::<Grid>("Workspace");
-        grid.set_column_definitions(
-            ColumnDefinitions::parse(if mode == 0 {
-                "0,*,0"
-            } else if mode == 1 {
-                "74,340,*"
-            } else {
-                "202,400,*"
-            })
-            .expect("static columns"),
-        );
+            .set_is_visible(mode == WorkspaceLayout::LabeledRail);
+        self.button("CompactSearch")
+            .set_is_visible(mode == WorkspaceLayout::CompactRail);
+        self.label("BrandSubtitle").set_is_visible(split);
+        if self.layout_mode.replace(Some(mode)) == Some(mode) {
+            return;
+        }
+        let columns = match mode {
+            WorkspaceLayout::Phone | WorkspaceLayout::Reading => "0,*,0",
+            WorkspaceLayout::CompactRail => "60,290,*",
+            WorkspaceLayout::LabeledRail => "172,350,*",
+        };
+        self.get_control::<Grid>("Workspace")
+            .set_column_definitions(ColumnDefinitions::parse(columns).expect("workspace columns"));
         Grid::set_column(
             &self.get_control::<Border>("DetailPane"),
-            if mode == 0 { 1 } else { 2 },
+            if split { 2 } else { 1 },
         );
-        if self.layout_mode.replace(mode) != mode {
-            self.populate_navigation(mode == 1);
-            self.update_navigation();
+        self.get_control::<Grid>("ReaderColumn")
+            .set_max_width(if reading { 820.0 } else { f64::INFINITY });
+        let focus = self.button("FocusButton");
+        if focus.classes().contains("active") != reading {
+            let (label, icon) = if reading {
+                ("Exit focus reading", "exit_focus")
+            } else {
+                ("Focus reading", "focus_reading")
+            };
+            focus.set_content(Some(Control::boxed(crate::icons::icon(icon))));
+            focus.classes().set("active", reading);
+            AutomationProperties::set_name(&focus, Some(label));
+            ToolTip::set_tip(&focus, Some(Rc::new(format!("{label} (F)")) as BoxedValue));
         }
+        let compact = mode == WorkspaceLayout::CompactRail;
+        self.get_control::<Border>("NavigationRail")
+            .classes()
+            .set("compact-rail", compact);
+        for name in ["ExploreLabel", "LibraryLabel"] {
+            self.label(name).set_is_visible(!compact);
+        }
+        self.update_navigation();
     }
     fn update_navigation(&self) {
         let feed = self.feed.borrow().clone();
@@ -1636,17 +2291,27 @@ impl ReaderView {
         }
         self.button("MobileSearch").classes().set(
             "active",
-            detail == DetailRoute::Search || matches!(feed, FeedRoute::Search(_)),
+            detail == DetailRoute::Search
+                || (matches!(feed, FeedRoute::Search(_))
+                    && !matches!(detail, DetailRoute::Settings | DetailRoute::More)),
         );
-        self.button("NavSettings")
+        self.button("NavMore")
             .classes()
-            .set("active", detail == DetailRoute::Settings);
+            .set("active", detail == DetailRoute::More);
         self.button("MobileMore").classes().set(
             "active",
-            matches!(detail, DetailRoute::Settings | DetailRoute::More),
+            matches!(detail, DetailRoute::Settings | DetailRoute::More)
+                || (!matches!(detail, DetailRoute::Search)
+                    && matches!(
+                        feed,
+                        FeedRoute::Feed(
+                            FeedKind::Ask | FeedKind::Show | FeedKind::Jobs | FeedKind::Best
+                        ) | FeedRoute::History
+                            | FeedRoute::Hidden
+                    )),
         );
     }
-    fn populate_navigation(&self, compact: bool) {
+    fn populate_navigation(&self) {
         for (name, icon, label) in [
             ("NavTop", "home", "Front page"),
             ("NavNew", "clock", "Latest"),
@@ -1657,15 +2322,13 @@ impl ReaderView {
             ("NavSaved", "bookmark", "Saved for later"),
             ("NavHistory", "history", "History"),
             ("NavHidden", "eye_off", "Hidden stories"),
-            ("NavSettings", "settings", "Settings"),
+            ("NavMore", "more", "More"),
         ] {
-            self.button(name)
-                .set_content(Some(Control::boxed(&widgets::nav_content(
-                    icon, label, compact, false,
-                ))));
-        }
-        for name in ["ExploreLabel", "LibraryLabel", "RailFooter"] {
-            self.label(name).set_is_visible(!compact);
+            let button = self.button(name);
+            ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
+            button.set_content(Some(Control::boxed(&widgets::nav_content(
+                icon, label, false,
+            ))));
         }
         for (name, icon, label) in [
             ("MobileHome", "home", "Home"),
@@ -1675,10 +2338,10 @@ impl ReaderView {
             ("MobileMore", "more", "More"),
         ] {
             let b = self.button(name);
-            b.set_padding(Thickness::new(4.0, 6.0, 4.0, 6.0));
+            b.set_padding(Thickness::symmetric(2.0, 2.0));
             b.set_horizontal_content_alignment(ferroui_base::layout::HorizontalAlignment::Center);
             b.set_content(Some(Control::boxed(&widgets::nav_content(
-                icon, label, false, true,
+                icon, label, true,
             ))));
         }
     }

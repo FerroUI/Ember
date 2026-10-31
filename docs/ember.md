@@ -12,32 +12,31 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-These captures use deterministic HN fixtures and the actual FerroUI control tree,
-rendered by Skia/HarfBuzz through the native test host.
+These captures use deterministic Hacker News fixtures and the actual FerroUI control tree. The phone discussion was captured in Chromium from the WebAssembly application. The native test host rendered the other previews with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
 [Dark desktop](images/ember-desktop-dark.png) ·
 [Phone feed](images/ember-phone-dark.png) ·
 [Custom tablet theme](images/ember-tablet-custom.png) ·
-[Phone discussion in the browser](images/ember-phone-comments.png)
+[Phone discussion in Chromium](images/ember-phone-comments.png) ·
+[Focus reading with Find](images/ember-focus-find.png)
 
-The phone discussion capture comes from the compiled WebAssembly application in
-Chrome, using the same reader controls and deterministic API fixtures.
+The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
 ## Reading and discovery
 
 | Area | Implemented behavior |
 | --- | --- |
 | Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Algolia full-text search for stories, comments, all items, Ask HN, Show HN and polls; relevance or newest order; author, minimum points/comments, recent time presets and a custom UTC date range. |
+| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. Recent searches keeps up to 20 terms. Select a term to edit it or use its search icon to run it with the current filters. Clearing advanced filters preserves the search scope and sort order. |
 | Discussion | Ranked, newest or oldest branches; branch and top-level collapse; local comment search with ancestor context; parent navigation; deleted/dead item handling; new-comment indicators and restored reading position. |
 | Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
 | Profiles | User biography, karma, account creation information and submissions through the public HN API. |
 | Local library | Saved stories, read history, hidden stories, domain/user/keyword mutes, and hide-read filtering. |
 | Offline reading | Cache fallback for visited content; an explicit Download discussion action verifies that the complete loaded discussion is persisted before reporting completion. |
 | Sharing and accounts | Copy the canonical discussion link, open the article or HN page, and open HN for sign-in, voting, replies and submission. |
-| Appearance | System, light, dark and custom themes; custom accent/background; reading font size and line height; compact density and reduced motion. |
+| Appearance | System, light, dark and custom themes, an accent color, and an optional custom background. Adjust reading size and line spacing in the live preview. Compact layout and reduced motion are independent preferences. |
 | Data controls | Versioned JSON export/import of local reading state, cache clearing and history clearing. |
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
@@ -53,20 +52,23 @@ The shell uses logical pixel breakpoints rather than identifying the device:
 
 | Available width | Layout |
 | --- | --- |
-| Below 900 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
-| 900–1239 | A 74-pixel icon rail, a 340-pixel story pane and the remaining width for detail. |
-| 1240 and above | A 202-pixel labeled rail, a 400-pixel story pane and the remaining width for detail. |
+| Below 760 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
+| 760–1119 | A 60-pixel icon rail, a 290-pixel story pane and the remaining width for detail. |
+| 1120 and above | A 172-pixel labeled rail, a 350-pixel story pane and the remaining width for detail. |
 
-The header search field appears from 1100 pixels; Search remains reachable through
-navigation at smaller widths. Primary buttons, navigation targets, comment actions
+At 1120 pixels the header shows the search field. At intermediate widths a search
+icon opens the search form. On phones Search is in the bottom navigation. Primary buttons, navigation targets, comment actions
 and links provide at least 44 logical pixels of height. Action rows wrap on narrow
 screens. Deep comments cap their visual indentation so text retains usable width.
 
 | Input | Action |
 | --- | --- |
 | `Ctrl+K` / `Command+K` | Open search. |
-| `Enter` in header search | Run the query. |
-| `Escape` | Navigate back. |
+| `Enter` in a search field | Run the query with its filters. In the username field, open that profile. |
+| `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
+| `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
+| `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from the story menu. |
+| `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
 | `J` / `K` | Select the next/previous story. |
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the selected story's saved state. |
@@ -75,8 +77,9 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | Swipe a story right | Toggle hidden state after an 80-pixel horizontal swipe. |
 | Pull the feed heading down | Refresh after a 72-pixel touch/pen drag. |
 
-Letter shortcuts do not intercept typing in a text box. Every swipe action also
-has a button path. Browser story navigation updates the URL without reloading the
+Open a story’s context menu by right-clicking, pressing the keyboard menu key, or holding the row on a touch screen. From there you can save, hide, mark read or unread, or copy its HN link. **Undo** in the status bar restores the latest story edit, including a removed bookmark’s original position in Saved. Marking a story unread keeps its visit in History.
+
+Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Browser story navigation updates the URL without reloading the
 application, and Back/Forward routes through the reader. A browser URL with
 `?item=8863` opens that discussion. The desktop host accepts an initial HN URL as
 its first argument.
@@ -120,11 +123,13 @@ store. The versioned `ReaderState` contains preferences, saved/read/hidden state
 timestamps, collapsed branches, seen comments, reading anchors, mute rules,
 recent searches and the downloaded-discussion manifest. JSON import validates the
 schema and normalizes preferences; an unsupported future version is rejected.
-Export contains this local state, not all cached article/comment payloads.
-Settings displays the JSON in a multiline editor; Copy backup sends it to the
-platform clipboard so it can be pasted into a file. Import reads JSON pasted into
-that editor and replaces local reading state after validation. These controls do
-not present a native file picker or copy the database itself.
+In Settings, **Copy backup** generates the JSON, displays a selectable copy, and sends it
+to the platform clipboard. Paste a backup into **Reading data JSON** and choose
+**Import this backup** to review its saved-story and history counts. Choose
+**Replace reading data** to restore that snapshot. Editing the pasted JSON
+dismisses the pending import. Cached article and comment payloads are stored
+separately. Clearing the cache or reading history also has an inline review.
+Clearing history removes recent searches.
 
 Native hosts use a bundled SQLite database, schema version 1, with WAL enabled. A
 dedicated worker owns the connection. Operations resolve after their transaction

@@ -3,9 +3,9 @@
 These SVGs and their extracted `d` path data in `../../icons.rs` are from
 [Microsoft Fluent System Icons](https://github.com/microsoft/fluentui-system-icons),
 24 px regular variants. Copyright (c) 2020 Microsoft Corporation; MIT License (see
-[LICENSE](LICENSE)). Downloaded on 2026-10-21 from the paths listed below. Ember
-scales the vectors to 20 logical pixels and uses the inherited FerroUI foreground.
-No icon font or platform-specific glyph mapping is required.
+[LICENSE](LICENSE)). Sources and checksums are listed below. Ember
+renders the vectors at 18 logical pixels using the inherited FerroUI foreground.
+The disclosure action uses Chevron Up rotated 180 degrees when its contents are collapsed.
 
 | Icon | Upstream source | SHA-256 of retained SVG |
 |---|---|---|
@@ -36,3 +36,5 @@ No icon font or platform-specific glyph mapping is required.
 | Text Font Size | [SVG](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Text%20Font%20Size/SVG/ic_fluent_text_font_size_24_regular.svg) | `7400ff999b5e806b9b0392c6acc4fc0960586957e17cafe35191ab22d8984920` |
 | Weather Moon | [SVG](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Weather%20Moon/SVG/ic_fluent_weather_moon_24_regular.svg) | `7b8c77347c704ca3f76a5fed4865f9011caf4663d011850043067ca8ee490ee8` |
 | Weather Sunny | [SVG](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Weather%20Sunny/SVG/ic_fluent_weather_sunny_24_regular.svg) | `0ab79963a8c16c623980da51a0b2623be939b9ee167958123c11240adfcdbbaa` |
+| Full Screen Maximize | [SVG](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Full%20Screen%20Maximize/SVG/ic_fluent_full_screen_maximize_24_regular.svg) | `53b2e6174212279aca7172bad8813b060767ed553bdca00abc8cce824e6dee97` |
+| Full Screen Minimize | [SVG](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Full%20Screen%20Minimize/SVG/ic_fluent_full_screen_minimize_24_regular.svg) | `41dc7d7ddd0f65e9cf9ba0e2003782cdac4bc597795833695ebf6ebee7a66d69` |

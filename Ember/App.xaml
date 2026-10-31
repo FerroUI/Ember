@@ -6,100 +6,181 @@
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="EmberBackground" Color="#F5F5F2" />
-          <SolidColorBrush x:Key="EmberRail" Color="#EEEEEA" />
+          <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberLightAccentColor}" />
+          <StaticResource x:Key="AccentButtonBackground" ResourceKey="EmberAccentInk" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="{DynamicResource EmberLightAccentHover}" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="{DynamicResource EmberLightAccentPressed}" />
+          <SolidColorBrush x:Key="AccentButtonForeground" Color="White" />
+          <StaticResource x:Key="AccentButtonForegroundPointerOver" ResourceKey="AccentButtonForeground" />
+          <StaticResource x:Key="AccentButtonForegroundPressed" ResourceKey="AccentButtonForeground" />
+          <SolidColorBrush x:Key="EmberBackground" Color="#FAF8F5" />
+          <SolidColorBrush x:Key="EmberRail" Color="#F1EFEC" />
           <SolidColorBrush x:Key="EmberSurface" Color="#FFFFFF" />
           <SolidColorBrush x:Key="EmberCard" Color="#FFFFFF" />
-          <SolidColorBrush x:Key="EmberBorder" Color="#E3E5E7" />
-          <SolidColorBrush x:Key="EmberText" Color="#20252B" />
-          <SolidColorBrush x:Key="EmberMuted" Color="#66717D" />
-          <SolidColorBrush x:Key="EmberTint" Color="#FFF0E7" />
-          <SolidColorBrush x:Key="EmberCode" Color="#F2F4F6" />
+          <SolidColorBrush x:Key="EmberBorder" Color="#DEDCD8" />
+          <SolidColorBrush x:Key="EmberText" Color="#242321" />
+          <SolidColorBrush x:Key="EmberMuted" Color="#625D57" />
+          <SolidColorBrush x:Key="EmberTint" Color="#FBECE3" />
+          <SolidColorBrush x:Key="EmberCode" Color="#F1EEEB" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
-          <SolidColorBrush x:Key="EmberBackground" Color="#181B1F" />
-          <SolidColorBrush x:Key="EmberRail" Color="#14171B" />
-          <SolidColorBrush x:Key="EmberSurface" Color="#1D2025" />
-          <SolidColorBrush x:Key="EmberCard" Color="#23272D" />
-          <SolidColorBrush x:Key="EmberBorder" Color="#343B44" />
-          <SolidColorBrush x:Key="EmberText" Color="#F3F3EF" />
-          <SolidColorBrush x:Key="EmberMuted" Color="#A9B1BD" />
-          <SolidColorBrush x:Key="EmberTint" Color="#382A23" />
-          <SolidColorBrush x:Key="EmberCode" Color="#15191F" />
+          <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberDarkAccentColor}" />
+          <StaticResource x:Key="AccentButtonBackground" ResourceKey="EmberAccentInk" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="{DynamicResource EmberDarkAccentHover}" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="{DynamicResource EmberDarkAccentPressed}" />
+          <SolidColorBrush x:Key="AccentButtonForeground" Color="Black" />
+          <StaticResource x:Key="AccentButtonForegroundPointerOver" ResourceKey="AccentButtonForeground" />
+          <StaticResource x:Key="AccentButtonForegroundPressed" ResourceKey="AccentButtonForeground" />
+          <SolidColorBrush x:Key="EmberBackground" Color="#1A1B1D" />
+          <SolidColorBrush x:Key="EmberRail" Color="#17181A" />
+          <SolidColorBrush x:Key="EmberSurface" Color="#202123" />
+          <SolidColorBrush x:Key="EmberCard" Color="#242527" />
+          <SolidColorBrush x:Key="EmberBorder" Color="#393A3C" />
+          <SolidColorBrush x:Key="EmberText" Color="#F5F1EC" />
+          <SolidColorBrush x:Key="EmberMuted" Color="#B6B2AE" />
+          <SolidColorBrush x:Key="EmberTint" Color="#3A2D26" />
+          <SolidColorBrush x:Key="EmberCode" Color="#191A1C" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
       <ControlTheme x:Key="{x:Type controls:StoryCard}" TargetType="controls:StoryCard">
-        <Setter Property="Background" Value="{DynamicResource EmberCard}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource EmberBorder}" />
+        <Setter Property="Background" Value="{DynamicResource EmberSurface}" />
         <Setter Property="Foreground" Value="{DynamicResource EmberText}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="12" />
-        <Setter Property="Padding" Value="18,16" />
+        <Setter Property="Padding" Value="12,11" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-        <Setter Property="MinHeight" Value="142" />
+        <Setter Property="MinHeight" Value="44" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
           <ControlTemplate>
-            <Border Name="CardSurface" Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
-                    CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
-              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
-                <TextBlock Text="{TemplateBinding Domain}" FontSize="11" Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="1" Text="{TemplateBinding StatusLabel}" FontSize="10" Foreground="{DynamicResource SystemControlHighlightAccentBrush}" />
-                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{TemplateBinding Headline}" FontSize="17" FontWeight="SemiBold"
-                           LineHeight="24" TextWrapping="Wrap" MaxLines="4" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Row="2" Text="{TemplateBinding Metadata}" FontSize="11" Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
-                <Border Grid.Row="2" Grid.Column="1" Background="{DynamicResource EmberTint}" CornerRadius="5" Padding="7,3">
-                  <TextBlock Text="{TemplateBinding ScoreLabel}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource SystemControlHighlightAccentBrush}" />
-                </Border>
-              </Grid>
-            </Border>
+            <Grid>
+              <Border Name="CardSurface" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"
+                      BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="3">
+                  <TextBlock Name="Headline" Grid.ColumnSpan="2" Text="{TemplateBinding Headline}"
+                             FontSize="16" FontWeight="SemiBold" LineHeight="21" TextWrapping="Wrap"
+                             MaxLines="3" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Grid.Row="1" Text="{TemplateBinding Domain}" FontSize="12"
+                             Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Name="Status" Grid.Row="1" Grid.Column="1" Text="{TemplateBinding StatusLabel}"
+                             FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource EmberMuted}" VerticalAlignment="Center" />
+                  <TextBlock Grid.Row="2" Text="{TemplateBinding Metadata}" FontSize="12"
+                             Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Name="Score" Grid.Row="2" Grid.Column="1" Text="{TemplateBinding ScoreLabel}" IsVisible="False"
+                             FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource EmberMuted}" />
+                </Grid>
+              </Border>
+              <Border Name="SelectionMark" Width="3" Margin="0,8" HorizontalAlignment="Left" Background="Transparent" IsHitTestVisible="False" />
+              <Border Name="FocusRing" CornerRadius="4" BorderThickness="2" IsHitTestVisible="False" />
+            </Grid>
           </ControlTemplate>
         </Setter>
+        <Style Selector="^.has-score /template/ TextBlock#Score">
+          <Setter Property="IsVisible" Value="True" />
+        </Style>
+        <Style Selector="^.compact">
+          <Setter Property="Padding" Value="10,6" />
+        </Style>
+        <Style Selector="^.compact /template/ TextBlock#Headline">
+          <Setter Property="FontSize" Value="15" />
+          <Setter Property="LineHeight" Value="19" />
+        </Style>
+        <Style Selector="^.read /template/ TextBlock#Headline">
+          <Setter Property="FontWeight" Value="Normal" />
+          <Setter Property="Foreground" Value="{DynamicResource EmberMuted}" />
+        </Style>
+        <Style Selector="^.saved /template/ TextBlock#Status">
+          <Setter Property="Foreground" Value="{DynamicResource EmberAccentInk}" />
+        </Style>
         <Style Selector="^:pointerover /template/ Border#CardSurface">
-          <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+          <Setter Property="Background" Value="{DynamicResource EmberRail}" />
         </Style>
         <Style Selector="^.selected /template/ Border#CardSurface">
           <Setter Property="Background" Value="{DynamicResource EmberTint}" />
-          <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
         </Style>
-        <Style Selector="^:focus-visible /template/ Border#CardSurface">
-          <Setter Property="BorderThickness" Value="2" />
-          <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+        <Style Selector="^.selected /template/ Border#SelectionMark">
+          <Setter Property="Background" Value="{DynamicResource EmberAccentInk}" />
         </Style>
-        <Style Selector="^:pressed /template/ Border#CardSurface"><Setter Property="Opacity" Value="0.75" /></Style>
+        <Style Selector="^:pressed /template/ Border#CardSurface">
+          <Setter Property="Background" Value="{DynamicResource EmberBorder}" />
+        </Style>
+        <Style Selector="^:focus-visible /template/ Border#FocusRing">
+          <Setter Property="BorderBrush" Value="{DynamicResource EmberAccentInk}" />
+        </Style>
       </ControlTheme>
-      <ControlTheme x:Key="EmberNavButton" TargetType="Button">
+      <!-- A thread is a document. Its embedded commands provide their own interaction
+           feedback; hovering a paragraph must not tint the entire reading column. -->
+      <ControlTheme x:Key="EmberConversationRow" TargetType="ListBoxItem">
+        <Setter Property="KeyboardNavigation.TabNavigation" Value="Local" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+          <ControlTemplate>
+            <ContentPresenter Name="PART_ContentPresenter"
+                              TemplatedControl.IsTemplateFocusTarget="True"
+                              Background="Transparent"
+                              Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                              Foreground="{TemplateBinding Foreground}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" />
+          </ControlTemplate>
+        </Setter>
+      </ControlTheme>
+      <ControlTheme x:Key="EmberQuietButton" TargetType="Button">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource EmberMuted}" />
-        <Setter Property="MinHeight" Value="48" />
-        <Setter Property="HorizontalAlignment" Value="Stretch" />
-        <Setter Property="HorizontalContentAlignment" Value="Left" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="Padding" Value="14,10" />
+        <Setter Property="Foreground" Value="{DynamicResource EmberText}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="8,4" />
         <Setter Property="Template">
           <ControlTemplate>
             <ContentPresenter Name="PART_ContentPresenter" Background="{TemplateBinding Background}"
+                              Foreground="{TemplateBinding Foreground}" BorderThickness="2" BorderBrush="Transparent"
                               CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}"
-                              Content="{TemplateBinding Content}" HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                              Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                              RecognizesAccessKey="True" />
           </ControlTemplate>
         </Setter>
-        <Style Selector="^:pointerover /template/ ContentPresenter"><Setter Property="Background" Value="{DynamicResource EmberCard}" /></Style>
-        <Style Selector="^.active /template/ ContentPresenter"><Setter Property="Background" Value="{DynamicResource EmberTint}" /></Style>
-        <Style Selector="^.active"><Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}" /></Style>
-        <Style Selector="^:focus-visible /template/ ContentPresenter"><Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" /><Setter Property="BorderThickness" Value="2" /></Style>
+        <Style Selector="^:pointerover /template/ ContentPresenter">
+          <Setter Property="Background" Value="{DynamicResource EmberRail}" />
+        </Style>
+        <Style Selector="^.active /template/ ContentPresenter">
+          <Setter Property="Background" Value="{DynamicResource EmberTint}" />
+          <Setter Property="Foreground" Value="{DynamicResource EmberAccentInk}" />
+        </Style>
+        <Style Selector="^:pressed /template/ ContentPresenter">
+          <Setter Property="Background" Value="{DynamicResource EmberBorder}" />
+        </Style>
+        <Style Selector="^:focus-visible /template/ ContentPresenter">
+          <Setter Property="BorderBrush" Value="{DynamicResource EmberAccentInk}" />
+        </Style>
+        <Style Selector="^:disabled /template/ ContentPresenter">
+          <Setter Property="Opacity" Value="0.5" />
+        </Style>
       </ControlTheme>
     </ResourceDictionary>
   </Application.Resources>
   <Application.Styles>
+    <Style Selector="Border.current-find-result"><Setter Property="Background" Value="{DynamicResource EmberTint}" /></Style>
     <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="{DynamicResource EmberMuted}" /></Style>
     <Style Selector="TextBlock.eyebrow"><Setter Property="FontSize" Value="10" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="Foreground" Value="{DynamicResource EmberMuted}" /></Style>
     <Style Selector="Button"><Setter Property="MinHeight" Value="44" /><Setter Property="MinWidth" Value="44" /></Style>
-    <Style Selector="Button.icon-button"><Setter Property="Width" Value="44" /><Setter Property="Height" Value="44" /><Setter Property="Padding" Value="10" /></Style>
-    <Style Selector="Button.nav"><Setter Property="Theme" Value="{StaticResource EmberNavButton}" /></Style>
+    <Style Selector="Button.icon-button">
+      <Setter Property="Theme" Value="{StaticResource EmberQuietButton}" />
+      <Setter Property="Width" Value="44" /><Setter Property="Height" Value="44" /><Setter Property="Padding" Value="0" />
+    </Style>
+    <Style Selector="Button.quiet"><Setter Property="Theme" Value="{StaticResource EmberQuietButton}" /></Style>
+    <Style Selector="Button.nav">
+      <Setter Property="Theme" Value="{StaticResource EmberQuietButton}" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Border#NavigationRail Button.nav"><Setter Property="Padding" Value="10,2" /></Style>
+    <Style Selector="Border.compact-rail Button.nav"><Setter Property="Padding" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Center" /></Style>
+    <Style Selector="Border.compact-rail TextBlock.nav-caption"><Setter Property="IsVisible" Value="False" /></Style>
     <Style Selector="ListBox.reader-list"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /></Style>
-    <Style Selector="ListBox.reader-list ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0,0,0,10" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="{DynamicResource EmberText}" /></Style>
+    <Style Selector="ListBox.thread-list"><Setter Property="ItemContainerTheme" Value="{StaticResource EmberConversationRow}" /></Style>
+    <Style Selector="ListBox.reader-list ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="{DynamicResource EmberText}" /></Style>
     <Style Selector="TextBox"><Setter Property="MinHeight" Value="44" /></Style>
     <Style Selector="ComboBox"><Setter Property="MinHeight" Value="44" /></Style>
   </Application.Styles>
