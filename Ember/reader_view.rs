@@ -615,7 +615,18 @@ impl ReaderView {
         };
         self.label("FeedTitle").set_text(Some(title));
         self.label("FeedSummary").set_text(Some("Updating…"));
-        let state = self.state.borrow().clone();
+        let local_ids = match &route {
+            FeedRoute::Saved => self.state.borrow().saved_ids(),
+            FeedRoute::History => self.state.borrow().history_ids(),
+            FeedRoute::Hidden => self
+                .state
+                .borrow()
+                .items
+                .iter()
+                .filter_map(|(&id, item)| item.hidden.then_some(id))
+                .collect(),
+            _ => Vec::new(),
+        };
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
@@ -670,16 +681,8 @@ impl ReaderView {
                                 )
                             })
                     }
-                    local => {
-                        let ids = match local {
-                            FeedRoute::Saved => state.saved_ids(),
-                            FeedRoute::History => state.history_ids(),
-                            _ => state
-                                .items
-                                .iter()
-                                .filter_map(|(&id, entry)| entry.hidden.then_some(id))
-                                .collect(),
-                        };
+                    FeedRoute::Saved | FeedRoute::History | FeedRoute::Hidden => {
+                        let ids = local_ids;
                         let end = (offset + 30).min(ids.len());
                         let batch = repo
                             .load_items(
@@ -800,7 +803,7 @@ impl ReaderView {
             .collect()
     }
     fn render_stories(&self) {
-        let state = self.state.borrow().clone();
+        let state = self.state.borrow();
         let stories = self.visible_stories();
         let list = self.get_control::<ListBox>("Stories");
         if *self.rendered_stories.borrow() != stories {
@@ -1051,10 +1054,22 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
-        let count = thread.root.descendants.unwrap_or(thread.items.len() as u64);
-        let noun = if count == 1 { "comment" } else { "comments" };
-        self.label("DetailTitle")
-            .set_text(Some(&format!("{count} {noun}")));
+        let title = if thread.root.kind == Some(ember_core::ItemKind::Job) {
+            "Job listing".to_owned()
+        } else {
+            let count = thread.root.descendants.unwrap_or_else(|| {
+                thread
+                    .items
+                    .values()
+                    .filter(|item| {
+                        item.id != id && item.kind == Some(ember_core::ItemKind::Comment)
+                    })
+                    .count() as u64
+            });
+            let noun = if count == 1 { "comment" } else { "comments" };
+            format!("{count} {noun}")
+        };
+        self.label("DetailTitle").set_text(Some(&title));
         self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
         if let Some(warning) = thread.warning.as_deref() {
             self.status(warning);
@@ -1069,13 +1084,14 @@ impl ReaderView {
         if !matches!(*self.detail.borrow(), DetailRoute::Thread(_)) {
             return;
         }
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         if Some(thread.root.id) != self.selected.get() {
             return;
         }
-        let state = self.state.borrow().clone();
+        let state = self.state.borrow();
         let query = self.textbox("ThreadFind").text().unwrap_or_default();
         let target = self
             .pending_comment
@@ -1093,7 +1109,7 @@ impl ReaderView {
         });
         let weak = self.to_ref().downgrade();
         let control = crate::thread_view::build(
-            &thread,
+            thread,
             &state,
             &query,
             self.thread_sort.get(),
@@ -1103,6 +1119,8 @@ impl ReaderView {
                 }
             }),
         );
+        drop(state);
+        drop(snapshot);
         self.show_content(control.clone());
         if let Some(id) = anchor {
             crate::thread_view::restore_anchor(&control, id);
@@ -1116,7 +1134,8 @@ impl ReaderView {
         let DetailRoute::Thread(id) = route else {
             return;
         };
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         if thread.root.id != id {
@@ -1193,7 +1212,8 @@ impl ReaderView {
         }
     }
     fn toggle_collapse_all(&self) {
-        let Some(thread) = self.thread.borrow().clone() else {
+        let snapshot = self.thread.borrow();
+        let Some(thread) = snapshot.as_ref() else {
             return;
         };
         let mut state = self.state.borrow_mut();
@@ -1216,7 +1236,6 @@ impl ReaderView {
         self.changed();
         self.render_stories();
         self.update_save_button();
-        self.render_thread();
         self.status(if saved {
             "Added to Saved stories. Download the thread to keep all its comments offline."
         } else {
