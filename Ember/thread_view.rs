@@ -30,6 +30,7 @@ pub enum ThreadAction {
     ToggleCollapse(u64),
     ToggleAll,
     Share,
+    FocusReading,
     Hide,
     MuteDomain,
     Reply(u64),
@@ -54,11 +55,21 @@ struct ConversationRow {
     document: OnceCell<HtmlDocument>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FindMatch {
+    pub id: u64,
+    pub ordinal: usize,
+    pub total: usize,
+}
+
 #[derive(PartialEq)]
 struct ThreadAnchors {
     root: u64,
     indices: BTreeMap<u64, i32>,
     parents: BTreeMap<u64, u64>,
+    /// Only matches, in display order. Context ancestors remain in the ordinary row index.
+    matches: Vec<(i32, u64)>,
+    current_match: Rc<Cell<Option<FindMatch>>>,
 }
 
 /// Comment rows already own their item data. Keep only the header/footer payload here,
@@ -134,7 +145,11 @@ pub fn build(
         flatten_thread(snapshot, &options)
     } else {
         flatten_thread_with_match(snapshot, &options, |item, query| {
-            if item.author().to_lowercase().contains(query) {
+            if item
+                .by
+                .as_ref()
+                .is_some_and(|author| author.to_lowercase().contains(query))
+            {
                 return true;
             }
             let document = HtmlDocument::parse(item.text.as_deref().unwrap_or_default());
@@ -152,7 +167,11 @@ pub fn build(
         kind: RowKind::Header,
         document: OnceCell::new(),
     })];
+    let mut matches = Vec::new();
     for comment in comments {
+        if comment.matches_query {
+            matches.push((rows.len() as i32, comment.id));
+        }
         let document = matched_documents
             .remove(&comment.id)
             .map(OnceCell::from)
@@ -202,10 +221,13 @@ pub fn build(
             parents.entry(child).or_insert(item.id);
         }
     }
+    let current_match: Rc<Cell<Option<FindMatch>>> = Rc::default();
     list.set_tag(Some(Rc::new(ThreadAnchors {
         root: snapshot.root.id,
         indices,
         parents,
+        matches,
+        current_match: current_match.clone(),
     }) as BoxedValue));
     list.set_items_source(Some(ItemsSource::from_values(rows)));
     AutomationProperties::set_name(&list, Some("Hacker News conversation"));
@@ -238,14 +260,24 @@ pub fn build(
         move |row, _| {
             let control = match &row.kind {
                 RowKind::Header => header(&snapshot, &reading, sort, bulk_collapse, &on_action),
-                RowKind::Comment(comment) => comment_row(
-                    comment,
-                    &row.document,
-                    &snapshot.root,
-                    &reading,
-                    !query.is_empty(),
-                    &comment_actions,
-                ),
+                RowKind::Comment(comment) => {
+                    let control = comment_row(
+                        comment,
+                        &row.document,
+                        &snapshot.root,
+                        &reading,
+                        !query.is_empty(),
+                        &comment_actions,
+                    );
+                    if comment.matches_query {
+                        control.classes().add("find-result");
+                        mark_find_result(
+                            &control,
+                            current_match.get().filter(|m| m.id == comment.id),
+                        );
+                    }
+                    control
+                }
                 RowKind::Empty => empty(&snapshot, &query, &on_action),
                 RowKind::Footer => footer(&snapshot, &on_action),
             };
@@ -258,6 +290,71 @@ pub fn build(
         false,
     )));
     list.upcast()
+}
+
+/// Select or step through matching comments without rebuilding the list. The caller
+/// keeps the stable comment ID across refreshes and sort changes. A missing preferred
+/// result starts at the first match, or the last match when stepping backward.
+pub(crate) fn select_find_match(
+    control: &Control,
+    preferred: Option<u64>,
+    direction: i32,
+) -> Option<FindMatch> {
+    let list = conversation_list(control)?;
+    let tag = list.tag()?;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let total = anchors.matches.len();
+    if total == 0 {
+        return None;
+    }
+    let previous = preferred.and_then(|id| {
+        let index = anchors.indices.get(&id)?;
+        anchors
+            .matches
+            .binary_search_by_key(index, |&(index, _)| index)
+            .ok()
+    });
+    let index = match (previous, direction.signum()) {
+        (Some(0) | None, -1) => total - 1,
+        (Some(n), -1) => n - 1,
+        (Some(n), 1) => (n + 1) % total,
+        (Some(n), _) => n,
+        (None, _) => 0,
+    };
+    let (row, id) = anchors.matches[index];
+    let selected = FindMatch {
+        id,
+        ordinal: index + 1,
+        total,
+    };
+    if let Some(old) = anchors
+        .current_match
+        .replace(Some(selected))
+        .filter(|m| m.id != id)
+    {
+        update_realized_match(&list, anchors.matches[old.ordinal - 1].0, None);
+    }
+    update_realized_match(&list, row, Some(selected));
+    // The template reads current_match when a later scroll first realizes this row.
+    reveal_index(&list, row);
+    Some(selected)
+}
+
+fn update_realized_match(list: &ListBox, index: i32, result: Option<FindMatch>) {
+    if let Some(container) = list.container_from_index(index) {
+        if let Some(row) = container.get_visual_descendants().find_map(|node| {
+            node.cast::<Control>()
+                .filter(|c| c.classes().contains("find-result"))
+        }) {
+            mark_find_result(&row, result);
+        }
+    }
+}
+
+fn mark_find_result(row: &Control, result: Option<FindMatch>) {
+    row.classes().set("current-find-result", result.is_some());
+    let status = result.map(|m| format!("Search result {} of {}", m.ordinal, m.total));
+    AutomationProperties::set_item_status(row, status.as_deref());
 }
 
 /// The first comment intersecting the viewport, including a partially visible comment.
@@ -298,6 +395,10 @@ pub fn restore_anchor(control: &Control, id: u64) {
     let Some(index) = anchor_index(&list, id) else {
         return;
     };
+    reveal_index(&list, index);
+}
+
+fn reveal_index(list: &Ref<ListBox>, index: i32) {
     if list.is_loaded() {
         let weak = list.downgrade();
         Dispatcher::ui_thread().post_local(
@@ -450,6 +551,13 @@ fn header(
     ));
     let more = widgets::icon_button("More story actions", "more");
     let menu = MenuFlyout::new();
+    menu_action(
+        &menu,
+        "Focus reading",
+        "focus_reading",
+        ThreadAction::FocusReading,
+        actions,
+    );
     menu_action(
         &menu,
         "Open discussion on HN",
@@ -1164,6 +1272,92 @@ mod tests {
     }
 
     #[test]
+    fn find_cycles_actual_hits_and_keeps_ids_stable_across_sort_changes() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let root = HnItem {
+            id: 1,
+            kids: vec![2, 4, 5],
+            ..Default::default()
+        };
+        let comment = |id, text: &str| HnItem {
+            id,
+            text: Some(text.to_owned()),
+            time: Some(id),
+            ..Default::default()
+        };
+        let parent = HnItem {
+            kids: vec![3],
+            ..comment(2, "Context only")
+        };
+        let child = comment(3, "<b>Found</b> &amp; decoded");
+        let author = HnItem {
+            by: Some("founder".into()),
+            ..comment(4, "Author-only hit")
+        };
+        let hidden = HnItem {
+            dead: true,
+            ..comment(5, "Found in hidden text")
+        };
+        let snapshot = ThreadSnapshot {
+            root,
+            items: [parent, child, author, hidden]
+                .into_iter()
+                .map(|i| (i.id, i))
+                .collect(),
+            complete: true,
+            ..Default::default()
+        };
+        let mut state = ReaderState::default();
+        state.items.entry(1).or_default().collapsed.insert(2);
+        let view = |q: &str, sort| build(&snapshot, &state, q, sort, Rc::new(|_| {}));
+        let results = view("found", ThreadSort::Ranked);
+        let first = FindMatch {
+            id: 3,
+            ordinal: 1,
+            total: 2,
+        };
+        let last = FindMatch {
+            id: 4,
+            ordinal: 2,
+            total: 2,
+        };
+        assert_eq!(select_find_match(&results, None, 0), Some(first));
+        assert_eq!(select_find_match(&results, Some(3), -1), Some(last));
+        assert_eq!(select_find_match(&results, Some(4), 1), Some(first));
+        assert_eq!(
+            select_find_match(&results, Some(2), 0),
+            Some(first),
+            "retained ancestors are not hits"
+        );
+        let reordered = view("found", ThreadSort::Newest);
+        assert_eq!(
+            select_find_match(&reordered, Some(3), 0),
+            Some(FindMatch {
+                ordinal: 2,
+                ..first
+            })
+        );
+        assert_eq!(
+            select_find_match(&view("absent", ThreadSort::Ranked), None, 0),
+            None
+        );
+        assert_eq!(
+            select_find_match(&view("deleted", ThreadSort::Ranked), None, 0),
+            None,
+            "an absent author has no visible text to match"
+        );
+        assert_eq!(
+            select_find_match(&view("", ThreadSort::Ranked), None, 0),
+            None
+        );
+        assert!(
+            state.items[&1].collapsed.contains(&2),
+            "finding a hidden descendant must not change the saved collapse state"
+        );
+    }
+
+    #[test]
     fn collapsed_deleted_and_dead_comments_do_not_expose_retained_html() {
         let clock = Rc::new(TestGlobalClock::default());
         let _application = UnitTestApplication::start(sample_testing::services(clock));
@@ -1414,6 +1608,43 @@ mod tests {
             shell.settle();
         }
         assert_eq!(viewport_anchor(&replacement), Some(2010));
+        let filtered = build(
+            &snapshot,
+            &ReaderState::default(),
+            "native",
+            ThreadSort::Ranked,
+            Rc::new(|_| {}),
+        );
+        let list = filtered.clone().cast::<ListBox>().unwrap();
+        // Set the cursor before attachment. Its row has never been realized.
+        assert_eq!(
+            select_find_match(&filtered, Some(2180), 0).unwrap().ordinal,
+            180
+        );
+        window.set_content(Some(Control::boxed(&filtered)));
+        for _ in 0..4 {
+            shell.settle();
+        }
+        for (step, expected) in [(0, 2180), (1, 2181), (-1, 2180)] {
+            let from = if step < 0 { 2181 } else { 2180 };
+            let found = select_find_match(&filtered, Some(from), step).unwrap();
+            for _ in 0..4 {
+                shell.settle();
+            }
+            assert_eq!(found.id, expected);
+            assert_eq!(viewport_anchor(&filtered), Some(expected));
+            let active: Vec<_> = list
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<Border>())
+                .filter(|row| row.classes().contains("current-find-result"))
+                .collect();
+            assert_eq!(active.len(), 1);
+            assert_eq!(
+                AutomationProperties::get_item_status(&active[0]),
+                Some(format!("Search result {} of 200", found.ordinal))
+            );
+            assert!(list.get_realized_containers().len() < 50);
+        }
         assert!(shell.take_binding_reports().is_empty());
         window.close();
     }
