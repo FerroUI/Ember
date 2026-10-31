@@ -50,6 +50,14 @@ enum DetailRoute {
     More,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceLayout {
+    Phone,
+    CompactRail,
+    LabeledRail,
+    Reading,
+}
+
 ferroui_base::ferro_thread_local! {
     static ACTIVE: RefCell<Option<WeakRef<ReaderView>>> = RefCell::new(None);
     static LOCATION_CHANGED: RefCell<Option<Rc<dyn Fn(Option<u64>)>>> = RefCell::new(None);
@@ -112,7 +120,8 @@ pub struct ReaderView {
     thread_budget: Cell<usize>,
     thread_sort: Cell<ThreadSort>,
     find_revision: Cell<u64>,
-    layout_mode: Cell<u8>,
+    focus_reading: Cell<bool>,
+    layout_mode: Cell<Option<WorkspaceLayout>>,
     back_handler: RefCell<Option<(WeakRef<TopLevel>, RoutedEventHandlerToken)>>,
 }
 ferro_class!(ReaderView: UserControl);
@@ -172,7 +181,8 @@ impl ReaderView {
             thread_budget: Cell::new(120),
             thread_sort: Cell::new(ThreadSort::Ranked),
             find_revision: Cell::new(0),
-            layout_mode: Cell::new(255),
+            focus_reading: Cell::new(false),
+            layout_mode: Cell::new(None),
             back_handler: RefCell::new(None),
         }
     }
@@ -220,6 +230,7 @@ impl ReaderView {
             ("CompactSearch", "search"),
             ("ThreadRefresh", "refresh"),
             ("FindButton", "search"),
+            ("FocusButton", "focus_reading"),
             ("CloseFind", "dismiss"),
             ("DismissStatus", "dismiss"),
             ("RefreshButton", "refresh"),
@@ -261,6 +272,9 @@ impl ReaderView {
         });
         self.on("FindButton", |v| {
             v.set_find_open(!v.get_control::<Border>("ThreadTools").is_visible())
+        });
+        self.on("FocusButton", |v| {
+            v.set_focus_reading(!v.focus_reading.get())
         });
         self.on("CloseFind", |v| v.set_find_open(false));
         self.on("RetryButton", |v| v.refresh());
@@ -381,6 +395,9 @@ impl ReaderView {
                     return;
                 }
                 match e.key {
+                    Key::F if matches!(*v.detail.borrow(), DetailRoute::Thread(_)) => {
+                        v.set_focus_reading(!v.focus_reading.get())
+                    }
                     Key::R => v.refresh(),
                     Key::S => {
                         if let DetailRoute::Thread(id) = *v.detail.borrow() {
@@ -1188,6 +1205,7 @@ impl ReaderView {
                     self.render_thread();
                 }
             }
+            ThreadAction::FocusReading => self.set_focus_reading(true),
             ThreadAction::Share => {
                 if let Some(id) = self.selected.get() {
                     self.copy_text(&ember_core::item_url(id), "Discussion link copied.");
@@ -1362,6 +1380,9 @@ impl ReaderView {
     }
     fn configure_detail(&self) {
         let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
+        if !thread {
+            self.focus_reading.set(false);
+        }
         self.get_control::<Border>("ThreadTools")
             .set_is_visible(false);
         self.button("FindButton").classes().set("active", false);
@@ -1411,6 +1432,14 @@ impl ReaderView {
         }
     }
     fn go_back(&self) {
+        if self.get_control::<Border>("ThreadTools").is_visible() {
+            self.set_find_open(false);
+            return;
+        }
+        if self.focus_reading.get() {
+            self.set_focus_reading(false);
+            return;
+        }
         let route = self.history.borrow_mut().pop();
         self.remember_thread();
         // Restoring a route must not put the outgoing page back onto the history stack.
@@ -1818,55 +1847,92 @@ impl ReaderView {
         self.get_control::<ListBox>("Stories")
             .scroll_into_view(index);
     }
+    fn set_focus_reading(&self, enabled: bool) {
+        if !matches!(*self.detail.borrow(), DetailRoute::Thread(_))
+            || self.focus_reading.replace(enabled) == enabled
+        {
+            return;
+        }
+        let anchor = self
+            .thread_control
+            .borrow()
+            .as_ref()
+            .and_then(|c| crate::thread_view::viewport_anchor(c));
+        self.apply_layout();
+        if let (Some(anchor), Some(thread)) = (anchor, self.thread_control.borrow().as_ref()) {
+            crate::thread_view::restore_anchor(thread, anchor);
+        }
+        let focus = self.button("FocusButton");
+        if focus.is_effectively_visible() {
+            focus.focus();
+        } else {
+            self.button("BackButton").focus();
+        }
+    }
     fn apply_layout(&self) {
         let width = if self.bounds().width > 0.0 {
             self.bounds().width
         } else {
             1440.0
         };
-        let mode = if width < 760.0 {
-            0
+        let mode = if self.focus_reading.get() {
+            WorkspaceLayout::Reading
+        } else if width < 760.0 {
+            WorkspaceLayout::Phone
         } else if width < 1120.0 {
-            1
+            WorkspaceLayout::CompactRail
         } else {
-            2
+            WorkspaceLayout::LabeledRail
         };
+        let phone = mode == WorkspaceLayout::Phone;
+        let reading = mode == WorkspaceLayout::Reading;
+        let split = !phone && !reading;
         let detail = *self.detail.borrow() != DetailRoute::Welcome;
+        let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
         self.get_control::<Border>("NavigationRail")
-            .set_is_visible(mode > 0);
+            .set_is_visible(split);
         self.get_control::<Border>("BottomNavigation")
-            .set_is_visible(mode == 0);
+            .set_is_visible(phone);
         self.get_control::<Border>("FeedPane")
-            .set_is_visible(mode > 0 || !detail);
+            .set_is_visible(split || (phone && !detail));
         self.get_control::<Border>("DetailPane")
-            .set_is_visible(mode > 0 || detail);
+            .set_is_visible(split || detail);
         self.get_control::<Border>("Masthead")
-            .set_is_visible(mode > 0 || !detail);
-        self.button("ThreadRefresh")
-            .set_is_visible(mode == 0 && matches!(*self.detail.borrow(), DetailRoute::Thread(_)));
+            .set_is_visible(split || (phone && !detail));
+        self.button("ThreadRefresh").set_is_visible(phone && thread);
+        self.button("FocusButton").set_is_visible(!phone && thread);
         self.get_control::<Border>("SearchHost")
-            .set_is_visible(mode == 2);
-        self.button("CompactSearch").set_is_visible(mode == 1);
-        self.label("BrandSubtitle").set_is_visible(mode > 0);
-        if self.layout_mode.replace(mode) == mode {
+            .set_is_visible(mode == WorkspaceLayout::LabeledRail);
+        self.button("CompactSearch")
+            .set_is_visible(mode == WorkspaceLayout::CompactRail);
+        self.label("BrandSubtitle").set_is_visible(split);
+        if self.layout_mode.replace(Some(mode)) == Some(mode) {
             return;
         }
-        let grid = self.get_control::<Grid>("Workspace");
-        grid.set_column_definitions(
-            ColumnDefinitions::parse(if mode == 0 {
-                "0,*,0"
-            } else if mode == 1 {
-                "60,290,*"
-            } else {
-                "172,350,*"
-            })
-            .expect("static columns"),
-        );
+        let columns = match mode {
+            WorkspaceLayout::Phone | WorkspaceLayout::Reading => "0,*,0",
+            WorkspaceLayout::CompactRail => "60,290,*",
+            WorkspaceLayout::LabeledRail => "172,350,*",
+        };
+        self.get_control::<Grid>("Workspace")
+            .set_column_definitions(ColumnDefinitions::parse(columns).expect("workspace columns"));
         Grid::set_column(
             &self.get_control::<Border>("DetailPane"),
-            if mode == 0 { 1 } else { 2 },
+            if split { 2 } else { 1 },
         );
-        self.populate_navigation(mode == 1);
+        self.get_control::<Grid>("ReaderColumn")
+            .set_max_width(if reading { 820.0 } else { f64::INFINITY });
+        let focus = self.button("FocusButton");
+        let (label, icon) = if reading {
+            ("Exit focus reading", "exit_focus")
+        } else {
+            ("Focus reading", "focus_reading")
+        };
+        focus.set_content(Some(Control::boxed(crate::icons::icon(icon))));
+        focus.classes().set("active", reading);
+        AutomationProperties::set_name(&focus, Some(label));
+        ToolTip::set_tip(&focus, Some(Rc::new(format!("{label} (F)")) as BoxedValue));
+        self.populate_navigation(mode == WorkspaceLayout::CompactRail);
         self.update_navigation();
     }
     fn update_navigation(&self) {

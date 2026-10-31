@@ -68,7 +68,7 @@
           </Grid>
         </Border>
         <Border x:Name="DetailPane" Grid.Column="2" Background="{DynamicResource EmberSurface}">
-          <Grid RowDefinitions="Auto,Auto,*">
+          <Grid x:Name="ReaderColumn" RowDefinitions="Auto,Auto,*">
             <Border x:Name="DetailHeader" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource EmberBorder}" Padding="4,2">
               <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="1">
                 <Button x:Name="BackButton" Classes="icon-button" AutomationProperties.Name="Back" ToolTip.Tip="Back (Escape)" />
@@ -79,6 +79,7 @@
                 <Button x:Name="FindButton" Grid.Column="2" Classes="icon-button" IsVisible="False" ToolTip.Tip="Find in discussion (Ctrl+F)" AutomationProperties.Name="Find in discussion" />
                 <Button x:Name="DownloadButton" Grid.Column="3" Classes="icon-button" IsVisible="False" ToolTip.Tip="Download for offline reading" AutomationProperties.Name="Download thread" />
                 <Button x:Name="SaveButton" Grid.Column="4" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Save story" ToolTip.Tip="Save story (S)" />
+                <Button x:Name="FocusButton" Grid.Column="5" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Focus reading" ToolTip.Tip="Focus reading (F)" />
                 <Button x:Name="ThreadRefresh" Grid.Column="5" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Refresh discussion" ToolTip.Tip="Refresh discussion" />
               </Grid>
             </Border>
