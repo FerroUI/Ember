@@ -18,7 +18,7 @@ const fixtures = {
     103: { id: 103, type: "story", title: "Ask HN: What have you learned by building something slowly?", by: "curious", time: 1792567200, score: 142, descendants: 0, text: "<p>What did the process teach you?</p>" },
     201: { id: 201, type: "comment", by: "reader", parent: 101, time: 1792573800, kids: [202], text: "<p>Small details make a <b>meaningful difference</b>. A native reading experience feels wonderful.</p><p>See <a href=\"https://example.org/details\">the design notes</a>.</p>" },
     202: { id: 202, type: "comment", by: "maker", parent: 201, time: 1792574000, text: "<p>Thank you! Here is the tiny core:</p><pre><code>fn main() {\n    println!(\"Stay curious.\");\n}</code></pre>" },
-    203: { id: 203, type: "comment", by: "engineer", parent: 101, time: 1792574400, text: "<blockquote>Make the important things easy.</blockquote><p>Offline reading is a feature I use every day.</p><script>globalThis.__emberUnsafeHtml = true</script>" },
+    203: { id: 203, type: "comment", by: "engineer", parent: 101, time: 1792574400, text: "<blockquote>Make the important things easy.</blockquote><p>I keep the design notes available offline.</p><script>globalThis.__emberUnsafeHtml = true</script>" },
 };
 const initScript = `(() => {
     const original = globalThis.fetch.bind(globalThis);
@@ -116,9 +116,18 @@ await run([
             await page.waitFor("location.search.includes('item=101')");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             assert(!(await page.evaluate("globalThis.__emberUnsafeHtml === true")), "HN content executed script");
+            await byName(page, "FocusButton");
+            assert(!(await state(page)).elements.some(e => e.name === "NavTop"), "The feed rail remains visible in focus reading");
+            await byAutomation(page, "Exit focus reading");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop')");
             await byName(page, "FindButton");
             await byAutomation(page, "Find in thread");
             await page.type("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            await page.press("Enter");
+            await waitText(page, "2 of 2 matching comments");
+            await page.press("Enter", ["shift"]);
+            await waitText(page, "1 of 2 matching comments");
             await page.press("Escape");
             assert(!(await state(page)).elements.some(e => e.name === "ThreadFind"), "Escape should close find without leaving the discussion");
             const shot = await page.screenshot(path.join(captures, "desktop-thread.png"));
@@ -147,6 +156,12 @@ await run([
             assert(headline, "The first story has no touch target");
             const fingerX = Math.min(screen.width - 35, headline.x + headline.width - 15);
             const fingerY = headline.y + headline.height / 2;
+            await touchDrag(page, fingerX - 180, fingerY, fingerX, fingerY);
+            await waitText(page, "Story hidden.");
+            assert(!(await state(page)).elements.some(element => element.text === title), "Hidden headline remained in the feed");
+            await byName(page, "UndoStory");
+            await waitText(page, title);
+            await byName(page, "DismissStatus");
             await touchDrag(page, fingerX, fingerY, fingerX - 180, fingerY);
             await waitText(page, "SAVED");
             assert(!(await page.evaluate("new URL(location.href).searchParams.has('item')")), "Swiping a card also opened its discussion");
@@ -161,6 +176,10 @@ await run([
             await byText(page, title);
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SaveButton')");
             await byName(page, "SaveButton");
+            await waitText(page, "Removed from Saved stories.");
+            await byName(page, "UndoStory");
+            await waitText(page, "Change undone.");
+            await byAutomation(page, "Remove saved story");
             await waitText(page, "Removed from Saved stories.");
             await byName(page, "SaveButton");
             await waitText(page, "Added to Saved stories. Download the thread to keep all its comments offline.");
