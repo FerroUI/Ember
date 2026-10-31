@@ -4,6 +4,8 @@ use crate::widgets::{
 };
 use ember_core::{validate_username, SearchKind, SearchQuery, SearchSort};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
+use ferroui_base::layout::HorizontalAlignment;
+use ferroui_base::media::TextTrimming;
 use ferroui_base::utilities::DateTime;
 use ferroui_base::{Ref, Thickness};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
@@ -148,6 +150,13 @@ pub fn build(
         for term in recent_searches.iter().take(5) {
             let input = words.downgrade();
             let suggestion = button(term);
+            suggestion.classes().add("quiet");
+            suggestion.set_horizontal_alignment(HorizontalAlignment::Stretch);
+            suggestion.set_horizontal_content_alignment(HorizontalAlignment::Left);
+            let title = text(term, 13.0, false);
+            title.set_max_lines(1);
+            title.set_text_trimming(<dyn TextTrimming>::character_ellipsis());
+            suggestion.set_content(Some(Control::boxed(title)));
             let term = term.clone();
             suggestion.click(move |_, _| {
                 if let Some(input) = input.upgrade() {
@@ -286,8 +295,11 @@ fn bind_submit(scope: &StackPanel, button: &Button, submit: impl Fn() + 'static)
         move |_, e: &KeyEventArgs| {
             if e.key == Key::Enter
                 && e.key_modifiers == KeyModifiers::empty()
-                && e.source()
-                    .is_some_and(|source| source.cast::<TextBox>().is_some())
+                && e.source().is_some_and(|source| {
+                    source
+                        .cast::<TextBox>()
+                        .is_some_and(|input| !input.is_composing_text())
+                })
             {
                 e.set_handled(true);
                 submit();
@@ -343,9 +355,10 @@ fn parse_date(value: &str) -> Result<Option<u64>, String> {
     }
     let invalid = || "Use a valid date in YYYY-MM-DD format, from 1970 onward.".to_owned();
     if value.len() != 10
-        || !value.is_ascii()
-        || value.as_bytes()[4] != b'-'
-        || value.as_bytes()[7] != b'-'
+        || !value.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        })
     {
         return Err(invalid());
     }
@@ -482,6 +495,7 @@ mod tests {
         assert!(parse_date("1969-12-31").is_err());
         assert!(parse_date("2024-13-01").is_err());
         assert!(parse_date("2024-2-03").is_err());
+        assert!(parse_date("2024-+2-03").is_err());
         let leap = parse_date("2024-02-29").unwrap();
         assert_eq!(format_date(leap), "2024-02-29");
         assert_eq!(parse_date(" ").unwrap(), None);

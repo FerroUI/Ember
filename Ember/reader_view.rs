@@ -301,7 +301,10 @@ impl ReaderView {
             InputElement::key_down_event(),
             move |_, e: &KeyEventArgs| {
                 if e.key == Key::Enter {
-                    if let Some(v) = weak.upgrade() {
+                    if let Some(v) = weak
+                        .upgrade()
+                        .filter(|v| !v.textbox("SearchBox").is_composing_text())
+                    {
                         v.submit_quick_search();
                         e.set_handled(true);
                     }
