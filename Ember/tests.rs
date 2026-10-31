@@ -601,6 +601,25 @@ fn tablet_search_and_phone_find_remain_reachable_across_resize() {
     click(&shell, &window, &view.get_control::<Button>("CloseFind"));
     assert!(!find.is_effectively_visible());
     assert!(find.text().unwrap_or_default().is_empty());
+    let nav = view.get_control::<Button>("NavTop");
+    let original_content = nav.content().unwrap();
+    for width in [700.0, 760.0, 1024.0, 1120.0, 390.0] {
+        window.set_width(width);
+        shell.settle();
+        assert!(Rc::ptr_eq(&original_content, &nav.content().unwrap()));
+        assert_eq!(nav.is_effectively_visible(), width >= 760.0);
+        assert!(view
+            .get_control::<Button>("SaveButton")
+            .is_effectively_visible());
+        if width >= 760.0 {
+            let caption = nav
+                .get_visual_descendants()
+                .filter_map(|v| v.cast::<TextBlock>())
+                .find(|v| v.classes().contains("nav-caption"))
+                .expect("retained rail caption");
+            assert_eq!(caption.is_effectively_visible(), width >= 1120.0);
+        }
+    }
     click(&shell, &window, &view.get_control::<Button>("BackButton"));
     assert!(view
         .get_control::<ferroui_controls::Border>("FeedPane")
