@@ -20,10 +20,8 @@ rendered by Skia/HarfBuzz through the native test host.
 [Dark desktop](images/ember-desktop-dark.png) ·
 [Phone feed](images/ember-phone-dark.png) ·
 [Custom tablet theme](images/ember-tablet-custom.png) ·
-[Phone discussion in the browser](images/ember-phone-comments.png)
+[Phone discussion](images/ember-phone-comments.png)
 
-The phone discussion capture comes from the compiled WebAssembly application in
-Chrome, using the same reader controls and deterministic API fixtures.
 
 ## Reading and discovery
 
