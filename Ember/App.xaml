@@ -7,6 +7,12 @@
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
           <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberLightAccentColor}" />
+          <StaticResource x:Key="AccentButtonBackground" ResourceKey="EmberAccentInk" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="{DynamicResource EmberLightAccentHover}" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="{DynamicResource EmberLightAccentPressed}" />
+          <SolidColorBrush x:Key="AccentButtonForeground" Color="White" />
+          <StaticResource x:Key="AccentButtonForegroundPointerOver" ResourceKey="AccentButtonForeground" />
+          <StaticResource x:Key="AccentButtonForegroundPressed" ResourceKey="AccentButtonForeground" />
           <SolidColorBrush x:Key="EmberBackground" Color="#FAF8F5" />
           <SolidColorBrush x:Key="EmberRail" Color="#F1EFEC" />
           <SolidColorBrush x:Key="EmberSurface" Color="#FFFFFF" />
@@ -19,6 +25,12 @@
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="EmberAccentInk" Color="{DynamicResource EmberDarkAccentColor}" />
+          <StaticResource x:Key="AccentButtonBackground" ResourceKey="EmberAccentInk" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="{DynamicResource EmberDarkAccentHover}" />
+          <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="{DynamicResource EmberDarkAccentPressed}" />
+          <SolidColorBrush x:Key="AccentButtonForeground" Color="Black" />
+          <StaticResource x:Key="AccentButtonForegroundPointerOver" ResourceKey="AccentButtonForeground" />
+          <StaticResource x:Key="AccentButtonForegroundPressed" ResourceKey="AccentButtonForeground" />
           <SolidColorBrush x:Key="EmberBackground" Color="#1A1B1D" />
           <SolidColorBrush x:Key="EmberRail" Color="#17181A" />
           <SolidColorBrush x:Key="EmberSurface" Color="#202123" />

@@ -13,21 +13,29 @@ pub(crate) fn set_accent(theme: &WinUITheme, hex: &str) {
     let (d1, d2, d3, l1, l2, l3) = SystemAccentColors::calculate_accent_shades(accent);
     // Small accent labels and selection indicators share one ink per theme.
     // Use the lowest-contrast reading surface in each built-in palette.
-    for (key, surface, text) in [
+    for (keys, surface, ink) in [
         (
-            "EmberLightAccentColor",
+            [
+                "EmberLightAccentColor",
+                "EmberLightAccentHover",
+                "EmberLightAccentPressed",
+            ],
             Color::from_rgb(232, 227, 222),
             Color::from_rgb(0, 0, 0),
         ),
         (
-            "EmberDarkAccentColor",
+            [
+                "EmberDarkAccentColor",
+                "EmberDarkAccentHover",
+                "EmberDarkAccentPressed",
+            ],
             Color::from_rgb(63, 54, 49),
             Color::from_rgb(255, 255, 255),
         ),
     ] {
-        theme
-            .resources()
-            .set(key, Some(Rc::new(readable_ink(accent, text, &[surface]))));
+        for (key, color) in keys.into_iter().zip(accent_states(accent, surface, ink)) {
+            theme.resources().set(key, Some(Rc::new(color)));
+        }
     }
     let keys = [
         SystemAccentColors::ACCENT_KEY,
@@ -137,6 +145,23 @@ fn custom_palette(background: Color, accent: Color) -> CustomPalette {
     }
 }
 
+// The resting fill doubles as accent text on the reading surfaces. Hover and
+// press use opaque shades so their label contrast holds over any custom canvas.
+fn accent_states(accent: Color, surface: Color, ink: Color) -> [Color; 3] {
+    let rest = readable_ink(accent, ink, &[surface]);
+    // Make states distinct even for an accent at either end of the tonal range.
+    let toward = if contrast(rest, surface) >= 9.0 {
+        surface
+    } else {
+        ink
+    };
+    [
+        rest,
+        safe_surface(rest, toward, 0.10, surface),
+        safe_surface(rest, toward, 0.20, surface),
+    ]
+}
+
 fn readable_ink(preferred: Color, fallback: Color, surfaces: &[Color]) -> Color {
     for step in 0..=32 {
         let candidate = blend(preferred, fallback, step as f64 / 32.0);
@@ -183,6 +208,30 @@ fn contrast(a: Color, b: Color) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn primary_actions_keep_contrast_and_distinct_pointer_states_for_any_accent() {
+        let white = Color::from_rgb(255, 255, 255);
+        let black = Color::from_rgb(0, 0, 0);
+        for (surface, ink, label) in [
+            (Color::from_rgb(232, 227, 222), black, white),
+            (Color::from_rgb(63, 54, 49), white, black),
+        ] {
+            for r in (0..=255).step_by(17) {
+                for g in (0..=255).step_by(17) {
+                    for b in (0..=255).step_by(17) {
+                        let [normal, hover, pressed] =
+                            accent_states(Color::from_rgb(r, g, b), surface, ink);
+                        assert_ne!(normal, hover);
+                        assert_ne!(hover, pressed);
+                        for fill in [normal, hover, pressed] {
+                            assert!(contrast(label, fill) >= 4.5);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn custom_palettes_keep_readable_body_and_secondary_text() {
         for hex in [

@@ -197,6 +197,7 @@ pub(crate) fn icon_button(label: &str, icon: &str) -> Ref<Button> {
 pub(crate) fn action(label: &str, icon: &str, invoke: impl Fn() + 'static) -> Ref<Button> {
     let button = Button::new();
     button.set_min_height(44.0);
+    button.set_horizontal_content_alignment(HorizontalAlignment::Left);
     button.classes().add("quiet");
     button.set_content(Some(Control::boxed(&nav_content(
         icon, label, false, false,
