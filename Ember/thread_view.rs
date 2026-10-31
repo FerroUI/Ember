@@ -28,6 +28,7 @@ pub enum ThreadAction {
     OpenUrl(String),
     Profile(String),
     ToggleCollapse(u64),
+    ToggleAll,
     Share,
     Hide,
     MuteDomain,
@@ -215,6 +216,8 @@ pub fn build(
         show_dead: state.preferences.show_dead,
         typography: render_options(state),
     };
+    let bulk_collapse = (query.is_empty() && !snapshot.root.kids.is_empty())
+        .then_some(!options.collapsed.is_empty());
     let query = query.to_owned();
     let weak_list = list.downgrade();
     let comment_actions: Rc<dyn Fn(ThreadAction)> = {
@@ -234,7 +237,7 @@ pub fn build(
     list.set_item_template(Some(FuncDataTemplate::for_type::<Rc<ConversationRow>>(
         move |row, _| {
             let control = match &row.kind {
-                RowKind::Header => header(&snapshot, &reading, sort, &on_action),
+                RowKind::Header => header(&snapshot, &reading, sort, bulk_collapse, &on_action),
                 RowKind::Comment(comment) => comment_row(
                     comment,
                     &row.document,
@@ -367,6 +370,7 @@ fn header(
     snapshot: &ThreadContext,
     reading: &ReadingContext,
     sort: ThreadSort,
+    bulk_collapse: Option<bool>,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let story = &snapshot.root;
@@ -554,7 +558,7 @@ fn header(
     sort_picker.set_min_width(128.0);
     AutomationProperties::set_name(&sort_picker, Some("Comment sort order"));
     let weak = sort_picker.downgrade();
-    let actions = actions.clone();
+    let sort_action = actions.clone();
     sort_picker.selection_changed(move |_, _| {
         if let Some(picker) = weak.upgrade() {
             let value = match picker.selected_index() {
@@ -562,10 +566,20 @@ fn header(
                 2 => ThreadSort::Oldest,
                 _ => ThreadSort::Ranked,
             };
-            actions(ThreadAction::Sort(value));
+            sort_action(ThreadAction::Sort(value));
         }
     });
     sort_row.children().add(sort_picker);
+    if let Some(expand) = bulk_collapse {
+        let (label, icon) = if expand {
+            ("Expand all replies", "chevron_down")
+        } else {
+            ("Collapse all replies", "collapse")
+        };
+        sort_row
+            .children()
+            .add(icon_action(label, icon, ThreadAction::ToggleAll, actions));
+    }
     body.children().add(sort_row);
     if snapshot.stale {
         body.children().add(muted(
@@ -1038,6 +1052,7 @@ mod tests {
             &ThreadContext::from(&snapshot),
             &reading,
             ThreadSort::Ranked,
+            None,
             &actions,
         );
         let more = header

@@ -226,7 +226,6 @@ impl ReaderView {
             ("ThemeButton", "settings"),
             ("BackButton", "back"),
             ("SaveButton", "bookmark"),
-            ("CollapseButton", "collapse"),
             ("DownloadButton", "download"),
         ] {
             self.button(name)
@@ -276,7 +275,6 @@ impl ReaderView {
                 v.toggle_save(id);
             }
         });
-        self.on("CollapseButton", |v| v.toggle_collapse_all());
         self.on("DownloadButton", |v| v.download());
         self.on("DismissStatus", |v| {
             v.get_control::<Border>("StatusBar").set_is_visible(false)
@@ -1177,6 +1175,7 @@ impl ReaderView {
         match action {
             ThreadAction::OpenUrl(url) => self.open_url(&url),
             ThreadAction::Profile(user) => self.show_profile(user),
+            ThreadAction::ToggleAll => self.toggle_collapse_all(),
             ThreadAction::ToggleCollapse(id) => {
                 if let Some(root) = self.selected.get() {
                     let mut state = self.state.borrow_mut();
