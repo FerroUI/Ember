@@ -1,14 +1,14 @@
 //! The virtualized native conversation surface. Only realized rows create rich-text controls.
 
-use crate::widgets::{bind_resource, muted, text as label};
+use crate::widgets::{self, bind_resource, muted, text as label};
 use ember_content::{HtmlDocument, RenderOptions};
 use ember_core::{
-    flatten_thread, flatten_thread_with_match, relative_time, HnItem, ReaderState, ThreadOptions,
-    ThreadRow, ThreadSnapshot, ThreadSort,
+    flatten_thread, flatten_thread_with_match, relative_time, HnItem, ItemKind, ReaderState,
+    ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
 };
 use ferroui_base::controls::ResourceKey;
 use ferroui_base::layout::{HorizontalAlignment, Orientation, VerticalAlignment};
-use ferroui_base::media::{Color, FontWeight, IBrush, SolidColorBrush};
+use ferroui_base::media::{FontWeight, IBrush};
 use ferroui_base::metadata::from_markup_value;
 use ferroui_base::threading::{Dispatcher, DispatcherPriority};
 use ferroui_base::{BoxedValue, CornerRadius, Point, Ref, Thickness, Vector};
@@ -17,7 +17,7 @@ use ferroui_controls::primitives::ScrollBarVisibility;
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
     Application, Border, Button, ColumnDefinitions, ComboBox, Control, Grid, ItemsSource, ListBox,
-    ProgressBar, ScrollViewer, StackPanel, TextBlock, WrapPanel,
+    MenuFlyout, MenuItem, ProgressBar, ScrollViewer, StackPanel, TextBlock, ToolTip, WrapPanel,
 };
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +28,6 @@ pub enum ThreadAction {
     OpenUrl(String),
     Profile(String),
     ToggleCollapse(u64),
-    Save,
     Share,
     Hide,
     MuteDomain,
@@ -97,6 +96,14 @@ impl From<&ThreadSnapshot> for ThreadContext {
         }
     }
 }
+/// Retain only the current thread's local state in the virtualized template.
+struct ReadingContext {
+    hidden: bool,
+    seen: BTreeSet<u64>,
+    show_dead: bool,
+    typography: RenderOptions,
+}
+
 impl PartialEq for ConversationRow {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
@@ -155,7 +162,7 @@ pub fn build(
             document,
         }));
     }
-    if rows.len() == 1 {
+    if rows.len() == 1 && snapshot.root.kind != Some(ItemKind::Job) {
         rows.push(Rc::new(ConversationRow {
             key: rows.len(),
             kind: RowKind::Empty,
@@ -172,7 +179,7 @@ pub fn build(
     let list = ListBox::new();
     list.classes().add("reader-list");
     list.classes().add("thread-list");
-    list.set_padding(Thickness::new(20.0, 0.0, 20.0, 16.0));
+    list.set_padding(Thickness::new(14.0, 0.0, 14.0, 12.0));
     list.set_auto_scroll_to_selected_item(false);
     ScrollViewer::set_horizontal_scroll_bar_visibility_on(&list, ScrollBarVisibility::Disabled);
     ScrollViewer::set_vertical_scroll_bar_visibility_on(&list, ScrollBarVisibility::Auto);
@@ -202,23 +209,46 @@ pub fn build(
     list.set_items_source(Some(ItemsSource::from_values(rows)));
     AutomationProperties::set_name(&list, Some("Hacker News conversation"));
     let snapshot = Rc::new(ThreadContext::from(snapshot));
-    let state = Rc::new(state.clone());
+    let reading = ReadingContext {
+        hidden: local.is_some_and(|s| s.hidden),
+        seen: local.map(|s| s.seen_comments.clone()).unwrap_or_default(),
+        show_dead: state.preferences.show_dead,
+        typography: render_options(state),
+    };
     let query = query.to_owned();
+    let weak_list = list.downgrade();
+    let comment_actions: Rc<dyn Fn(ThreadAction)> = {
+        let forward = on_action.clone();
+        Rc::new(move |action| {
+            if let ThreadAction::Parent(parent) = action {
+                if let Some(list) = weak_list.upgrade() {
+                    if let Some(index) = anchor_index(&list, parent) {
+                        scroll_anchor_into_view(&list, index);
+                        return;
+                    }
+                }
+            }
+            forward(action);
+        })
+    };
     list.set_item_template(Some(FuncDataTemplate::for_type::<Rc<ConversationRow>>(
         move |row, _| {
-            Some(match &row.kind {
-                RowKind::Header => header(&snapshot, &state, sort, &on_action),
+            let control = match &row.kind {
+                RowKind::Header => header(&snapshot, &reading, sort, &on_action),
                 RowKind::Comment(comment) => comment_row(
                     comment,
                     &row.document,
                     &snapshot.root,
-                    &state,
+                    &reading,
                     !query.is_empty(),
-                    &on_action,
+                    &comment_actions,
                 ),
                 RowKind::Empty => empty(&snapshot, &query, &on_action),
                 RowKind::Footer => footer(&snapshot, &on_action),
-            })
+            };
+            // Stretch into narrow panes, cap the line length on wide monitors.
+            control.set_max_width((reading.typography.font_size * 44.0).clamp(560.0, 840.0));
+            Some(control)
         },
         // Native containers are virtualized; document controls are rebuilt for a different
         // item so a recycled row can never retain another comment's action closures.
@@ -335,132 +365,160 @@ fn scroll_anchor_into_view(list: &ListBox, index: i32) {
 
 fn header(
     snapshot: &ThreadContext,
-    state: &ReaderState,
+    reading: &ReadingContext,
     sort: ThreadSort,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let story = &snapshot.root;
-    let body = StackPanel::new();
-    body.set_spacing(14.0);
-    body.set_margin(Thickness::new(0.0, 16.0, 0.0, 20.0));
-    let eyebrow = label(
-        &format!("DISCUSSION  /  {}", story.domain().to_uppercase()),
-        10.0,
+    let options = &reading.typography;
+    let body = widgets::stack(8.0);
+    body.set_margin(Thickness::new(0.0, 12.0, 0.0, 4.0));
+    let source = if story.article_url().is_some() {
+        story.domain()
+    } else {
+        match story.kind {
+            Some(ItemKind::Comment) => "Hacker News comment",
+            Some(ItemKind::Poll) => "Hacker News poll",
+            Some(ItemKind::Job) => "Hacker News job",
+            _ => "Hacker News",
+        }
+        .to_owned()
+    };
+    let eyebrow = label(&source, 12.0);
+    eyebrow.set_font_weight(FontWeight::SemiBold);
+    bind_resource(
+        &eyebrow,
+        TextBlock::foreground_property().as_property(),
+        "EmberAccentInk",
     );
-    eyebrow.classes().add("eyebrow");
     body.children().add(eyebrow);
 
-    let headline = HtmlDocument::parse(story.title_text()).plain_text();
-    let title = label(&headline, 28.0);
+    let headline = if story.deleted {
+        "[deleted]".to_owned()
+    } else if story.dead && !reading.show_dead {
+        "[dead]".to_owned()
+    } else {
+        HtmlDocument::parse(story.title_text()).plain_text()
+    };
+    let title = label(&headline, (options.font_size * 1.55).clamp(23.0, 36.0));
+    AutomationProperties::set_heading_level(&title, 1);
     title.set_font_weight(FontWeight::SemiBold);
-    title.set_line_height(36.0);
+    title.set_line_height(title.font_size() * 1.24);
     AutomationProperties::set_name(&title, Some(&headline));
     body.children().add(title);
 
     let meta = WrapPanel::new();
-    meta.set_orientation(Orientation::Horizontal);
-    if let Some(author) = &story.by {
-        meta.children().add(action_button(
-            author,
-            ThreadAction::Profile(author.clone()),
-            actions,
+    if let Some(author) = story.by.as_ref().filter(|_| !story.deleted) {
+        meta.children().add(author_button(author, actions));
+    }
+    let mut facts = Vec::new();
+    if story.time.is_some() {
+        facts.push(relative_time(story.time, crate::services::now()));
+    }
+    if let Some(score) = story.score {
+        facts.push(format!(
+            "{score} {}",
+            if score == 1 { "point" } else { "points" }
         ));
     }
-    let score = story
-        .score
-        .map(|value| format!("{value} points"))
-        .unwrap_or_else(|| "HN post".to_owned());
-    let count = story
-        .descendants
-        .map(|value| format!("{value} comments"))
-        .unwrap_or_else(|| format!("{} replies", story.kids.len()));
-    let metadata = label(
-        &format!(
-            "{score}  ·  {count}  ·  {}",
-            relative_time(story.time, crate::services::now())
-        ),
-        12.0,
-    );
-    metadata.classes().add("muted");
-    metadata.set_vertical_alignment(VerticalAlignment::Center);
-    metadata.set_margin(Thickness::symmetric(6.0, 4.0));
-    meta.children().add(metadata);
+    if !facts.is_empty() {
+        let metadata = muted(&facts.join(" · "));
+        metadata.set_vertical_alignment(VerticalAlignment::Center);
+        metadata.set_margin(Thickness::symmetric(4.0, 0.0));
+        meta.children().add(metadata);
+    }
     body.children().add(meta);
 
     let primary = WrapPanel::new();
     if let Some(url) = story.article_url() {
-        primary.children().add(action_button(
+        primary.children().add(labelled_action(
             "Read article",
+            "open",
             ThreadAction::OpenUrl(url),
             actions,
         ));
     }
-    primary.children().add(action_button(
-        if state.is_saved(story.id) {
-            "Saved"
-        } else {
-            "Save story"
-        },
-        ThreadAction::Save,
+    primary.children().add(icon_action(
+        "Copy discussion link",
+        "copy",
+        ThreadAction::Share,
         actions,
     ));
-    primary
-        .children()
-        .add(action_button("Share link", ThreadAction::Share, actions));
-    primary.children().add(action_button(
-        "Open on HN",
+    let more = widgets::icon_button("More story actions", "more");
+    let menu = MenuFlyout::new();
+    menu_action(
+        &menu,
+        "Open discussion on HN",
+        "open",
         ThreadAction::OpenUrl(story.discussion_url()),
         actions,
-    ));
+    );
+    if story.kind != Some(ItemKind::Job) && !story.deleted {
+        menu_action(
+            &menu,
+            "Vote on HN",
+            "up",
+            ThreadAction::Vote(story.id),
+            actions,
+        );
+        menu_action(
+            &menu,
+            "Reply on HN",
+            "reply",
+            ThreadAction::Reply(story.id),
+            actions,
+        );
+    }
+    if let Some(parent) = story.parent {
+        menu_action(
+            &menu,
+            "Open parent",
+            "arrow_up",
+            ThreadAction::Parent(parent),
+            actions,
+        );
+    }
+    menu_action(
+        &menu,
+        if reading.hidden {
+            "Restore to feed"
+        } else {
+            "Hide story"
+        },
+        "eye_off",
+        ThreadAction::Hide,
+        actions,
+    );
+    if story.article_url().is_some() && story.domain() != "news.ycombinator.com" {
+        menu_action(
+            &menu,
+            &format!("Mute {}", story.domain()),
+            "eye_off",
+            ThreadAction::MuteDomain,
+            actions,
+        );
+    }
+    more.set_flyout(menu);
+    primary.children().add(more);
     body.children().add(primary);
 
     if story.deleted {
         body.children()
             .add(muted("This item was deleted on Hacker News."));
-    } else if story.dead && !state.preferences.show_dead {
+    } else if story.dead && !reading.show_dead {
         body.children().add(muted("This item is marked dead on Hacker News. Enable dead items in Reader settings to show its content."));
     } else if let Some(html) = &story.text {
         if !html.trim().is_empty() {
-            body.children().add(rich(html, state, actions));
+            body.children()
+                .add(rich_document(&HtmlDocument::parse(html), options, actions));
         }
     }
     if !story.parts.is_empty() {
         body.children().add(poll_options(snapshot, actions));
     }
-    let secondary = WrapPanel::new();
-    secondary.children().add(action_button(
-        "Vote on HN",
-        ThreadAction::Vote(story.id),
-        actions,
-    ));
-    secondary.children().add(action_button(
-        "Reply on HN",
-        ThreadAction::Reply(story.id),
-        actions,
-    ));
-    secondary.children().add(action_button(
-        if state.items.get(&story.id).is_some_and(|s| s.hidden) {
-            "Unhide"
-        } else {
-            "Hide story"
-        },
-        ThreadAction::Hide,
-        actions,
-    ));
-    secondary.children().add(action_button(
-        "Mute domain",
-        ThreadAction::MuteDomain,
-        actions,
-    ));
-    if let Some(parent) = story.parent {
-        secondary.children().add(action_button(
-            "Parent context",
-            ThreadAction::Parent(parent),
-            actions,
-        ));
+    if story.kind == Some(ItemKind::Job) && story.kids.is_empty() {
+        return body.upcast();
     }
-    body.children().add(secondary);
-
     let separator = Border::new();
     separator.set_height(1.0);
     bind_resource(
@@ -471,13 +529,19 @@ fn header(
     body.children().add(separator);
 
     let sort_row = WrapPanel::new();
-    let heading = label("Conversation", 18.0);
+    let caption = story
+        .descendants
+        .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" }))
+        .unwrap_or_else(|| "Conversation".to_owned());
+    let heading = label(&caption, 17.0);
+    AutomationProperties::set_heading_level(&heading, 2);
     heading.set_font_weight(FontWeight::SemiBold);
-    heading.set_margin(Thickness::new(0.0, 8.0, 16.0, 8.0));
+    heading.set_vertical_alignment(VerticalAlignment::Center);
+    heading.set_margin(Thickness::new(0.0, 4.0, 12.0, 4.0));
     sort_row.children().add(heading);
     let sort_picker = ComboBox::new();
     sort_picker.set_items_source(Some(ItemsSource::from_values([
-        "Ranked threads".to_owned(),
+        "Ranked".to_owned(),
         "Newest first".to_owned(),
         "Oldest first".to_owned(),
     ])));
@@ -487,7 +551,7 @@ fn header(
         ThreadSort::Oldest => 2,
     });
     sort_picker.set_min_height(44.0);
-    sort_picker.set_min_width(160.0);
+    sort_picker.set_min_width(128.0);
     AutomationProperties::set_name(&sort_picker, Some("Comment sort order"));
     let weak = sort_picker.downgrade();
     let actions = actions.clone();
@@ -515,87 +579,116 @@ fn comment_row(
     row: &ThreadRow,
     document: &OnceCell<HtmlDocument>,
     root: &HnItem,
-    state: &ReaderState,
+    reading: &ReadingContext,
     searching: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let outer = Border::new();
-    outer.set_corner_radius(CornerRadius::uniform(10.0));
-    outer.set_border_thickness(Thickness::uniform(1.0));
-    outer.set_margin(Thickness::new(
-        (row.depth.min(4) * 10) as f64,
-        0.0,
-        0.0,
-        0.0,
-    ));
-    bind_resource(
-        &outer,
-        Border::background_property().as_property(),
-        "EmberCard",
-    );
+    outer.set_border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0));
     bind_resource(
         &outer,
         Border::border_brush_property().as_property(),
-        if row.matches_query {
-            "SystemControlHighlightAccentBrush"
-        } else {
-            "EmberBorder"
-        },
+        "EmberBorder",
     );
-    let grid = Grid::new();
-    grid.set_column_definitions(ColumnDefinitions::parse("3,*").expect("constant columns"));
-    let rail = Border::new();
-    rail.set_margin(Thickness::new(0.0, 12.0, 0.0, 12.0));
-    let depth_colors = [
-        &state.preferences.accent[..],
-        "#6CAEE7",
-        "#9D8CE8",
-        "#5BB7A0",
-        "#D7A66E",
-    ];
-    if let Ok(color) = Color::parse(depth_colors[row.depth % depth_colors.len()]) {
-        rail.set_background(Some(SolidColorBrush::with_color(color).into()));
-    }
-    grid.children().add(rail);
-    let body = StackPanel::new();
-    body.set_spacing(10.0);
-    body.set_margin(Thickness::new(12.0, 8.0, 12.0, 10.0));
-    Grid::set_column(&body, 1);
-    let meta = WrapPanel::new();
+    let body = widgets::stack(3.0);
+    body.set_margin(Thickness::new(0.0, 2.0, 0.0, 10.0));
+    let line = Grid::new();
+    line.set_column_definitions(ColumnDefinitions::parse("*,Auto").expect("constant columns"));
+    let byline = WrapPanel::new();
+    byline.set_vertical_alignment(VerticalAlignment::Center);
     if let Some(item) = &row.item {
-        if !item.deleted {
-            if let Some(author) = &item.by {
-                let author_button =
-                    action_button(author, ThreadAction::Profile(author.clone()), actions);
-                author_button.set_font_weight(FontWeight::SemiBold);
-                meta.children().add(author_button);
-                if item.by == root.by && root.by.is_some() {
-                    meta.children().add(badge("AUTHOR"));
-                }
+        if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
+            byline.children().add(author_button(author, actions));
+            if root.by.as_ref() == Some(author) {
+                byline.children().add(badge("OP"));
             }
         }
-        let age = muted(&relative_time(item.time, crate::services::now()));
-        age.set_vertical_alignment(VerticalAlignment::Center);
-        age.set_margin(Thickness::symmetric(4.0, 8.0));
-        meta.children().add(age);
-        let was_read = state.items.get(&root.id);
-        if was_read
-            .is_some_and(|s| !s.seen_comments.is_empty() && !s.seen_comments.contains(&row.id))
-        {
-            meta.children().add(badge("NEW"));
+        // A timestamp doubles as the stable comment link, as on Hacker News.
+        let caption = if item.time.is_some() {
+            relative_time(item.time, crate::services::now())
+        } else {
+            "Link".to_owned()
+        };
+        let permalink = text_action(
+            &caption,
+            "Permalink",
+            ThreadAction::OpenUrl(ember_core::item_url(row.id)),
+            actions,
+        );
+        byline.children().add(permalink);
+        if !reading.seen.is_empty() && !reading.seen.contains(&row.id) {
+            byline.children().add(badge("NEW"));
         }
         if row.matches_query {
-            meta.children().add(badge("MATCH"));
+            byline.children().add(badge("MATCH"));
         }
     } else {
-        meta.children().add(muted(&format!("Comment {}", row.id)));
+        byline.children().add(muted(&format!("Comment {}", row.id)));
     }
-    body.children().add(meta);
+    line.children().add(byline);
+    let commands = widgets::stack(0.0);
+    commands.set_orientation(Orientation::Horizontal);
+    Grid::set_column(&commands, 1);
+    if !searching && (row.child_count > 0 || row.collapsed) {
+        let (verb, icon) = if row.collapsed {
+            ("Expand", "chevron_down")
+        } else {
+            ("Collapse", "chevron_up")
+        };
+        let name = format!(
+            "{verb} {} {}",
+            row.child_count,
+            if row.child_count == 1 {
+                "reply"
+            } else {
+                "replies"
+            }
+        );
+        commands.children().add(icon_action(
+            &name,
+            icon,
+            ThreadAction::ToggleCollapse(row.id),
+            actions,
+        ));
+    }
+    if row.depth == 0 {
+        if row.item.is_some() {
+            commands.children().add(icon_action(
+                "Reply on HN",
+                "reply",
+                ThreadAction::Reply(row.id),
+                actions,
+            ));
+        }
+    } else {
+        let more = widgets::icon_button("More comment actions", "more");
+        let menu = MenuFlyout::new();
+        if row.item.is_some() {
+            menu_action(
+                &menu,
+                "Reply on HN",
+                "reply",
+                ThreadAction::Reply(row.id),
+                actions,
+            );
+        }
+        menu_action(
+            &menu,
+            "Go to parent comment",
+            "up",
+            ThreadAction::Parent(row.parent_id),
+            actions,
+        );
+        more.set_flyout(menu);
+        commands.children().add(more);
+    }
+    line.children().add(commands);
+    body.children().add(line);
 
     if row.collapsed && !searching {
         let summary = match &row.item {
             Some(item) if item.deleted => "[deleted]".to_owned(),
-            Some(item) if item.dead && !state.preferences.show_dead => "[dead]".to_owned(),
+            Some(item) if item.dead && !reading.show_dead => "[dead]".to_owned(),
             Some(item) => item
                 .text
                 .as_deref()
@@ -607,14 +700,11 @@ fn comment_row(
                 .unwrap_or_else(|| "Collapsed conversation".to_owned()),
             None => "Collapsed conversation".to_owned(),
         };
-        let preview: String = summary.chars().take(150).collect();
+        let mut chars = summary.chars();
+        let preview: String = chars.by_ref().take(84).collect();
         body.children().add(muted(&format!(
             "{preview}{}",
-            if summary.chars().count() > 150 {
-                "…"
-            } else {
-                ""
-            }
+            if chars.next().is_some() { "…" } else { "" }
         )));
     } else {
         match &row.item {
@@ -624,14 +714,14 @@ fn comment_row(
             Some(item) if item.deleted => body
                 .children()
                 .add(muted("[deleted] — replies remain available below.")),
-            Some(item) if item.dead && !state.preferences.show_dead => body.children().add(muted(
+            Some(item) if item.dead && !reading.show_dead => body.children().add(muted(
                 "[dead] — enable dead comments in Reader settings to show this text.",
             )),
             Some(item) => {
                 if let Some(html) = item.text.as_deref().filter(|s| !s.trim().is_empty()) {
                     body.children().add(rich_document(
                         document.get_or_init(|| HtmlDocument::parse(html)),
-                        state,
+                        &reading.typography,
                         actions,
                     ));
                 } else {
@@ -641,44 +731,14 @@ fn comment_row(
         }
     }
 
-    let toolbar = WrapPanel::new();
-    if row.child_count > 0 || row.collapsed {
-        toolbar.children().add(action_button(
-            &format!(
-                "{} {} replies",
-                if row.collapsed { "Expand" } else { "Collapse" },
-                row.child_count
-            ),
-            ThreadAction::ToggleCollapse(row.id),
-            actions,
-        ));
-    }
-    if row.item.is_some() {
-        toolbar.children().add(action_button(
-            "Reply on HN",
-            ThreadAction::Reply(row.id),
-            actions,
-        ));
-        toolbar.children().add(action_button(
-            "Permalink",
-            ThreadAction::OpenUrl(ember_core::item_url(row.id)),
-            actions,
-        ));
-    } else {
-        toolbar.children().add(action_button(
+    if row.item.is_none() {
+        body.children().add(labelled_action(
             "Retry loading",
+            "refresh",
             ThreadAction::LoadMore,
             actions,
         ));
     }
-    if row.depth > 0 {
-        toolbar.children().add(action_button(
-            "Parent",
-            ThreadAction::Parent(row.parent_id),
-            actions,
-        ));
-    }
-    body.children().add(toolbar);
     AutomationProperties::set_name(
         &outer,
         Some(&format!(
@@ -690,8 +750,25 @@ fn comment_row(
             row.depth + 1
         )),
     );
-    grid.children().add(body);
-    outer.set_child(grid);
+    let branch = Border::new();
+    // Preserve reading width on phones, even when HN threads are dozens of levels deep.
+    let inset = row.depth.min(4) as f64 * 8.0;
+    branch.set_margin(Thickness::new(inset, 0.0, 0.0, 0.0));
+    if row.depth > 0 || row.matches_query {
+        branch.set_padding(Thickness::new(8.0, 0.0, 0.0, 0.0));
+        branch.set_border_thickness(Thickness::new(2.0, 0.0, 0.0, 0.0));
+        bind_resource(
+            &branch,
+            Border::border_brush_property().as_property(),
+            if row.matches_query {
+                "EmberAccentInk"
+            } else {
+                "EmberBorder"
+            },
+        );
+    }
+    branch.set_child(body);
+    outer.set_child(branch);
     outer.upcast()
 }
 
@@ -735,8 +812,9 @@ fn poll_options(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) ->
         item.children().add(progress);
         panel.children().add(item);
     }
-    panel.children().add(action_button(
+    panel.children().add(labelled_action(
         "Vote in poll on HN",
+        "up",
         ThreadAction::OpenUrl(snapshot.root.discussion_url()),
         actions,
     ));
@@ -755,8 +833,9 @@ fn footer(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<C
         panel.children().add(muted(warning));
     }
     if !snapshot.complete {
-        panel.children().add(action_button(
+        panel.children().add(labelled_action(
             "Load more comments",
+            "chevron_down",
             ThreadAction::LoadMore,
             actions,
         ));
@@ -772,37 +851,41 @@ fn empty(
     let panel = StackPanel::new();
     panel.set_spacing(12.0);
     panel.set_margin(Thickness::uniform(20.0));
-    let text = if query.is_empty() && !snapshot.complete {
-        "Comments are not yet available in the local copy.".to_owned()
-    } else if query.is_empty() {
-        "A good conversation starts with one thought.".to_owned()
+    if !query.is_empty() {
+        panel.children().add(label("No matching comments", 17.0));
+        panel.children().add(muted(&format!(
+            "No loaded comments contain “{query}”. Edit or clear the search above."
+        )));
+    } else if !snapshot.complete {
+        panel
+            .children()
+            .add(label("Comments haven’t loaded yet", 17.0));
+        panel
+            .children()
+            .add(muted("Load more comments below to continue reading."));
     } else {
-        format!("No loaded comments match “{}”.", query)
-    };
-    panel.children().add(label(&text, 18.0));
-    panel.children().add(action_button(
-        "Join the conversation on HN",
-        ThreadAction::Reply(snapshot.root.id),
-        actions,
-    ));
+        panel.children().add(label("No comments yet", 17.0));
+        if !snapshot.root.deleted {
+            panel.children().add(labelled_action(
+                "Reply on Hacker News",
+                "reply",
+                ThreadAction::Reply(snapshot.root.id),
+                actions,
+            ));
+        }
+    }
     panel.upcast()
-}
-
-fn rich(html: &str, state: &ReaderState, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let document = HtmlDocument::parse(html);
-    rich_document(&document, state, actions)
 }
 
 fn rich_document(
     document: &HtmlDocument,
-    state: &ReaderState,
+    options: &RenderOptions,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
-    let options = render_options(state);
     let actions = actions.clone();
     ember_content::render(
         document,
-        &options,
+        options,
         Rc::new(move |url| actions(ThreadAction::OpenUrl(url.to_owned()))),
     )
 }
@@ -813,8 +896,7 @@ pub fn render_options(state: &ReaderState) -> RenderOptions {
         font_size: state.preferences.font_size,
         line_height: state.preferences.font_size * state.preferences.line_height,
         foreground: brush("EmberText"),
-        link_brush: brush("HyperlinkButtonForeground")
-            .or_else(|| brush("SystemControlHighlightAccentBrush")),
+        link_brush: brush("EmberAccentInk").or_else(|| brush("HyperlinkButtonForeground")),
         code_background: brush("EmberCode"),
         quote_brush: brush("EmberMuted"),
         link_min_height: 44.0,
@@ -823,31 +905,78 @@ pub fn render_options(state: &ReaderState) -> RenderOptions {
     }
 }
 
-fn action_button(
-    text: &str,
+fn author_button(author: &str, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Button> {
+    let button = text_action(
+        author,
+        &format!("View {author}’s profile"),
+        ThreadAction::Profile(author.to_owned()),
+        actions,
+    );
+    button.set_font_weight(FontWeight::SemiBold);
+    button
+}
+
+fn text_action(
+    caption: &str,
+    name: &str,
     action: ThreadAction,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Button> {
     let button = Button::new();
-    button.set_content(Some(Control::boxed(label(text, 12.0))));
-    button.set_min_height(44.0);
-    button.set_padding(Thickness::symmetric(10.0, 8.0));
-    button.set_margin(Thickness::new(0.0, 0.0, 6.0, 6.0));
+    button.classes().add("quiet");
+    button.set_content(Some(Rc::new(caption.to_owned())));
     button.set_font_size(12.0);
-    button.set_max_width(260.0);
+    button.set_padding(Thickness::symmetric(4.0, 0.0));
     button.set_horizontal_alignment(HorizontalAlignment::Left);
-    AutomationProperties::set_name(&button, Some(text));
-    let actions = actions.clone();
-    button.click(move |_, _| actions(action.clone()));
+    AutomationProperties::set_name(&button, Some(name));
+    ToolTip::set_tip(&button, Some(Rc::new(name.to_owned())));
+    let invoke = actions.clone();
+    button.click(move |_, _| invoke(action.clone()));
     button
 }
 
+fn labelled_action(
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let invoke = actions.clone();
+    widgets::action(name, icon, move || invoke(action.clone()))
+}
+
+fn icon_action(
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let button = widgets::icon_button(name, icon);
+    let invoke = actions.clone();
+    button.click(move |_, _| invoke(action.clone()));
+    button
+}
+
+fn menu_action(
+    menu: &MenuFlyout,
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) {
+    let item = MenuItem::new();
+    item.set_header(Some(Rc::new(name.to_owned())));
+    item.set_icon(Some(Control::boxed(crate::icons::icon(icon))));
+    let invoke = actions.clone();
+    item.click(move |_, _| invoke(action.clone()));
+    menu.items().add(Some(Control::boxed(item)));
+}
 
 fn badge(text: &str) -> Ref<Border> {
     let border = Border::new();
     border.set_corner_radius(CornerRadius::uniform(5.0));
     border.set_padding(Thickness::symmetric(6.0, 3.0));
-    border.set_margin(Thickness::symmetric(4.0, 10.0));
+    border.set_margin(Thickness::symmetric(3.0, 0.0));
     border.set_vertical_alignment(VerticalAlignment::Center);
     bind_resource(
         &border,
@@ -859,12 +988,11 @@ fn badge(text: &str) -> Ref<Border> {
     bind_resource(
         &label,
         TextBlock::foreground_property().as_property(),
-        "SystemControlHighlightAccentBrush",
+        "EmberAccentInk",
     );
     border.set_child(label);
     border
 }
-
 
 fn brush(key: &str) -> Option<Rc<dyn IBrush>> {
     let app = Application::current()?;
@@ -882,6 +1010,77 @@ mod tests {
     use ferroui_controls::{HyperlinkButton, SelectableTextBlock, Window};
     use sample_testing::{Shell, TestGlobalClock};
     use std::cell::RefCell;
+
+    #[test]
+    fn overflow_keeps_story_actions_accessible_and_uses_the_current_item() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 42,
+                url: Some("https://example.com/article".into()),
+                ..Default::default()
+            },
+            complete: true,
+            ..Default::default()
+        };
+        let reading = ReadingContext {
+            hidden: true,
+            show_dead: false,
+            seen: BTreeSet::new(),
+            typography: RenderOptions::default(),
+        };
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let observed = calls.clone();
+        let actions: Rc<dyn Fn(ThreadAction)> =
+            Rc::new(move |action| observed.borrow_mut().push(action));
+        let header = header(
+            &ThreadContext::from(&snapshot),
+            &reading,
+            ThreadSort::Ranked,
+            &actions,
+        );
+        let more = header
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|b| AutomationProperties::get_name(b).as_deref() == Some("More story actions"))
+            .expect("named overflow button");
+        let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+        let items = menu.items();
+        let entries: Vec<_> = (0..items.count())
+            .map(|i| {
+                Control::from_boxed(&items.get_at(i).unwrap())
+                    .unwrap()
+                    .cast::<MenuItem>()
+                    .unwrap()
+            })
+            .collect();
+        for (name, index) in [
+            ("Reply on HN", 0),
+            ("Restore to feed", 1),
+            ("Mute example.com", 2),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|item| {
+                    item.header()
+                        .as_ref()
+                        .and_then(|h| h.downcast_ref::<String>())
+                        .is_some_and(|s| s == name)
+                })
+                .unwrap();
+            entry.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+            assert_eq!(calls.borrow().len(), index + 1);
+        }
+        assert!(matches!(
+            calls.borrow().as_slice(),
+            [
+                ThreadAction::Reply(42),
+                ThreadAction::Hide,
+                ThreadAction::MuteDomain
+            ]
+        ));
+    }
 
     #[test]
     fn conversation_find_matches_visible_decoded_text_with_ancestor_context() {
@@ -976,7 +1175,19 @@ mod tests {
                 matches_query: false,
             };
             let document = OnceCell::new();
-            let control = comment_row(&row, &document, &root, &state, false, &actions);
+            let control = comment_row(
+                &row,
+                &document,
+                &root,
+                &ReadingContext {
+                    hidden: false,
+                    seen: BTreeSet::new(),
+                    show_dead: false,
+                    typography: render_options(&state),
+                },
+                false,
+                &actions,
+            );
             let text = control
                 .get_logical_descendants()
                 .filter_map(|node| node.cast::<TextBlock>())

@@ -19,12 +19,12 @@ use ferroui_base::{
     ferro_class, ferro_class_info, ferro_impl_classes, instantiate, BoxedValue, FerroObjectImpl,
     Ref, StyledElementImpl, Thickness, VisualImpl, WeakRef,
 };
-use ferroui_controls::automation::AutomationProperties;
+use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::primitives::TemplatedControlImpl;
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
     Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, Control, ControlImpl,
-    ControlImplExt, Grid, ListBox, ScrollViewer, StackPanel, TextBlock, TextBox, TopLevel,
+    ControlImplExt, Grid, ListBox, ScrollViewer, StackPanel, TextBlock, TextBox, ToolTip, TopLevel,
     UserControl,
 };
 use std::cell::{Cell, RefCell};
@@ -95,6 +95,9 @@ pub struct ReaderView {
     rendered_stories: RefCell<Vec<HnItem>>,
     search_story_ids: RefCell<BTreeMap<u64, u64>>,
     selected: Cell<Option<u64>>,
+    // An Algolia comment result and its containing discussion have different identities.
+    selected_row: Cell<Option<u64>>,
+    pending_comment: Cell<Option<u64>>,
     next: Cell<Option<usize>>,
     feed_generation: Cell<u64>,
     detail_generation: Cell<u64>,
@@ -153,6 +156,8 @@ impl ReaderView {
             rendered_stories: RefCell::new(Vec::new()),
             search_story_ids: RefCell::new(BTreeMap::new()),
             selected: Cell::new(None),
+            selected_row: Cell::new(None),
+            pending_comment: Cell::new(None),
             next: Cell::new(None),
             feed_generation: Cell::new(0),
             detail_generation: Cell::new(0),
@@ -173,6 +178,7 @@ impl ReaderView {
         let this = instantiate(Self::construct());
         this.initialize_component();
         this.wire();
+        this.configure_detail();
         ACTIVE.with(|v| *v.borrow_mut() = Some(this.downgrade()));
         let weak = this.downgrade();
         this.show_content(widgets::welcome(move || {
@@ -203,8 +209,17 @@ impl ReaderView {
         });
     }
     fn wire(&self) {
+        AutomationProperties::set_live_setting(
+            &self.label("StatusText"),
+            AutomationLiveSetting::Polite,
+        );
         for (name, icon) in [
             ("SearchButton", "search"),
+            ("CompactSearch", "search"),
+            ("ThreadRefresh", "refresh"),
+            ("FindButton", "search"),
+            ("CloseFind", "dismiss"),
+            ("DismissStatus", "dismiss"),
             ("RefreshButton", "refresh"),
             ("ThemeButton", "settings"),
             ("BackButton", "back"),
@@ -231,17 +246,22 @@ impl ReaderView {
         self.on("MobileSaved", |v| v.select_feed(FeedRoute::Saved));
         self.on("NavHistory", |v| v.select_feed(FeedRoute::History));
         self.on("NavHidden", |v| v.select_feed(FeedRoute::Hidden));
-        self.on("NavSettings", |v| v.show_settings());
+        self.on("NavMore", |v| v.show_more());
+        self.on("CompactSearch", |v| v.show_search());
         self.on("ThemeButton", |v| v.show_settings());
         self.on("MobileSearch", |v| v.show_search());
         self.on("MobileMore", |v| v.show_more());
-        self.on("SearchButton", |v| {
-            v.run_search(SearchQuery {
-                query: v.textbox("SearchBox").text().unwrap_or_default(),
-                ..Default::default()
-            })
-        });
+        self.on("SearchButton", |v| v.submit_quick_search());
         self.on("RefreshButton", |v| v.refresh());
+        self.on("ThreadRefresh", |v| {
+            if let DetailRoute::Thread(id) = *v.detail.borrow() {
+                v.fetch_thread(id, FetchMode::Refresh);
+            }
+        });
+        self.on("FindButton", |v| {
+            v.set_find_open(!v.get_control::<Border>("ThreadTools").is_visible())
+        });
+        self.on("CloseFind", |v| v.set_find_open(false));
         self.on("RetryButton", |v| v.refresh());
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
@@ -280,10 +300,7 @@ impl ReaderView {
             move |_, e: &KeyEventArgs| {
                 if e.key == Key::Enter {
                     if let Some(v) = weak.upgrade() {
-                        v.run_search(SearchQuery {
-                            query: v.textbox("SearchBox").text().unwrap_or_default(),
-                            ..Default::default()
-                        });
+                        v.submit_quick_search();
                         e.set_handled(true);
                     }
                 }
@@ -326,25 +343,41 @@ impl ReaderView {
                     e.set_handled(true);
                     return;
                 }
-                if e.key == Key::Escape {
-                    v.go_back();
+                if ctrl && e.key == Key::F && matches!(*v.detail.borrow(), DetailRoute::Thread(_)) {
+                    v.set_find_open(true);
                     e.set_handled(true);
                     return;
                 }
-                if e.source().is_some_and(|s| s.cast::<TextBox>().is_some()) {
+                if e.key == Key::Escape {
+                    if v.get_control::<Border>("ThreadTools").is_visible() {
+                        v.set_find_open(false);
+                    } else if *v.detail.borrow() != DetailRoute::Welcome {
+                        v.go_back();
+                    } else {
+                        return;
+                    }
+                    e.set_handled(true);
+                    return;
+                }
+                if e.key_modifiers != KeyModifiers::NONE
+                    || e.source().is_some_and(|s| s.cast::<TextBox>().is_some())
+                {
                     return;
                 }
                 match e.key {
                     Key::R => v.refresh(),
                     Key::S => {
-                        if let Some(id) = v.selected.get() {
+                        if let DetailRoute::Thread(id) = *v.detail.borrow() {
                             v.toggle_save(id);
                         }
                     }
                     Key::J => v.move_selection(1),
                     Key::K => v.move_selection(-1),
                     Key::O => {
-                        if let Some(item) = v.current_item() {
+                        if let Some(item) = v
+                            .current_item()
+                            .filter(|_| matches!(*v.detail.borrow(), DetailRoute::Thread(_)))
+                        {
                             v.open_url(
                                 &item.article_url().unwrap_or_else(|| item.discussion_url()),
                             );
@@ -385,9 +418,9 @@ impl ReaderView {
                 distance.set(e.delta().y);
                 view.label("FeedSummary")
                     .set_text(Some(if e.delta().y >= 72.0 {
-                        "RELEASE TO REFRESH"
+                        "Release to refresh"
                     } else {
-                        "PULL TO REFRESH"
+                        "Pull to refresh"
                     }));
                 e.set_handled(true);
             }
@@ -552,8 +585,6 @@ impl ReaderView {
         self.search_story_ids.borrow_mut().clear();
         self.next.set(None);
         self.back_to_feed(true);
-        self.selected.set(None);
-        self.render_stories();
         self.load_feed(0, FetchMode::CacheFirst);
     }
     fn refresh(&self) {
@@ -570,45 +601,134 @@ impl ReaderView {
         self.feed_generation.set(generation);
         self.busy.set(true);
         self.button("LoadMoreButton").set_is_enabled(false);
+        self.button("RetryButton").set_is_visible(false);
+        if self.stories.borrow().is_empty() {
+            self.empty("Loading stories…", "Checking for stories on this device.");
+        }
         let route = self.feed.borrow().clone();
         let title = match &route {
             FeedRoute::Feed(f) => f.title(),
             FeedRoute::Saved => "Saved for later",
-            FeedRoute::History => "Your reading trail",
+            FeedRoute::History => "Reading history",
             FeedRoute::Hidden => "Hidden stories",
             FeedRoute::Search(_) => "Search results",
         };
         self.label("FeedTitle").set_text(Some(title));
-        self.label("FeedSummary")
-            .set_text(Some("UPDATING YOUR READING LIST…"));
+        self.label("FeedSummary").set_text(Some("Updating…"));
         let state = self.state.borrow().clone();
         let weak = self.to_ref().downgrade();
-        drop(Dispatcher::ui_thread().invoke_async_task_local(move||async move{
-            if offset==0 && mode!=FetchMode::Offline {
-                if let FeedRoute::Feed(kind)=route {
-                    if let Ok(cached)=repo.load_feed(kind,0,30,services::now(),FetchMode::Offline).await {
-                        if !cached.items.is_empty(){if let Some(v)=weak.upgrade(){if v.feed_generation.get()==generation{v.accept_items(cached.items,0,cached.next_offset,cached.total,cached.source,None);}}}
+        drop(
+            Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                if offset == 0 && mode != FetchMode::Offline {
+                    if let FeedRoute::Feed(kind) = route {
+                        if let Ok(cached) = repo
+                            .load_feed(kind, 0, 30, services::now(), FetchMode::Offline)
+                            .await
+                        {
+                            if let Some(view) = weak.upgrade().filter(|v| {
+                                v.feed_generation.get() == generation && !cached.items.is_empty()
+                            }) {
+                                view.accept_items(
+                                    cached.items,
+                                    0,
+                                    cached.next_offset,
+                                    cached.total,
+                                    cached.source,
+                                    None,
+                                );
+                            }
+                        }
                     }
                 }
-            }
-            let result=match route {
-                FeedRoute::Feed(kind)=>repo.load_feed(kind,offset,30,services::now(),mode).await.map(|p|(p.items,p.next_offset,p.total,p.source,p.warning,BTreeMap::new())),
-                FeedRoute::Search(mut query)=>{query.page=offset;repo.search(&query,services::now(),mode).await.map(|p|(p.items,(p.page+1<p.pages).then_some(p.page+1),p.total,p.source,p.warning,p.story_ids))},
-                local=>{
-                    let ids=match local{FeedRoute::Saved=>state.saved_ids(),FeedRoute::History=>state.history_ids(),_=>state.items.iter().filter_map(|(&id,s)|s.hidden.then_some(id)).collect()};
-                    let total=ids.len();let end=(offset+30).min(total);let slice=ids.get(offset..end).unwrap_or_default();
-                    let batch=repo.load_items(slice,services::now(),mode).await;
-                    Ok((batch.items,(end<total).then_some(end),total,batch.source,batch.warning,BTreeMap::new()))
-                }
-            };
-            if let Some(v)=weak.upgrade(){if v.feed_generation.get()!=generation{return;}
-                v.busy.set(false);v.button("LoadMoreButton").set_is_enabled(true);
+                let result = match route {
+                    FeedRoute::Feed(kind) => repo
+                        .load_feed(kind, offset, 30, services::now(), mode)
+                        .await
+                        .map(|page| {
+                            (
+                                page.items,
+                                page.next_offset,
+                                page.total,
+                                page.source,
+                                page.warning,
+                                BTreeMap::new(),
+                            )
+                        }),
+                    FeedRoute::Search(mut query) => {
+                        query.page = offset;
+                        repo.search(&query, services::now(), mode)
+                            .await
+                            .map(|page| {
+                                let next = (page.page + 1 < page.pages).then_some(page.page + 1);
+                                (
+                                    page.items,
+                                    next,
+                                    page.total,
+                                    page.source,
+                                    page.warning,
+                                    page.story_ids,
+                                )
+                            })
+                    }
+                    local => {
+                        let ids = match local {
+                            FeedRoute::Saved => state.saved_ids(),
+                            FeedRoute::History => state.history_ids(),
+                            _ => state
+                                .items
+                                .iter()
+                                .filter_map(|(&id, entry)| entry.hidden.then_some(id))
+                                .collect(),
+                        };
+                        let end = (offset + 30).min(ids.len());
+                        let batch = repo
+                            .load_items(
+                                ids.get(offset..end).unwrap_or_default(),
+                                services::now(),
+                                mode,
+                            )
+                            .await;
+                        Ok((
+                            batch.items,
+                            (end < ids.len()).then_some(end),
+                            ids.len(),
+                            batch.source,
+                            batch.warning,
+                            BTreeMap::new(),
+                        ))
+                    }
+                };
+                let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| v.feed_generation.get() == generation)
+                else {
+                    return;
+                };
+                view.busy.set(false);
+                view.button("LoadMoreButton").set_is_enabled(true);
                 match result {
-                    Ok((items,next,total,source,warning,story_ids))=>{v.search_story_ids.borrow_mut().extend(story_ids);v.accept_items(items,offset,next,total,source,warning);},
-                    Err(error)=>{v.label("FeedSummary").set_text(Some("UPDATE UNAVAILABLE · TRY REFRESH"));v.button("LoadMoreButton").set_is_visible(v.next.get().is_some());v.status(&format!("Could not refresh: {error}. Cached stories remain available."));v.empty("The signal is taking a moment","Check your connection and try again. Saved and previously loaded stories are still on this device.");}
+                    Ok((items, next, total, source, warning, story_ids)) => {
+                        if offset == 0 {
+                            view.search_story_ids.borrow_mut().clear();
+                        }
+                        view.search_story_ids.borrow_mut().extend(story_ids);
+                        view.accept_items(items, offset, next, total, source, warning);
+                    }
+                    Err(error) => {
+                        view.label("FeedSummary")
+                            .set_text(Some("Update unavailable"));
+                        view.button("RetryButton").set_is_visible(true);
+                        view.button("LoadMoreButton")
+                            .set_is_visible(view.next.get().is_some());
+                        view.status(&format!("Could not refresh: {error}"));
+                        view.empty(
+                            "Couldn’t load stories",
+                            "Check your connection and try again.",
+                        );
+                    }
                 }
-            }
-        }));
+            }),
+        );
     }
     fn accept_items(
         &self,
@@ -628,23 +748,32 @@ impl ReaderView {
         }
         self.next.set(next);
         self.button("LoadMoreButton").set_is_visible(next.is_some());
-        self.label("FeedSummary").set_text(Some(&format!(
-            "{} STORIES · {}",
-            total,
-            match source {
-                DataSource::Network => "JUST UPDATED",
-                DataSource::Cache => "ON YOUR DEVICE",
-                DataSource::StaleCache => "OFFLINE CACHE",
+        let route = self.feed.borrow();
+        let noun = if matches!(*route, FeedRoute::Search(_)) {
+            if total == 1 {
+                "result"
+            } else {
+                "results"
             }
-        )));
-        self.label("FeedSubtitle")
-            .set_text(Some(match &*self.feed.borrow() {
-                FeedRoute::Saved => "Your reading list, always close by.",
-                FeedRoute::History => "Pick up a conversation you remember.",
-                FeedRoute::Hidden => "Open a story to restore it to your feeds.",
-                FeedRoute::Search(_) => "Search by Algolia · select a result to read.",
-                _ => "Good stories. Better conversations.",
-            }));
+        } else if total == 1 {
+            "story"
+        } else {
+            "stories"
+        };
+        let origin = match source {
+            DataSource::Network => "Updated",
+            DataSource::Cache => "On this device",
+            DataSource::StaleCache => "Offline copy",
+        };
+        let count = match &*route {
+            FeedRoute::Search(q) if !q.query.is_empty() => {
+                format!("{total} {noun} for “{}”", q.query)
+            }
+            _ => format!("{total} {noun}"),
+        };
+        self.label("FeedSummary")
+            .set_text(Some(&format!("{count} · {origin}")));
+        drop(route);
         if let Some(warning) = warning {
             self.status(&warning);
         }
@@ -715,12 +844,44 @@ impl ReaderView {
         let empty = list.items().count() == 0;
         self.get_control::<StackPanel>("FeedEmpty")
             .set_is_visible(empty);
+        let route = self.feed.borrow();
+        let filterable = matches!(*route, FeedRoute::Feed(_) | FeedRoute::Search(_));
         if empty && !self.busy.get() {
-            self.empty("A little breathing room","No stories match this view yet. Try another feed, clear your filters, or save a story from the front page.");
+            let (title, message) = match &*route {
+                FeedRoute::Saved => (
+                    "No saved stories",
+                    "Bookmark a story to read it here later.",
+                ),
+                FeedRoute::History => (
+                    "No reading history",
+                    "Stories appear here when you open a discussion.",
+                ),
+                FeedRoute::Hidden => (
+                    "No hidden stories",
+                    "Stories you hide can be restored here.",
+                ),
+                _ if !self.stories.borrow().is_empty() => (
+                    "No visible stories",
+                    "Change the unread filter or mute rules, or load more stories.",
+                ),
+                FeedRoute::Search(_) => (
+                    "No results",
+                    "Try a different search term or broaden your filters.",
+                ),
+                _ => ("No stories yet", "Refresh to check for new stories."),
+            };
+            self.empty(title, message);
         }
-        self.button("UnreadButton")
-            .classes()
-            .set("accent", state.preferences.hide_read);
+        let unread = self.button("UnreadButton");
+        unread.set_is_visible(filterable);
+        unread.classes().set("active", state.preferences.hide_read);
+        let label = if state.preferences.hide_read {
+            "Show all stories"
+        } else {
+            "Show unread only"
+        };
+        AutomationProperties::set_name(&unread, Some(label));
+        ToolTip::set_tip(&unread, Some(Rc::new(label.to_owned()) as BoxedValue));
     }
     fn story_card(&self, item: &HnItem) -> Ref<StoryCard> {
         let card = StoryCard::new();
@@ -741,17 +902,27 @@ impl ReaderView {
     fn update_card_state(&self, card: &StoryCard, id: u64, state: &ReaderState) {
         let read = state.is_read(id);
         let saved = state.is_saved(id);
-        card.set_status_label(Some(if saved { "SAVED" } else if read { "READ" } else { "" }));
+        card.set_status_label(Some(if saved {
+            "SAVED"
+        } else if read {
+            "READ"
+        } else {
+            ""
+        }));
         card.classes().set("read", read);
         card.classes().set("saved", saved);
         card.classes().set("compact", state.preferences.compact);
-        card.classes().set("selected", self.selected.get() == Some(id));
-        AutomationProperties::set_help_text(card, Some(match (saved, read) {
-            (true, true) => "Saved, read. Open discussion.",
-            (true, false) => "Saved. Open discussion.",
-            (false, true) => "Read. Open discussion.",
-            (false, false) => "Open discussion.",
-        }));
+        card.classes()
+            .set("selected", self.selected_row.get() == Some(id));
+        AutomationProperties::set_help_text(
+            card,
+            Some(match (saved, read) {
+                (true, true) => "Saved, read. Open discussion.",
+                (true, false) => "Saved. Open discussion.",
+                (false, true) => "Read. Open discussion.",
+                (false, false) => "Open discussion.",
+            }),
+        );
     }
     fn wire_card_swipe(&self, card: &StoryCard, id: u64) {
         let swipe = SwipeGestureRecognizer::new();
@@ -793,16 +964,19 @@ impl ReaderView {
     fn open_item(&self, id: u64) {
         self.open_item_internal(id, true);
     }
-    fn open_item_internal(&self, id: u64, publish: bool) {
+    fn open_item_internal(&self, row: u64, publish: bool) {
         let id = self
             .search_story_ids
             .borrow()
-            .get(&id)
+            .get(&row)
             .copied()
-            .unwrap_or(id);
+            .unwrap_or(row);
+        self.selected_row.set(Some(row));
+        self.pending_comment.set((row != id).then_some(row));
         self.navigate(DetailRoute::Thread(id));
         self.selected.set(Some(id));
         self.thread_budget.set(120);
+        self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
         self.thread.borrow_mut().take();
         self.thread_control.borrow_mut().take();
         let loading = widgets::stack(16.0);
@@ -877,13 +1051,11 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
-        self.label("DetailTitle").set_text(Some(&format!(
-            "{} comments · {}",
-            thread.root.descendants.unwrap_or(thread.items.len() as u64),
-            thread.root.author()
-        )));
-        self.label("DetailEyebrow")
-            .set_text(Some("IN CONVERSATION"));
+        let count = thread.root.descendants.unwrap_or(thread.items.len() as u64);
+        let noun = if count == 1 { "comment" } else { "comments" };
+        self.label("DetailTitle")
+            .set_text(Some(&format!("{count} {noun}")));
+        self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
         if let Some(warning) = thread.warning.as_deref() {
             self.status(warning);
         }
@@ -905,13 +1077,20 @@ impl ReaderView {
         }
         let state = self.state.borrow().clone();
         let query = self.textbox("ThreadFind").text().unwrap_or_default();
-        let anchor = match self.thread_control.borrow().as_ref() {
+        let target = self
+            .pending_comment
+            .get()
+            .filter(|id| thread.items.contains_key(id));
+        if target.is_some() {
+            self.pending_comment.set(None);
+        }
+        let anchor = target.or_else(|| match self.thread_control.borrow().as_ref() {
             Some(control) => crate::thread_view::viewport_anchor(control),
             None => state
                 .items
                 .get(&thread.root.id)
                 .and_then(|local| local.scroll_anchor),
-        };
+        });
         let weak = self.to_ref().downgrade();
         let control = crate::thread_view::build(
             &thread,
@@ -971,11 +1150,6 @@ impl ReaderView {
                     self.render_thread();
                 }
             }
-            ThreadAction::Save => {
-                if let Some(id) = self.selected.get() {
-                    self.toggle_save(id);
-                }
-            }
             ThreadAction::Share => {
                 if let Some(id) = self.selected.get() {
                     self.copy_text(&ember_core::item_url(id), "Discussion link copied.");
@@ -986,6 +1160,7 @@ impl ReaderView {
                     let hidden = self.state.borrow_mut().toggle_hidden(id);
                     self.changed();
                     self.render_stories();
+                    self.render_thread();
                     self.status(if hidden {
                         "Story hidden. Find it under Hidden stories."
                     } else {
@@ -1053,7 +1228,16 @@ impl ReaderView {
             .selected
             .get()
             .is_some_and(|id| self.state.borrow().is_saved(id));
-        self.button("SaveButton").classes().set("accent", saved);
+        self.button("SaveButton").classes().set("active", saved);
+        let tip = if saved {
+            "Remove saved story (S)"
+        } else {
+            "Save story (S)"
+        };
+        ToolTip::set_tip(
+            &self.button("SaveButton"),
+            Some(Rc::new(tip.to_owned()) as BoxedValue),
+        );
         AutomationProperties::set_name(
             &self.button("SaveButton"),
             Some(if saved {
@@ -1141,8 +1325,24 @@ impl ReaderView {
     fn configure_detail(&self) {
         let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
         self.get_control::<Border>("ThreadTools")
-            .set_is_visible(thread);
-        self.button("SaveButton").set_is_visible(thread);
+            .set_is_visible(false);
+        self.button("FindButton").classes().set("active", false);
+        for name in ["SaveButton", "FindButton", "DownloadButton"] {
+            self.button(name).set_is_visible(thread);
+        }
+        self.get_control::<Border>("DetailHeader")
+            .set_is_visible(*self.detail.borrow() != DetailRoute::Welcome);
+    }
+    fn set_find_open(&self, open: bool) {
+        self.get_control::<Border>("ThreadTools")
+            .set_is_visible(open);
+        self.button("FindButton").classes().set("active", open);
+        if open {
+            self.textbox("ThreadFind").focus();
+        } else {
+            self.textbox("ThreadFind").set_text(Some(""));
+            self.button("FindButton").focus();
+        }
     }
     fn show_content(&self, control: Ref<Control>) {
         self.get_control::<ContentControl>("DetailHost")
@@ -1151,6 +1351,8 @@ impl ReaderView {
     fn back_to_feed(&self, publish: bool) {
         self.remember_thread();
         self.history.borrow_mut().clear();
+        self.selected.set(None);
+        self.selected_row.set(None);
         self.detail.replace(DetailRoute::Welcome);
         self.detail_generation
             .set(self.detail_generation.get().wrapping_add(1));
@@ -1161,12 +1363,11 @@ impl ReaderView {
                 v.show_search();
             }
         }));
-        self.label("DetailEyebrow")
-            .set_text(Some("THE READING ROOM"));
-        self.label("DetailTitle")
-            .set_text(Some("A space for good conversations"));
+        self.label("DetailEyebrow").set_text(Some("READER"));
+        self.label("DetailTitle").set_text(Some("Discussion"));
         self.apply_layout();
         self.update_navigation();
+        self.render_stories();
         if publish {
             self.publish_location(None);
         }
@@ -1194,12 +1395,21 @@ impl ReaderView {
             }
         });
     }
+    fn submit_quick_search(&self) {
+        let query = self.textbox("SearchBox").text().unwrap_or_default();
+        if query.trim().is_empty() {
+            self.show_search();
+        } else {
+            self.run_search(SearchQuery {
+                query,
+                ..Default::default()
+            });
+        }
+    }
     fn show_search(&self) {
         self.navigate(DetailRoute::Search);
-        self.label("DetailEyebrow")
-            .set_text(Some("FOLLOW YOUR CURIOSITY"));
-        self.label("DetailTitle")
-            .set_text(Some("Search and discovery"));
+        self.label("DetailEyebrow").set_text(Some("DISCOVER"));
+        self.label("DetailTitle").set_text(Some("Search"));
         let query = match &*self.feed.borrow() {
             FeedRoute::Search(q) => q.clone(),
             _ => SearchQuery {
@@ -1211,6 +1421,7 @@ impl ReaderView {
         let profile = self.to_ref().downgrade();
         self.show_content(crate::search_panel::build(
             &query,
+            &self.state.borrow().recent_searches,
             Rc::new(move |query| {
                 if let Some(v) = weak.upgrade() {
                     v.run_search(query);
@@ -1222,7 +1433,6 @@ impl ReaderView {
                 }
             }),
         ));
-        self.animate_detail();
     }
     fn run_search(&self, mut query: SearchQuery) {
         query.query = query.query.trim().to_owned();
@@ -1234,10 +1444,8 @@ impl ReaderView {
     }
     fn show_settings(&self) {
         self.navigate(DetailRoute::Settings);
-        self.label("DetailEyebrow")
-            .set_text(Some("MAKE YOURSELF AT HOME"));
-        self.label("DetailTitle")
-            .set_text(Some("Appearance and reading preferences"));
+        self.label("DetailEyebrow").set_text(Some("READER"));
+        self.label("DetailTitle").set_text(Some("Settings"));
         let weak = self.to_ref().downgrade();
         self.show_content(crate::settings::build(
             &self.state.borrow(),
@@ -1257,6 +1465,7 @@ impl ReaderView {
                 self.changed();
                 self.render_stories();
                 self.prune_cache();
+                self.status("Preferences applied.");
             }
             SettingsAction::Mutes(mutes) => {
                 self.state.borrow_mut().mutes = mutes;
@@ -1264,11 +1473,11 @@ impl ReaderView {
                 self.render_stories();
                 self.status("Mute rules updated.");
             }
-            SettingsAction::Export => match self.state.borrow().export_json() {
-                Ok(json) => self.copy_text(
-                    &json,
-                    "Reading library JSON copied. Paste it into a file to back it up.",
-                ),
+            SettingsAction::Export(show_json) => match self.state.borrow().export_json() {
+                Ok(json) => {
+                    show_json(&json);
+                    self.copy_text(&json, "Backup copied.");
+                }
                 Err(error) => self.status(&error.to_string()),
             },
             SettingsAction::Import(json) => match ReaderState::import_json(&json) {
@@ -1284,6 +1493,7 @@ impl ReaderView {
                 Err(error) => self.status(&format!("Import rejected: {error}")),
             },
             SettingsAction::ClearHistory => {
+                self.state.borrow_mut().recent_searches.clear();
                 for entry in self.state.borrow_mut().items.values_mut() {
                     entry.read_at = None;
                     entry.last_opened_at = None;
@@ -1305,13 +1515,12 @@ impl ReaderView {
     }
     fn show_more(&self) {
         self.navigate(DetailRoute::More);
-        self.label("DetailEyebrow").set_text(Some("YOUR NEXT STOP"));
+        self.label("DetailEyebrow").set_text(Some("NAVIGATION"));
         self.label("DetailTitle").set_text(Some("Explore Ember"));
-        let panel = widgets::stack(12.0);
-        panel.set_margin(Thickness::uniform(24.0));
-        panel
-            .children()
-            .add(widgets::heading("A little more to explore").upcast::<Control>());
+        let panel = widgets::stack(3.0);
+        panel.set_max_width(620.0);
+        panel.set_margin(Thickness::uniform(15.0));
+        panel.children().add(widgets::muted("FEEDS"));
         for (label, icon, kind) in [
             ("Best stories", "star", FeedKind::Best),
             ("Ask HN", "chat", FeedKind::Ask),
@@ -1328,6 +1537,7 @@ impl ReaderView {
                 .upcast::<Control>(),
             );
         }
+        panel.children().add(widgets::muted("LIBRARY"));
         for (label, icon, route) in [
             ("Reading history", "history", FeedRoute::History),
             ("Hidden stories", "eye_off", FeedRoute::Hidden),
@@ -1351,6 +1561,7 @@ impl ReaderView {
             })
             .upcast::<Control>(),
         );
+        panel.children().add(widgets::muted("HACKER NEWS"));
         for (label, url) in [
             ("Sign in on Hacker News", ember_core::login_url()),
             ("Submit on Hacker News", ember_core::submit_url()),
@@ -1370,8 +1581,7 @@ impl ReaderView {
     }
     fn show_profile(&self, name: String) {
         self.navigate(DetailRoute::Profile(name.clone()));
-        self.label("DetailEyebrow")
-            .set_text(Some("PEOPLE OF HACKER NEWS"));
+        self.label("DetailEyebrow").set_text(Some("PROFILE"));
         self.label("DetailTitle").set_text(Some(&name));
         self.show_content(widgets::text("Loading profile…", 18.0).upcast::<Control>());
         let Some(repo) = self.repo() else {
@@ -1391,8 +1601,9 @@ impl ReaderView {
                     match result {
                         Ok(loaded) => {
                             if let Some(user) = loaded.value {
-                                let panel = widgets::stack(20.0);
-                                panel.set_margin(Thickness::uniform(28.0));
+                                let panel = widgets::stack(10.0);
+                                panel.set_margin(Thickness::uniform(18.0));
+                                panel.set_max_width(660.0);
                                 panel
                                     .children()
                                     .add(widgets::heading(&user.id).upcast::<Control>());
@@ -1424,14 +1635,14 @@ impl ReaderView {
                                         }
                                     }),
                                 ));
-                                for (label, kind) in [
-                                    ("Read their stories", SearchKind::Stories),
-                                    ("Read their comments", SearchKind::Comments),
+                                for (label, icon, kind) in [
+                                    ("Stories", "home", SearchKind::Stories),
+                                    ("Comments", "chat", SearchKind::Comments),
                                 ] {
                                     let username = user.id.clone();
                                     let target = v.to_ref().downgrade();
                                     panel.children().add(
-                                        widgets::action(label, "person", move || {
+                                        widgets::action(label, icon, move || {
                                             if let Some(v) = target.upgrade() {
                                                 v.run_search(SearchQuery {
                                                     author: Some(username.clone()),
@@ -1524,7 +1735,7 @@ impl ReaderView {
             return;
         }
         let current = self
-            .selected
+            .selected_row
             .get()
             .and_then(|id| stories.iter().position(|v| v.id == id))
             .map(|v| v as i32)
@@ -1542,9 +1753,9 @@ impl ReaderView {
         } else {
             1440.0
         };
-        let mode = if width < 900.0 {
+        let mode = if width < 760.0 {
             0
-        } else if width < 1240.0 {
+        } else if width < 1120.0 {
             1
         } else {
             2
@@ -1558,17 +1769,25 @@ impl ReaderView {
             .set_is_visible(mode > 0 || !detail);
         self.get_control::<Border>("DetailPane")
             .set_is_visible(mode > 0 || detail);
+        self.get_control::<Border>("Masthead")
+            .set_is_visible(mode > 0 || !detail);
+        self.button("ThreadRefresh")
+            .set_is_visible(mode == 0 && matches!(*self.detail.borrow(), DetailRoute::Thread(_)));
         self.get_control::<Border>("SearchHost")
-            .set_is_visible(width >= 1100.0);
+            .set_is_visible(mode == 2);
+        self.button("CompactSearch").set_is_visible(mode == 1);
         self.label("BrandSubtitle").set_is_visible(mode > 0);
+        if self.layout_mode.replace(mode) == mode {
+            return;
+        }
         let grid = self.get_control::<Grid>("Workspace");
         grid.set_column_definitions(
             ColumnDefinitions::parse(if mode == 0 {
                 "0,*,0"
             } else if mode == 1 {
-                "74,340,*"
+                "60,290,*"
             } else {
-                "202,400,*"
+                "172,350,*"
             })
             .expect("static columns"),
         );
@@ -1576,10 +1795,8 @@ impl ReaderView {
             &self.get_control::<Border>("DetailPane"),
             if mode == 0 { 1 } else { 2 },
         );
-        if self.layout_mode.replace(mode) != mode {
-            self.populate_navigation(mode == 1);
-            self.update_navigation();
-        }
+        self.populate_navigation(mode == 1);
+        self.update_navigation();
     }
     fn update_navigation(&self) {
         let feed = self.feed.borrow().clone();
@@ -1609,14 +1826,24 @@ impl ReaderView {
         }
         self.button("MobileSearch").classes().set(
             "active",
-            detail == DetailRoute::Search || matches!(feed, FeedRoute::Search(_)),
+            detail == DetailRoute::Search
+                || (matches!(feed, FeedRoute::Search(_))
+                    && !matches!(detail, DetailRoute::Settings | DetailRoute::More)),
         );
-        self.button("NavSettings")
+        self.button("NavMore")
             .classes()
-            .set("active", detail == DetailRoute::Settings);
+            .set("active", detail == DetailRoute::More);
         self.button("MobileMore").classes().set(
             "active",
-            matches!(detail, DetailRoute::Settings | DetailRoute::More),
+            matches!(detail, DetailRoute::Settings | DetailRoute::More)
+                || (!matches!(detail, DetailRoute::Search)
+                    && matches!(
+                        feed,
+                        FeedRoute::Feed(
+                            FeedKind::Ask | FeedKind::Show | FeedKind::Jobs | FeedKind::Best
+                        ) | FeedRoute::History
+                            | FeedRoute::Hidden
+                    )),
         );
     }
     fn populate_navigation(&self, compact: bool) {
@@ -1630,14 +1857,25 @@ impl ReaderView {
             ("NavSaved", "bookmark", "Saved for later"),
             ("NavHistory", "history", "History"),
             ("NavHidden", "eye_off", "Hidden stories"),
-            ("NavSettings", "settings", "Settings"),
+            ("NavMore", "more", "More"),
         ] {
-            self.button(name)
-                .set_content(Some(Control::boxed(&widgets::nav_content(
-                    icon, label, compact, false,
-                ))));
+            let button = self.button(name);
+            ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
+            button.set_horizontal_content_alignment(if compact {
+                ferroui_base::layout::HorizontalAlignment::Center
+            } else {
+                ferroui_base::layout::HorizontalAlignment::Left
+            });
+            if compact {
+                button.set_padding(Thickness::uniform(0.0));
+            } else {
+                button.set_padding(Thickness::symmetric(10.0, 2.0));
+            }
+            button.set_content(Some(Control::boxed(&widgets::nav_content(
+                icon, label, compact, false,
+            ))));
         }
-        for name in ["ExploreLabel", "LibraryLabel", "RailFooter"] {
+        for name in ["ExploreLabel", "LibraryLabel"] {
             self.label(name).set_is_visible(!compact);
         }
         for (name, icon, label) in [
@@ -1648,7 +1886,7 @@ impl ReaderView {
             ("MobileMore", "more", "More"),
         ] {
             let b = self.button(name);
-            b.set_padding(Thickness::new(4.0, 6.0, 4.0, 6.0));
+            b.set_padding(Thickness::symmetric(2.0, 2.0));
             b.set_horizontal_content_alignment(ferroui_base::layout::HorizontalAlignment::Center);
             b.set_content(Some(Control::boxed(&widgets::nav_content(
                 icon, label, false, true,
