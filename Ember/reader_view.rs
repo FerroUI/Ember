@@ -23,9 +23,9 @@ use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::primitives::TemplatedControlImpl;
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
-    Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, Control, ControlImpl,
-    ControlImplExt, Grid, ListBox, ScrollViewer, StackPanel, TextBlock, TextBox, ToolTip, TopLevel,
-    UserControl,
+    Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, ContextMenu, Control,
+    ControlImpl, ControlImplExt, Grid, ListBox, MenuItem, ScrollViewer, StackPanel, TextBlock,
+    TextBox, ToolTip, TopLevel, UserControl,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +48,20 @@ enum DetailRoute {
     Settings,
     Search,
     More,
+}
+
+#[derive(Clone, Copy)]
+enum StoryFlag {
+    Saved,
+    Hidden,
+    Read,
+}
+
+#[derive(Clone, Copy)]
+enum UndoStoryEdit {
+    Saved { id: u64, saved_at: Option<u64> },
+    Hidden { id: u64, hidden: bool },
+    Read { id: u64, read_at: Option<u64> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +109,7 @@ pub struct ReaderView {
     state_ready: Cell<bool>,
     started: Cell<bool>,
     revision: Cell<u64>,
+    undo_story: Cell<Option<UndoStoryEdit>>,
     saving: Cell<bool>,
     feed: RefCell<FeedRoute>,
     detail: RefCell<DetailRoute>,
@@ -162,6 +177,7 @@ impl ReaderView {
             state_ready: Cell::new(false),
             started: Cell::new(false),
             revision: Cell::new(0),
+            undo_story: Cell::new(None),
             saving: Cell::new(false),
             feed: RefCell::new(FeedRoute::Feed(FeedKind::Top)),
             detail: RefCell::new(DetailRoute::Welcome),
@@ -301,11 +317,13 @@ impl ReaderView {
         self.on("BackButton", |v| v.go_back());
         self.on("SaveButton", |v| {
             if let Some(id) = v.selected.get() {
-                v.toggle_save(id);
+                v.toggle_story_flag(id, StoryFlag::Saved);
             }
         });
         self.on("DownloadButton", |v| v.download());
+        self.on("UndoStory", |v| v.undo_story_edit());
         self.on("DismissStatus", |v| {
+            v.undo_story.set(None);
             v.get_control::<Border>("StatusBar").set_is_visible(false)
         });
         self.on("UnreadButton", |v| {
@@ -440,7 +458,7 @@ impl ReaderView {
                     Key::R => v.refresh(),
                     Key::S => {
                         if let DetailRoute::Thread(id) = *v.detail.borrow() {
-                            v.toggle_save(id);
+                            v.toggle_story_flag(id, StoryFlag::Saved);
                         }
                     }
                     Key::J => v.move_selection(1),
@@ -582,6 +600,8 @@ impl ReaderView {
         }));
     }
     fn status(&self, message: &str) {
+        self.undo_story.set(None);
+        self.button("UndoStory").set_is_visible(false);
         self.label("StatusText").set_text(Some(message));
         self.get_control::<Border>("StatusBar").set_is_visible(true);
     }
@@ -687,6 +707,12 @@ impl ReaderView {
         };
         self.label("FeedTitle").set_text(Some(title));
         self.label("FeedSummary").set_text(Some("Updating…"));
+        // Refresh a local collection without discarding already loaded pages.
+        let local_page_size = if offset == 0 {
+            self.stories.borrow().len().max(30)
+        } else {
+            30
+        };
         let local_ids = match &route {
             FeedRoute::Saved => self.state.borrow().saved_ids(),
             FeedRoute::History => self.state.borrow().history_ids(),
@@ -755,7 +781,7 @@ impl ReaderView {
                     }
                     FeedRoute::Saved | FeedRoute::History | FeedRoute::Hidden => {
                         let ids = local_ids;
-                        let end = (offset + 30).min(ids.len());
+                        let end = offset.saturating_add(local_page_size).min(ids.len());
                         let batch = repo
                             .load_items(
                                 ids.get(offset..end).unwrap_or_default(),
@@ -867,7 +893,10 @@ impl ReaderView {
             .iter()
             .filter(|item| match &*route {
                 FeedRoute::Saved => state.is_saved(item.id),
-                FeedRoute::History => state.is_read(item.id),
+                FeedRoute::History => state
+                    .items
+                    .get(&item.id)
+                    .is_some_and(|s| s.last_opened_at.is_some()),
                 FeedRoute::Hidden => state.items.get(&item.id).is_some_and(|local| local.hidden),
                 _ => state.is_visible(item),
             })
@@ -974,6 +1003,7 @@ impl ReaderView {
             }
         });
         self.wire_card_swipe(&card, id);
+        self.attach_story_menu(&card, item);
         card
     }
     fn update_card_state(&self, card: &StoryCard, id: u64, state: &ReaderState) {
@@ -1001,6 +1031,85 @@ impl ReaderView {
             }),
         );
     }
+    fn attach_story_menu(&self, card: &StoryCard, item: &HnItem) {
+        let menu = ContextMenu::new();
+        let owner = self.to_ref().downgrade();
+        let weak_menu = menu.downgrade();
+        let id = item.id;
+        let url = item.article_url();
+        // Resolve state on opening. Scrolling a feed never constructs a menu's command tree.
+        menu.opening(move |_| {
+            let (Some(view), Some(menu)) = (owner.upgrade(), weak_menu.upgrade()) else {
+                return;
+            };
+            menu.items().clear();
+            let add = |label: &str, icon: &str, command: Box<dyn Fn(&ReaderView)>| {
+                let entry = MenuItem::new();
+                entry.set_header(Some(Rc::new(label.to_owned())));
+                entry.set_icon(Some(Control::boxed(crate::icons::icon(icon))));
+                let owner = view.downgrade();
+                entry.click(move |_, _| {
+                    if let Some(view) = owner.upgrade() {
+                        command(&view);
+                    }
+                });
+                menu.items().add(Some(Control::boxed(entry)));
+            };
+            add(
+                "Open discussion",
+                "chat",
+                Box::new(move |v| v.open_item(id)),
+            );
+            if let Some(url) = url.clone() {
+                add("Open article", "open", Box::new(move |v| v.open_url(&url)));
+            }
+            let state = view.state.borrow();
+            let hidden = state.items.get(&id).is_some_and(|item| item.hidden);
+            for (label, icon, flag) in [
+                (
+                    if state.is_saved(id) {
+                        "Remove from saved"
+                    } else {
+                        "Save for later"
+                    },
+                    "bookmark",
+                    StoryFlag::Saved,
+                ),
+                (
+                    if state.is_read(id) {
+                        "Mark unread"
+                    } else {
+                        "Mark read"
+                    },
+                    "check",
+                    StoryFlag::Read,
+                ),
+                (
+                    if hidden {
+                        "Restore to feeds"
+                    } else {
+                        "Hide story"
+                    },
+                    "eye_off",
+                    StoryFlag::Hidden,
+                ),
+            ] {
+                add(
+                    label,
+                    icon,
+                    Box::new(move |v| v.toggle_story_flag(id, flag)),
+                );
+            }
+            add(
+                "Copy HN link",
+                "copy",
+                Box::new(move |v| {
+                    v.copy_text(&ember_core::item_url(id), "Hacker News link copied.")
+                }),
+            );
+        });
+        card.set_context_menu(menu);
+    }
     fn wire_card_swipe(&self, card: &StoryCard, id: u64) {
         let swipe = SwipeGestureRecognizer::new();
         swipe.set_can_horizontally_swipe(true);
@@ -1018,12 +1127,9 @@ impl ReaderView {
             let delta = distance.replace(0.0);
             if let Some(v) = weak.upgrade() {
                 if delta < -80.0 {
-                    v.toggle_save(id);
+                    v.toggle_story_flag(id, StoryFlag::Saved);
                 } else if delta > 80.0 {
-                    v.state.borrow_mut().toggle_hidden(id);
-                    v.changed();
-                    v.render_stories();
-                    v.status("Story hidden. Restore it from Hidden stories.");
+                    v.toggle_story_flag(id, StoryFlag::Hidden);
                 }
             }
         });
@@ -1274,15 +1380,7 @@ impl ReaderView {
             }
             ThreadAction::Hide => {
                 if let Some(id) = self.selected.get() {
-                    let hidden = self.state.borrow_mut().toggle_hidden(id);
-                    self.changed();
-                    self.render_stories();
-                    self.render_thread();
-                    self.status(if hidden {
-                        "Story hidden. Find it under Hidden stories."
-                    } else {
-                        "Story restored to your feeds."
-                    });
+                    self.toggle_story_flag(id, StoryFlag::Hidden);
                 }
             }
             ThreadAction::MuteDomain => {
@@ -1325,20 +1423,100 @@ impl ReaderView {
         self.changed();
         self.render_thread();
     }
-    fn toggle_save(&self, id: u64) {
+    fn toggle_story_flag(&self, id: u64, flag: StoryFlag) {
         if !self.state_ready.get() {
-            self.status("Saving is paused because reading data could not be restored. Import a backup in Settings to recover it.");
+            self.status("Reading data is unavailable. Open Settings to restore a backup.");
             return;
         }
-        let saved = self.state.borrow_mut().toggle_saved(id, services::now());
+        let mut state = self.state.borrow_mut();
+        let (before, message) = match flag {
+            StoryFlag::Saved => {
+                let saved_at = state.items.get(&id).and_then(|local| local.saved_at);
+                let saved = state.toggle_saved(id, services::now());
+                (
+                    UndoStoryEdit::Saved { id, saved_at },
+                    if saved {
+                        "Added to Saved stories. Download the thread to keep all its comments offline."
+                    } else {
+                        "Removed from Saved stories."
+                    },
+                )
+            }
+            StoryFlag::Hidden => {
+                let hidden = state.toggle_hidden(id);
+                (
+                    UndoStoryEdit::Hidden {
+                        id,
+                        hidden: !hidden,
+                    },
+                    if hidden {
+                        "Story hidden."
+                    } else {
+                        "Story restored to your feeds."
+                    },
+                )
+            }
+            StoryFlag::Read => {
+                let local = state.items.entry(id).or_default();
+                let previous = local.read_at;
+                local.read_at = previous.is_none().then(services::now);
+                (
+                    UndoStoryEdit::Read {
+                        id,
+                        read_at: previous,
+                    },
+                    if previous.is_some() {
+                        "Marked unread."
+                    } else {
+                        "Marked read."
+                    },
+                )
+            }
+        };
+        drop(state);
+        self.update_after_story_edit(id, flag);
+        self.status(message);
+        self.undo_story.set(Some(before));
+        self.button("UndoStory").set_is_visible(true);
+    }
+    fn undo_story_edit(&self) {
+        let Some(edit) = self.undo_story.take() else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        let (id, flag) = match edit {
+            UndoStoryEdit::Saved { id, saved_at } => {
+                state.items.entry(id).or_default().saved_at = saved_at;
+                (id, StoryFlag::Saved)
+            }
+            UndoStoryEdit::Hidden { id, hidden } => {
+                state.items.entry(id).or_default().hidden = hidden;
+                (id, StoryFlag::Hidden)
+            }
+            UndoStoryEdit::Read { id, read_at } => {
+                state.items.entry(id).or_default().read_at = read_at;
+                (id, StoryFlag::Read)
+            }
+        };
+        drop(state);
+        self.update_after_story_edit(id, flag);
+        self.status("Change undone.");
+    }
+    fn update_after_story_edit(&self, id: u64, flag: StoryFlag) {
         self.changed();
         self.render_stories();
-        self.update_save_button();
-        self.status(if saved {
-            "Added to Saved stories. Download the thread to keep all its comments offline."
-        } else {
-            "Removed from Saved stories."
-        });
+        if matches!(
+            (&*self.feed.borrow(), flag),
+            (FeedRoute::Saved, StoryFlag::Saved) | (FeedRoute::Hidden, StoryFlag::Hidden)
+        ) {
+            self.load_feed(0, FetchMode::CacheFirst);
+        }
+        if self.selected.get() == Some(id) {
+            if matches!(flag, StoryFlag::Hidden) {
+                self.render_thread();
+            }
+            self.update_save_button();
+        }
     }
     fn update_save_button(&self) {
         let saved = self
