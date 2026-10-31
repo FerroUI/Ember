@@ -597,7 +597,7 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
                 ..Default::default()
             });
         }
-        if width > 900.0 {
+        if width >= 760.0 {
             click(&shell, &window, &first_story(&window));
         }
         shell.settle();
@@ -612,12 +612,28 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
                 .last_frame(0)
                 .save_ppm(&path.join(format!("{name}.ppm")))
                 .unwrap();
-            if width < 900.0 {
+            if width < 760.0 {
                 click(&shell, &window, &first_story(&window));
                 shell.settle();
                 shell
                     .last_frame(0)
                     .save_ppm(&path.join(format!("{name}-thread.ppm")))
+                    .unwrap();
+                click(&shell, &window, &view.get_control::<Button>("MobileMore"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-more.ppm")))
+                    .unwrap();
+                click(&shell, &window, &view.get_control::<Button>("MobileSearch"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-search.ppm")))
+                    .unwrap();
+            } else {
+                click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+                shell
+                    .last_frame(0)
+                    .save_ppm(&path.join(format!("{name}-settings.ppm")))
                     .unwrap();
             }
         }
