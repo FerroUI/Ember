@@ -363,6 +363,102 @@ fn parse_date(value: &str) -> Result<Option<u64>, String> {
 mod tests {
     use super::*;
     #[test]
+    fn advanced_search_resets_filters_and_enter_submits_only_its_form() {
+        use ferroui_controls::{ComboBox, Expander, Window};
+        use sample_testing::Shell;
+        use std::cell::RefCell;
+
+        let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
+        let last = Rc::new(RefCell::new(None));
+        let result = last.clone();
+        let search = build(
+            &SearchQuery::default(),
+            &[],
+            Rc::new(move |q| {
+                result.replace(Some(q));
+            }),
+            Rc::new(|_| panic!("Enter in search submitted the profile form")),
+        );
+        let window = Window::new();
+        window.set_width(720.0);
+        window.set_height(1120.0);
+        window.set_content(Some(Control::boxed(&search)));
+        window.show();
+        shell.settle();
+
+        let named = |name: &str| {
+            window
+                .get_visual_descendants()
+                .filter_map(|target| target.cast::<Control>())
+                .find(|target| AutomationProperties::get_name(target).as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+        let click = |target: &Control| {
+            shell.click(0, Shell::bounds_of(&window, target).center());
+            shell.settle();
+        };
+        let input = named("Search terms").cast::<TextBox>().unwrap();
+        let enter = || {
+            let mut key = KeyEventArgs::new();
+            key.key = Key::Enter;
+            key.set_routed_event(Some(InputElement::key_down_event()));
+            input.raise_event(&key);
+            shell.settle();
+            assert!(key.handled());
+        };
+        let scope = named("Search in");
+        let order = named("Sort by");
+        assert_eq!(
+            Shell::bounds_of(&window, &scope).y,
+            Shell::bounds_of(&window, &order).y
+        );
+        search.set_width(330.0);
+        shell.settle();
+        assert!(Shell::bounds_of(&window, &order).y >= Shell::bounds_of(&window, &scope).bottom());
+
+        let filters = named("More filters").cast::<Expander>().unwrap();
+        assert!(!filters.is_expanded());
+        click(&filters);
+        assert!(filters.is_expanded());
+        input.set_text(Some("  compact UI  "));
+        let author = named("Author").cast::<TextBox>().unwrap();
+        author.set_text(Some("ada"));
+        let published = named("Published").cast::<ComboBox>().unwrap();
+        published.set_selected_index(5);
+        shell.settle();
+        named("From date")
+            .cast::<TextBox>()
+            .unwrap()
+            .set_text(Some("2024-02-30"));
+        enter();
+        assert!(last.borrow().is_none(), "invalid date submitted");
+        named("From date")
+            .cast::<TextBox>()
+            .unwrap()
+            .set_text(Some("2024-02-29"));
+        enter();
+        let q = last
+            .borrow_mut()
+            .take()
+            .expect("Enter must submit the form");
+        assert_eq!(q.query, "compact UI");
+        assert_eq!(q.author.as_deref(), Some("ada"));
+        assert_eq!(q.since, parse_date("2024-02-29").unwrap());
+        search.set_width(680.0);
+        shell.settle();
+        click(&named("Clear filters"));
+        enter();
+        assert_eq!(
+            last.borrow_mut().take().unwrap(),
+            SearchQuery {
+                query: "compact UI".into(),
+                ..Default::default()
+            }
+        );
+        window.close();
+    }
+
+    #[test]
     fn reopening_a_relative_range_preserves_its_cutoff_until_edited() {
         assert_eq!(
             date_boundary("1970-01-01", Some(3600), false).unwrap(),
