@@ -231,6 +231,41 @@ await run([
         } catch (error) { await failure(page, "desktop"); throw error; }
         finally { await page.close(); }
     }],
+    ["phone readers wrap and copy a code block and follow an internal rich link", async () => {
+        const page = await start(390, 844);
+        try {
+            const source = "fn measure(column: &str, gutter: usize, margin: usize) -> usize {\n    column.len() + 2 * margin + gutter\n}\n";
+            const html = "<p>A width calculation:</p><pre>" +
+                source.replaceAll("&", "&amp;").replaceAll(">", "&gt;") +
+                "</pre><p>See <a href='/item?id=202'>the related reply</a>.</p>";
+            await page.evaluate(`(() => {
+                globalThis.__emberFixtureItems[201].text = ${JSON.stringify(html)};
+                globalThis.__emberFixtureItems[202].text = "<p>That is the same layout function I use.</p>";
+            })()`);
+            await byText(page, title);
+            await reveal(page, e => e.automationName === "Wrap code lines");
+            await byAutomation(page, "Wrap code lines");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            await byAutomation(page, "Copy code");
+            await waitText(page, "Code copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === source,
+                "Wrapping changed the code copied to the clipboard");
+            await byName(page, "DismissStatus");
+            await reveal(page, e => e.automationName === "the related reply");
+            await page.screenshot(path.join(captures, "phone-code-tools.png"));
+            await byAutomation(page, "the related reply");
+            await waitText(page, "Comment by maker");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "202",
+                "A rich HN permalink must open its exact item in the reader");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "101",
+                "Back should restore the original discussion");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "code-tools"); throw error; }
+        finally { await page.close(); }
+    }],
     ["discussion search opens an indexed comment beyond the loaded thread", async () => {
         const page = await start(390, 844);
         try {

@@ -11,7 +11,7 @@ fn inline_story_and_profile_links_open_in_ember_and_preserve_back_history() {
         ),
         (
             "cache:user:ada",
-            json!({"id":"ada","karma":8240,"about":"<p>My <a href='/item?id=2002'>original comment</a> and the layout function:</p><pre>fn column(width: f64, gutter: f64, count: f64) -&gt; f64 {\n    (width - gutter * (count - 1.0)) / count\n}</pre>","submitted":[]}),
+            json!({"id":"ada","karma":8240,"created":1451606400,"about":"<p>My <a href='/item?id=2002'>original comment</a> and the layout function:</p><pre>fn column(width: f64, gutter: f64, count: f64) -&gt; f64 {\n    (width - gutter * (count - 1.0)) / count\n}</pre>","submitted":[2002]}),
         ),
     ] {
         ready(store.put(key, &json!({"fetched_at":now,"value":value}).to_string())).unwrap();
