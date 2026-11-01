@@ -82,11 +82,13 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the selected story's saved state. |
 | `O` | Open the selected story's article, or its HN page when no article is available. |
-| Swipe a story left | Toggle saved state after an 80-pixel horizontal swipe. |
-| Swipe a story right | Toggle hidden state after an 80-pixel horizontal swipe. |
+| Swipe a story left | Reveal **Save** or **Unsave**. Release after the checkmark appears to apply it. |
+| Swipe a story right | Reveal **Hide** or **Restore**. Drag back before releasing to cancel. |
 | Pull the feed heading down | Refresh after a 72-pixel touch/pen drag. |
 
 Open a story’s context menu by right-clicking, pressing the keyboard menu key, or holding the row on a touch screen. From there you can save, hide, mark read or unread, or copy its HN link. **Undo** in the status bar restores the latest story edit, including a removed bookmark’s original position in Saved. Marking a story unread keeps its visit in History.
+
+Compact story rows combine the source, author and age beneath the headline. Points, replies and reading-state icons remain visible.
 
 Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Browser story navigation updates the URL without reloading the
 application, and Back/Forward routes through the reader. A browser URL with
