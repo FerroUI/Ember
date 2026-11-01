@@ -102,6 +102,14 @@ pub(crate) fn section(parent: &StackPanel, title: &str) -> Ref<StackPanel> {
 }
 /// A native disclosure keeps the header keyboard-operable and exposes its expanded state.
 pub(crate) fn disclosure(parent: &StackPanel, title: &str, expanded: bool) -> Ref<StackPanel> {
+    disclosure_with_toggle(parent, title, expanded).1
+}
+
+pub(crate) fn disclosure_with_toggle(
+    parent: &StackPanel,
+    title: &str,
+    expanded: bool,
+) -> (Ref<Expander>, Ref<StackPanel>) {
     let content = stack(8.0);
     let expander = Expander::new();
     expander.set_header(Some(Rc::new(title.to_owned()) as BoxedValue));
@@ -111,8 +119,8 @@ pub(crate) fn disclosure(parent: &StackPanel, title: &str, expanded: bool) -> Re
     expander.set_padding(Thickness::uniform(12.0));
     expander.set_is_expanded(expanded);
     AutomationProperties::set_name(&expander, Some(title));
-    parent.children().add(expander);
-    content
+    parent.children().add(expander.clone());
+    (expander, content)
 }
 
 /// A labelled text field of at most `max_length` characters, added to `parent`.

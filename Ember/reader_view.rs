@@ -72,6 +72,11 @@ enum DetailRoute {
     More,
 }
 
+enum HistoryEntry {
+    Route(DetailRoute),
+    Search(Box<crate::search_panel::Draft>),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CacheWork {
     Idle,
@@ -178,7 +183,8 @@ pub struct ReaderView {
     saving: Cell<bool>,
     feed: RefCell<FeedRoute>,
     detail: RefCell<DetailRoute>,
-    history: RefCell<Vec<DetailRoute>>,
+    history: RefCell<Vec<HistoryEntry>>,
+    search_form: RefCell<Option<crate::search_panel::Form>>,
     stories: RefCell<Vec<HnItem>>,
     rendered_stories: RefCell<Vec<HnItem>>,
     rendered_show_dead: Cell<bool>,
@@ -257,6 +263,7 @@ impl ReaderView {
             feed: RefCell::new(FeedRoute::Feed(FeedKind::Top)),
             detail: RefCell::new(DetailRoute::Welcome),
             history: RefCell::new(Vec::new()),
+            search_form: RefCell::new(None),
             stories: RefCell::new(Vec::new()),
             rendered_stories: RefCell::new(Vec::new()),
             rendered_show_dead: Cell::new(false),
@@ -477,7 +484,7 @@ impl ReaderView {
         self.textbox("SearchBox").add_handler(
             InputElement::key_down_event(),
             move |_, e: &KeyEventArgs| {
-                if e.key == Key::Enter {
+                if e.key == Key::Enter && e.key_modifiers == KeyModifiers::NONE {
                     if let Some(v) = weak
                         .upgrade()
                         .filter(|v| !v.textbox("SearchBox").is_composing_text())
@@ -2302,7 +2309,11 @@ impl ReaderView {
         }
         let old = self.detail.replace(route.clone());
         if old != route && old != DetailRoute::Welcome {
-            self.history.borrow_mut().push(old);
+            let entry = match self.search_form.borrow().as_ref() {
+                Some(form) => HistoryEntry::Search(Box::new((form.capture)())),
+                None => HistoryEntry::Route(old),
+            };
+            self.history.borrow_mut().push(entry);
         }
         self.detail_generation
             .set(self.detail_generation.get().wrapping_add(1));
@@ -2312,6 +2323,7 @@ impl ReaderView {
         self.animate_detail();
     }
     fn configure_detail(&self) {
+        self.search_form.borrow_mut().take();
         self.storage_report.borrow_mut().take();
         self.explore_counts.borrow_mut().clear();
         self.profile_mute.borrow_mut().take();
@@ -2435,6 +2447,14 @@ impl ReaderView {
         self.remember_thread();
         // Restoring a route must not put the outgoing page back onto the history stack.
         self.detail.replace(DetailRoute::Welcome);
+        let route = match route {
+            Some(HistoryEntry::Search(draft)) => {
+                self.present_search_form(None, None, Some(*draft));
+                return;
+            }
+            Some(HistoryEntry::Route(route)) => Some(route),
+            None => None,
+        };
         match route {
             Some(DetailRoute::Thread(id)) => {
                 self.open_item_internal(id, true);
@@ -2499,6 +2519,14 @@ impl ReaderView {
                 return;
             }
         }
+        self.present_search_form(profile_lookup, discussion, None);
+    }
+    fn present_search_form(
+        &self,
+        profile_lookup: Option<&str>,
+        discussion: Option<u64>,
+        draft: Option<crate::search_panel::Draft>,
+    ) {
         self.navigate(DetailRoute::Search);
         self.label("DetailEyebrow").set_text(Some("DISCOVER"));
         self.label("DetailTitle").set_text(Some("Search"));
@@ -2517,10 +2545,11 @@ impl ReaderView {
         let weak = self.to_ref().downgrade();
         let profile = self.to_ref().downgrade();
         let history = self.to_ref().downgrade();
-        self.show_content(crate::search_panel::build(
+        let form = crate::search_panel::build(
             &query,
             &self.state.borrow().recent_searches,
             profile_lookup,
+            draft,
             Rc::new(move |term| {
                 if let Some(v) = history.upgrade() {
                     v.state
@@ -2540,7 +2569,9 @@ impl ReaderView {
                     v.open_hn_destination(link);
                 }
             }),
-        ));
+        );
+        self.show_content(form.control.clone());
+        self.search_form.replace(Some(form));
     }
     fn run_search(&self, mut query: SearchQuery) {
         query.query = query.query.trim().to_owned();
@@ -2548,7 +2579,14 @@ impl ReaderView {
         self.state.borrow_mut().remember_search(&query.query);
         self.changed();
         self.textbox("SearchBox").set_text(Some(&query.query));
-        self.select_feed(FeedRoute::Search(query));
+        let route = FeedRoute::Search(query);
+        if *self.feed.borrow() == route
+            && matches!(self.feed_load.get(), FeedLoad::Ready | FeedLoad::Loading)
+        {
+            self.back_to_feed(true);
+        } else {
+            self.select_feed(route);
+        }
     }
     fn show_settings(&self) {
         self.navigate(DetailRoute::Settings);
@@ -2599,6 +2637,7 @@ impl ReaderView {
                     entry.last_opened_at = None;
                     entry.seen_comments.clear();
                     entry.scroll_anchor = None;
+                    entry.scroll_inset = 0;
                 }
                 self.changed();
                 self.render_stories();

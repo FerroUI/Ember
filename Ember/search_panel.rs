@@ -1,14 +1,14 @@
 //! Search and public-profile forms. Filters are data, never interpolated tags.
 use crate::widgets::{
-    combo, disclosure, field_pair, form_button as button, icon_button, label as text, section,
-    FormValidation,
+    combo, disclosure_with_toggle, field_pair, form_button as button, icon_button, label as text,
+    section, FormValidation,
 };
 use ember_core::{validate_username, HnDestination, SearchKind, SearchQuery, SearchSort};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
 use ferroui_base::layout::HorizontalAlignment;
 use ferroui_base::media::TextTrimming;
 use ferroui_base::utilities::DateTime;
-use ferroui_base::{Ref, Thickness};
+use ferroui_base::{Ref, Thickness, Vector};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::{
     Button, ColumnDefinitions, Control, Grid, ScrollViewer, StackPanel, TextBox,
@@ -22,14 +22,34 @@ fn field(parent: &StackPanel, label: &str, value: &str, placeholder: &str) -> Re
     crate::widgets::field(parent, label, value, placeholder, FIELD_LENGTH, false)
 }
 
-pub fn build(
+/// Back history keeps the form's raw edits, including invalid or unfinished values.
+pub(super) struct Draft {
+    baseline: SearchQuery,
+    fields: Vec<(String, i32, i32)>,
+    kind: i32,
+    sort: i32,
+    period: i32,
+    sections: [bool; 3],
+    focus: Option<usize>,
+    offset: Vector,
+}
+
+pub(super) struct Form {
+    pub control: Ref<Control>,
+    pub capture: Box<dyn Fn() -> Draft>,
+}
+
+pub(super) fn build(
     query: &SearchQuery,
     recent_searches: &[String],
     profile_lookup: Option<&str>,
+    draft: Option<Draft>,
     forget_search: Rc<dyn Fn(&str)>,
     on_search: Rc<dyn Fn(SearchQuery)>,
     on_open: Rc<dyn Fn(HnDestination)>,
-) -> Ref<Control> {
+) -> Form {
+    let query = draft.as_ref().map_or(query, |draft| &draft.baseline);
+    let baseline = query.clone();
     let root = StackPanel::new();
     root.set_spacing(10.0);
     root.set_margin(Thickness::uniform(16.0));
@@ -42,7 +62,7 @@ pub fn build(
         "Search terms or a Hacker News link",
     );
     words.set_name(Some("SearchTerms".to_owned()));
-    if profile_lookup.is_none() {
+    if profile_lookup.is_none() && draft.is_none() {
         focus_on_load(&words, false);
     }
     let (scope, order) = field_pair(&search);
@@ -76,7 +96,8 @@ pub fn build(
             0
         },
     );
-    let filters = disclosure(&search, "More filters", has_advanced_filters(query));
+    let (filters_toggle, filters) =
+        disclosure_with_toggle(&search, "More filters", has_advanced_filters(query));
     let author = field(
         &filters,
         "Author",
@@ -92,6 +113,7 @@ pub fn build(
     let previous_kind = Rc::new(std::cell::Cell::new(None));
     let selector = kind.downgrade();
     let source = discussion.downgrade();
+    let saved_kind = previous_kind.clone();
     let constrain_kind = move || {
         let (Some(selector), Some(source)) = (selector.upgrade(), source.upgrade()) else {
             return;
@@ -275,6 +297,17 @@ pub fn build(
             message.set_is_visible(false);
         });
     }
+    let mut fields = vec![
+        words.clone(),
+        author.clone(),
+        discussion.clone(),
+        points.clone(),
+        comments.clone(),
+        from_date.clone(),
+        through_date.clone(),
+    ];
+    let discussion_scope_field = discussion.clone();
+    let choices = [kind.clone(), sort.clone(), time.clone()];
     let original = query.clone();
     let recent_input = words.downgrade();
     let open_link = on_open.clone();
@@ -377,8 +410,10 @@ pub fn build(
         }
     });
     bind_submit(&search, &submit, run.clone());
+    let mut recent_toggle = None;
     if !recent_searches.is_empty() {
-        let recent = disclosure(&root, "Recent searches", false);
+        let (toggle, recent) = disclosure_with_toggle(&root, "Recent searches", false);
+        recent_toggle = Some(toggle);
         recent.children().add(text("Select a term to edit it, or use its search button to run it with the current filters.", 12.0, true));
         let rows = crate::widgets::stack(2.0);
         recent.children().add(rows.clone());
@@ -464,7 +499,8 @@ pub fn build(
             rows.children().add(row);
         }
     }
-    let people = disclosure(&root, "Find a person", profile_lookup.is_some());
+    let (people_toggle, people) =
+        disclosure_with_toggle(&root, "Find a person", profile_lookup.is_some());
     let username = field(
         &people,
         "Hacker News username",
@@ -472,7 +508,7 @@ pub fn build(
         "Username, @name, or profile link",
     );
 
-    if profile_lookup.is_some() {
+    if profile_lookup.is_some() && draft.is_none() {
         focus_on_load(&username, true);
     }
     let message = text("", 13.0, false);
@@ -481,6 +517,9 @@ pub fn build(
     people.children().add(message.clone());
     let open = button("Open profile");
     people.children().add(open.clone());
+    fields.push(username.clone());
+    let [kind, sort, period] = choices;
+
     bind_submit(
         &people,
         &open,
@@ -505,7 +544,77 @@ pub fn build(
         .add(text("Search powered by Algolia", 12.0, true));
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
-    scroll.upcast()
+    let sections = [Some(filters_toggle), recent_toggle, Some(people_toggle)];
+    let focus_targets: Vec<_> = fields
+        .iter()
+        .map(|field| field.clone().upcast::<Control>())
+        .chain([
+            kind.clone().upcast(),
+            sort.clone().upcast(),
+            period.clone().upcast(),
+            submit.upcast(),
+            open.upcast(),
+        ])
+        .collect();
+    if let Some(draft) = draft {
+        // A scoped query locks the kind selector. Release it so that clearing the
+        // restored discussion later returns to the reader's previous kind.
+        discussion_scope_field.set_text(Some(""));
+        kind.set_selected_index(draft.kind);
+        sort.set_selected_index(draft.sort);
+        period.set_selected_index(draft.period);
+        for (field, (value, start, end)) in fields.iter().zip(draft.fields) {
+            field.set_text(Some(&value));
+            field.set_selection_start(start);
+            field.set_selection_end(end);
+        }
+        for (section, expanded) in sections.iter().zip(draft.sections) {
+            if let Some(section) = section {
+                section.set_is_expanded(expanded);
+            }
+        }
+        let target = draft
+            .focus
+            .and_then(|index| focus_targets.get(index))
+            .unwrap_or(&focus_targets[0])
+            .downgrade();
+        let viewer = scroll.downgrade();
+        scroll.loaded(move |_, _| {
+            if let Some(target) = target.upgrade().filter(|c| c.is_effectively_visible()) {
+                target.focus();
+            }
+            if let Some(viewer) = viewer.upgrade() {
+                viewer.set_offset(draft.offset);
+            }
+        });
+    }
+    let control = scroll.clone().upcast();
+    Form {
+        control,
+        capture: Box::new(move || Draft {
+            baseline: baseline.clone(),
+            fields: fields
+                .iter()
+                .map(|field| {
+                    (
+                        field.text().unwrap_or_default(),
+                        field.selection_start(),
+                        field.selection_end(),
+                    )
+                })
+                .collect(),
+            kind: saved_kind.get().unwrap_or_else(|| kind.selected_index()),
+            sort: sort.selected_index(),
+            period: period.selected_index(),
+            sections: sections
+                .each_ref()
+                .map(|section| section.as_ref().is_some_and(|s| s.is_expanded())),
+            focus: focus_targets
+                .iter()
+                .position(|target| target.is_keyboard_focus_within()),
+            offset: scroll.offset(),
+        }),
+    }
 }
 
 fn focus_on_load(field: &TextBox, reveal: bool) {
@@ -644,6 +753,7 @@ mod tests {
             &SearchQuery::default(),
             &["adaptive layout".to_owned(), "older query".to_owned()],
             None,
+            None,
             Rc::new(move |term| forgotten_terms.borrow_mut().push(term.to_owned())),
             Rc::new(move |q| {
                 result.replace(Some(q));
@@ -655,7 +765,7 @@ mod tests {
         let window = Window::new();
         window.set_width(720.0);
         window.set_height(1120.0);
-        window.set_content(Some(Control::boxed(&search)));
+        window.set_content(Some(Control::boxed(&search.control)));
         window.show();
         shell.settle();
 
@@ -697,7 +807,7 @@ mod tests {
             Shell::bounds_of(&window, &scope).y,
             Shell::bounds_of(&window, &order).y
         );
-        search.set_width(330.0);
+        search.control.set_width(330.0);
         shell.settle();
         assert!(Shell::bounds_of(&window, &order).y >= Shell::bounds_of(&window, &scope).bottom());
 
@@ -749,7 +859,7 @@ mod tests {
         assert_eq!(q.query, "compact UI");
         assert_eq!(q.author.as_deref(), Some("ada"));
         assert_eq!(q.since, parse_date("2024-02-29").unwrap());
-        search.set_width(680.0);
+        search.control.set_width(680.0);
         shell.settle();
         click(&named("Clear filters"));
         enter();
@@ -799,6 +909,7 @@ mod tests {
             &SearchQuery::default(),
             &[],
             Some("TypoUser"),
+            None,
             Rc::new(|_| {}),
             Rc::new(|_| panic!("profile lookup submitted a content search")),
             Rc::new(move |user| {
@@ -808,7 +919,7 @@ mod tests {
         let window = Window::new();
         window.set_width(330.0);
         window.set_height(520.0);
-        window.set_content(Some(Control::boxed(form)));
+        window.set_content(Some(Control::boxed(form.control)));
         window.show();
         shell.settle();
         let username = window

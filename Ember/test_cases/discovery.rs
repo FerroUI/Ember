@@ -344,3 +344,162 @@ fn discussion_search_keeps_its_scope_and_opens_the_exact_comment() {
     assert_eq!(kind.selected_index(), 0);
     window.close();
 }
+
+#[test]
+fn back_from_a_profile_restores_unsubmitted_search_edits_and_the_phone_viewport() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    use ferroui_controls::{ComboBox, ContentControl, Expander, ScrollViewer};
+
+    let (shell, window, view) = start(
+        390.0,
+        650.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    click(&shell, &window, &view.get_control::<Button>("MobileSearch"));
+    let named = |name: &str| {
+        view.get_control::<ContentControl>("DetailHost")
+            .get_visual_descendants()
+            .filter_map(|node| node.cast::<Control>())
+            .find(|control| AutomationProperties::get_name(control).as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    let field = |name: &str| named(name).cast::<TextBox>().unwrap();
+    let filters = named("More filters").cast::<Expander>().unwrap();
+    filters.set_is_expanded(true);
+    shell.settle();
+    field("Search terms").set_text(Some("  unfinished query  "));
+    named("Search in")
+        .cast::<ComboBox>()
+        .unwrap()
+        .set_selected_index(4);
+    field("Discussion").set_text(Some("1001"));
+    field("Minimum points").set_text(Some("1x"));
+    named("Find a person")
+        .cast::<Expander>()
+        .unwrap()
+        .set_is_expanded(true);
+    shell.settle();
+    let name = field("Hacker News username");
+    name.set_text(Some("@ada"));
+    name.bring_into_view();
+    name.focus();
+    name.set_selection_start(1);
+    name.set_selection_end(4);
+    shell.settle();
+    let viewer = || {
+        view.get_control::<ContentControl>("DetailHost")
+            .get_visual_descendants()
+            .find_map(|c| c.cast::<ScrollViewer>())
+            .unwrap()
+    };
+    let position = viewer().offset().y;
+    assert!(
+        position > 0.0,
+        "the test must leave the top of the search form"
+    );
+    let mut enter = KeyEventArgs::new();
+    enter.key = Key::Enter;
+    enter.set_routed_event(Some(InputElement::key_down_event()));
+    name.raise_event(&enter);
+    for _ in 0..6 {
+        shell.settle();
+    }
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("ada")
+    );
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert_eq!(
+        field("Search terms").text().as_deref(),
+        Some("  unfinished query  ")
+    );
+    assert_eq!(field("Minimum points").text().as_deref(), Some("1x"));
+    assert!(named("More filters")
+        .cast::<Expander>()
+        .unwrap()
+        .is_expanded());
+    assert!(named("Find a person")
+        .cast::<Expander>()
+        .unwrap()
+        .is_expanded());
+    let name = field("Hacker News username");
+    assert_eq!(name.text().as_deref(), Some("@ada"));
+    assert!(name.is_focused());
+    assert_eq!(name.selected_text(), "ada");
+    assert!((viewer().offset().y - position).abs() < 2.0);
+    field("Discussion").set_text(Some(""));
+    assert_eq!(
+        named("Search in")
+            .cast::<ComboBox>()
+            .unwrap()
+            .selected_index(),
+        4
+    );
+    window.close();
+}
+
+#[test]
+fn resubmitting_unchanged_search_results_keeps_loaded_pages_and_scroll_position() {
+    use ferroui_base::Vector;
+    use ferroui_controls::ScrollViewer;
+    struct PagedSearch(FixtureHttp);
+    impl HttpClient for PagedSearch {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            if !url.contains("/api/v1/search") {
+                return self.0.get(url);
+            }
+            Box::pin(async move {
+                let second = url.split(['?', '&']).any(|p| p == "page=1");
+                let ids = if second { 3030..3032 } else { 3000..3030 };
+                let hits: Vec<_> = ids.map(|id| json!({
+                    "objectID": id.to_string(), "title": format!("Result {id}"), "author": "ada"
+                })).collect();
+                Ok(
+                    json!({"hits": hits, "page": usize::from(second), "nbPages":2,"nbHits":32})
+                        .to_string(),
+                )
+            })
+        }
+    }
+    let (shell, window, view) = start_with_http(
+        1280.0,
+        700.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(PagedSearch(FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        })),
+    );
+    view.get_control::<TextBox>("SearchBox")
+        .set_text(Some("testing"));
+    click(&shell, &window, &view.get_control::<Button>("SearchButton"));
+    click_in_view(
+        &shell,
+        &window,
+        &view.get_control::<Button>("LoadMoreButton"),
+    );
+    let stories = view.get_control::<ListBox>("Stories");
+    assert_eq!(stories.items().count(), 32);
+    let scroll = stories.scroll().unwrap().cast::<ScrollViewer>().unwrap();
+    scroll.set_offset(Vector::new(0.0, 425.0));
+    shell.settle();
+    let before = scroll.offset().y;
+    assert!(before > 0.0);
+    click(
+        &shell,
+        &window,
+        &view.get_control::<Button>("EditFeedSearch"),
+    );
+    let submit = view
+        .get_control::<ferroui_controls::ContentControl>("DetailHost")
+        .get_visual_descendants()
+        .filter_map(|node| node.cast::<Button>())
+        .find(|button| AutomationProperties::get_name(button).as_deref() == Some("Search"))
+        .unwrap();
+    click_in_view(&shell, &window, &submit);
+    assert_eq!(stories.items().count(), 32);
+    assert!((scroll.offset().y - before).abs() < 2.0);
+    window.close();
+}
