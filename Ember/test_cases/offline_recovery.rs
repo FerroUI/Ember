@@ -166,12 +166,23 @@ fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_
         fixture: FixtureHttp,
         hold: Cell<bool>,
         waiting: Cell<bool>,
+        waker: RefCell<Option<Waker>>,
     }
     impl HttpClient for DelayedReplies {
         fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
             if self.hold.get() && url.ends_with("/item/2001.json") {
                 self.waiting.set(true);
-                return Box::pin(std::future::pending());
+                return Box::pin(async move {
+                    poll_fn(|cx| {
+                        if !self.hold.get() {
+                            return Poll::Ready(());
+                        }
+                        self.waker.replace(Some(cx.waker().clone()));
+                        Poll::Pending
+                    })
+                    .await;
+                    self.fixture.get(url).await
+                });
             }
             self.fixture.get(url)
         }
@@ -182,10 +193,11 @@ fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_
         },
         hold: Cell::new(true),
         waiting: Cell::new(false),
+        waker: RefCell::default(),
     });
     let store = Rc::new(MemoryStore::default());
     let (shell, window, view) = start_with_http(390.0, 844.0, store.clone(), http.clone());
-    let begin = || {
+    let command = |label: &str| {
         let card = first_story(&window);
         card.raise_event(&ContextRequestedEventArgs::new());
         let menu = card.context_menu().unwrap();
@@ -194,17 +206,15 @@ fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_
             .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
             .filter_map(|c| c.cast::<MenuItem>())
             .find(|item| {
-                item.header().is_some_and(|h| {
-                    h.downcast_ref::<String>().map(String::as_str)
-                        == Some("Download for offline reading")
-                })
+                item.header()
+                    .is_some_and(|h| h.downcast_ref::<String>().map(String::as_str) == Some(label))
             })
             .unwrap();
         menu.close();
         action.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
         shell.settle();
     };
-    begin();
+    command("Download for offline reading");
     assert!(http.waiting.get());
     assert!(view
         .get_control::<TextBlock>("TransferCount")
@@ -233,11 +243,20 @@ fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_
             .unwrap_or_default()
     };
     assert!(!state().is_saved(1001) && !state().downloaded_threads.contains_key(&1001));
-    http.hold.set(false);
     click_in_view(&shell, &window, &view.get_control::<Button>("MobileHome"));
-    begin();
+    command("Download for offline reading");
+    command("Save for later");
+    command("Remove from saved");
+    http.hold.set(false);
+    http.waker.borrow_mut().take().unwrap().wake();
+    for _ in 0..5 {
+        shell.settle();
+    }
     let saved = state();
-    assert!(saved.is_saved(1001));
+    assert!(
+        !saved.is_saved(1001),
+        "completion must honor the latest bookmark edit"
+    );
     assert!(saved.downloaded_threads.contains_key(&1001));
     assert!(!saved.is_read(1001));
     assert!(!view

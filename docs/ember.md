@@ -228,7 +228,7 @@ Back from a profile or permalink restores the search form’s typed values, open
 
 When you leave a long comment or story, Ember remembers the row and the distance into it. Closing Find, returning to the thread or reopening Ember restores that position. Choosing **Read in context** instead takes you to the selected reply and expands its path while keeping other branches folded.
 
-Use **Download for offline reading** from a feed row to save its discussion without opening it or marking it read. The transfer stays visible when you switch tabs. You can cancel while Ember collects items or verifies the saved copy. A canceled first download leaves its bookmark and download flags untouched. **Check offline copy** reads only this device’s storage.
+Use **Download for offline reading** from a feed row to save its discussion without opening it or marking it read. The transfer stays visible when you switch tabs. You can cancel while Ember collects items or verifies the saved copy. A canceled first download leaves its bookmark and download flags untouched. Changing a bookmark during the transfer takes precedence over the automatic bookmark on completion. **Check offline copy** reads only this device’s storage.
 
 Reply menus offer **Open comment thread** and navigation between sibling replies when available. Returning with Back restores the previously loaded portion of the discussion as well as its reading position. Opening a fresh discussion starts with its initial item budget.
 

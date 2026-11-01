@@ -1,11 +1,15 @@
 //! Commands shared by the discussion toolbar, the library and local data settings.
 use super::*;
 use ferroui_controls::MenuFlyout;
+use futures_util::future::{AbortHandle, Abortable, Aborted};
+
+pub(super) struct Transfer {
+    cancel: AbortHandle,
+    pub(super) keep_bookmark_choice: bool,
+}
 
 impl ReaderView {
     pub(super) fn start_download(&self, id: u64) {
-        use futures_util::future::{AbortHandle, Abortable};
-
         if !self.state_ready.get() {
             self.status("Download is paused until reading data is restored. Import a backup in Settings first.");
             return;
@@ -40,7 +44,10 @@ impl ReaderView {
             })
             .unwrap_or_else(|| format!("Discussion {id}"));
         let (cancel, registration) = AbortHandle::new_pair();
-        self.transfer_cancel.replace(Some(cancel));
+        self.transfer.replace(Some(Transfer {
+            cancel,
+            keep_bookmark_choice: false,
+        }));
         self.set_cache_work(CacheWork::Downloading(id));
         self.label("TransferTitle").set_text(Some(&title));
         self.label("TransferCount").set_text(Some(if checking {
@@ -56,76 +63,122 @@ impl ReaderView {
 
         let generation = self.library_generation.get();
         let weak = self.to_ref().downgrade();
-        drop(Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-            let transfer = repo.download_thread_with_progress(id, 10000, services::now(), mode, |progress| {
-                if let Some(view) = weak.upgrade() {
-                    view.show_transfer_progress(progress, checking);
-                }
-            });
-            let result = Abortable::new(transfer, registration).await;
-            let Some(view) = weak.upgrade() else { return };
-            view.transfer_cancel.borrow_mut().take();
-            let had_focus = view.button("CancelTransfer").is_focused();
-            view.get_control::<Border>("TransferBar").set_is_visible(false);
-            view.set_cache_work(CacheWork::Idle);
-            if had_focus {
-                let toolbar = ["DownloadButton", "ToolbarMore", "BackButton"]
-                    .into_iter().map(|name| view.button(name))
-                    .find(|button| button.is_effectively_visible() && button.is_enabled());
-                if let Some(command) = toolbar {
-                    command.focus();
-                } else if view.get_control::<ListBox>("Stories").items().count() > 0 {
-                    view.get_control::<ListBox>("Stories").focus();
-                } else if view.button("RetryButton").is_effectively_visible() {
-                    view.button("RetryButton").focus();
-                }
+        drop(
+            Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                let transfer = repo.download_thread_with_progress(
+                    id,
+                    10000,
+                    services::now(),
+                    mode,
+                    |progress| {
+                        if let Some(view) = weak.upgrade() {
+                            view.show_transfer_progress(progress, checking);
+                        }
+                    },
+                );
+                let result = Abortable::new(transfer, registration).await;
+                let Some(view) = weak.upgrade() else { return };
+                view.finish_download(id, generation, checking, result);
+            }),
+        );
+    }
+
+    fn finish_download(
+        &self,
+        id: u64,
+        generation: u64,
+        checking: bool,
+        result: Result<Result<ThreadSnapshot, ember_core::ReaderError>, Aborted>,
+    ) {
+        let Some(transfer) = self.transfer.borrow_mut().take() else {
+            return;
+        };
+        let had_focus = self.button("CancelTransfer").is_focused();
+        self.get_control::<Border>("TransferBar")
+            .set_is_visible(false);
+        self.set_cache_work(CacheWork::Idle);
+        if had_focus {
+            let toolbar = ["DownloadButton", "ToolbarMore", "BackButton"]
+                .into_iter()
+                .map(|name| self.button(name))
+                .find(|button| button.is_effectively_visible() && button.is_enabled());
+            if let Some(command) = toolbar {
+                command.focus();
+            } else if self.get_control::<ListBox>("Stories").items().count() > 0 {
+                self.get_control::<ListBox>("Stories").focus();
+            } else if self.button("RetryButton").is_effectively_visible() {
+                self.button("RetryButton").focus();
             }
-            if generation != view.library_generation.get() { return; }
-            let Ok(result) = result else {
-                view.status(if checking { "Offline check canceled." } else { "Download canceled." });
-                return;
-            };
-            let library_changed = if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
-                let mut state = view.state.borrow_mut();
-                let first_download = state.downloaded_threads.insert(id, thread.items.keys().copied().collect()).is_none();
-                if first_download {
-                    state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
+        }
+        if generation != self.library_generation.get() {
+            return;
+        }
+        let Ok(result) = result else {
+            self.status(if checking {
+                "Offline check canceled."
+            } else {
+                "Download canceled."
+            });
+            return;
+        };
+        let library_changed =
+            if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
+                let mut state = self.state.borrow_mut();
+                let first_download = state
+                    .downloaded_threads
+                    .insert(id, thread.items.keys().copied().collect())
+                    .is_none();
+                if first_download && !transfer.keep_bookmark_choice {
+                    state
+                        .items
+                        .entry(id)
+                        .or_default()
+                        .saved_at
+                        .get_or_insert_with(services::now);
                 }
                 true
             } else {
-                view.state.borrow_mut().downloaded_threads.remove(&id).is_some()
+                self.state
+                    .borrow_mut()
+                    .downloaded_threads
+                    .remove(&id)
+                    .is_some()
             };
-            if library_changed {
-                view.changed();
-                view.update_thread_commands();
-                if *view.feed.borrow() == FeedRoute::Saved {
-                    view.load_feed(0, FetchMode::CacheFirst);
-                }
+        if library_changed {
+            self.changed();
+            self.update_thread_commands();
+            if *self.feed.borrow() == FeedRoute::Saved {
+                self.load_feed(0, FetchMode::CacheFirst);
             }
-            match result {
-                Ok(thread) => {
-                    let message = if !thread.complete {
-                        format!("Download incomplete. {} items missing or pending. Retry Download to continue.",
+        }
+        match result {
+            Ok(thread) => {
+                let message = if !thread.complete {
+                    format!("Download incomplete. {} items missing or pending. Retry Download to continue.",
                             thread.missing_ids.len() + thread.pending_ids.len())
-                    } else if checking {
-                        "Offline copy checked. All items are available on this device.".to_owned()
-                    } else {
-                        "Discussion downloaded. It is available offline in Saved stories.".to_owned()
-                    };
-                    if view.selected.get() == Some(id) && matches!(*view.detail.borrow(), DetailRoute::Thread(_)) && !checking {
-                        view.accept_thread(thread);
-                    }
-                    view.status(&message);
+                } else if checking {
+                    "Offline copy checked. All items are available on this device.".to_owned()
+                } else if !self.state.borrow().is_saved(id) {
+                    "Discussion downloaded. It is available in Downloads.".to_owned()
+                } else {
+                    "Discussion downloaded. It is available offline in Saved stories.".to_owned()
+                };
+                if self.selected.get() == Some(id)
+                    && matches!(*self.detail.borrow(), DetailRoute::Thread(_))
+                    && !checking
+                {
+                    self.accept_thread(thread);
                 }
-                Err(error) => view.status(&format!("Offline copy unavailable: {error}")),
+                self.status(&message);
             }
-            view.prune_cache();
-        }));
+            Err(error) => self.status(&format!("Offline copy unavailable: {error}")),
+        }
+        self.prune_cache();
     }
 
     pub(super) fn cancel_transfer(&self) {
-        if let Some(cancel) = self.transfer_cancel.borrow().as_ref() {
-            cancel.abort();
+        if let Some(transfer) = self.transfer.borrow().as_ref() {
+            transfer.cancel.abort();
         }
     }
 

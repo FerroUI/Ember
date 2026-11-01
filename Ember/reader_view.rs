@@ -248,7 +248,7 @@ pub struct ReaderView {
     thread: RefCell<Option<ThreadSnapshot>>,
     thread_control: RefCell<Option<Ref<Control>>>,
     cache_work: Cell<CacheWork>,
-    transfer_cancel: RefCell<Option<futures_util::future::AbortHandle>>,
+    transfer: RefCell<Option<offline::Transfer>>,
     storage_report: RefCell<Option<Rc<dyn Fn(&str)>>>,
     storage_request: Cell<u64>,
     /// Whether the cache was pruned after a feed loaded this session (see `accept_items`).
@@ -330,7 +330,7 @@ impl ReaderView {
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
             cache_work: Cell::new(CacheWork::Idle),
-            transfer_cancel: RefCell::new(None),
+            transfer: RefCell::new(None),
             storage_report: RefCell::default(),
             storage_request: Cell::new(0),
             pruned_after_feed: Cell::new(false),
@@ -2254,6 +2254,11 @@ impl ReaderView {
         self.status("Change undone.");
     }
     fn update_after_story_edit(&self, id: u64, flag: StoryFlag) {
+        if matches!(flag, StoryFlag::Saved) && self.cache_work.get() == CacheWork::Downloading(id) {
+            if let Some(transfer) = self.transfer.borrow_mut().as_mut() {
+                transfer.keep_bookmark_choice = true;
+            }
+        }
         self.changed();
         self.render_stories();
         if matches!(
