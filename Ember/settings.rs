@@ -148,8 +148,49 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
     let validation = feedback(&appearance);
     let apply = button("Apply preferences");
     apply.classes().add("accent");
-    appearance.children().add(apply.clone());
-    let current = RefCell::new(state.preferences.clone());
+    let commands = WrapPanel::new();
+    commands.set_item_spacing(6.0);
+    commands.children().add(apply.clone());
+    let reset = button("Reset theme & type");
+    reset.classes().add("quiet");
+    AutomationProperties::set_help_text(
+        &reset,
+        Some("Preview the default colors, reading size and line spacing."),
+    );
+    commands.children().add(reset.clone());
+    appearance.children().add(commands);
+    let current = Rc::new(RefCell::new(state.preferences.clone()));
+    {
+        let theme = theme.clone();
+        let accent = accent.clone();
+        let background = background.clone();
+        let size = font_size.clone();
+        let spacing = line_height.clone();
+        let message = validation.clone();
+        let base = current.clone();
+        reset.click(move |_, _| {
+            let defaults = Preferences::default();
+            theme.set_selected_index(0);
+            accent.set_text(Some(&defaults.accent));
+            background.set_text(Some(""));
+            base.borrow_mut().custom_background = None;
+            replace_reading_value(&size, defaults.font_size);
+            replace_reading_value(&spacing, defaults.line_height);
+            let mut check = FormValidation::default();
+            for field in [
+                accent.clone().upcast::<Control>(),
+                background.clone().upcast(),
+                size.clone().upcast(),
+                spacing.clone().upcast(),
+            ] {
+                check.check(&field, Ok(()));
+            }
+            message.set_text(Some(
+                "Default theme and type ready. Apply preferences to save.",
+            ));
+            message.set_is_visible(true);
+        });
+    }
     let callback = on_action.clone();
     apply.click(move |_, _| {
         let mut check = FormValidation::default();
@@ -617,11 +658,7 @@ fn reading_preview_header(parent: &StackPanel, size: &NumberBox, spacing: &Numbe
         item.click(move |_, _| {
             for (editor, value) in [(&size, font_size), (&spacing, line_height)] {
                 if let Some(editor) = editor.upgrade() {
-                    // A preset deliberately replaces even an unfinished edit in the number box.
-                    let validation = editor.validation_mode();
-                    editor.set_validation_mode(NumberBoxValidationMode::InvalidInputOverwritten);
-                    editor.set_numeric_value(value);
-                    editor.set_validation_mode(validation);
+                    replace_reading_value(&editor, value);
                 }
             }
         });
@@ -631,6 +668,14 @@ fn reading_preview_header(parent: &StackPanel, size: &NumberBox, spacing: &Numbe
     Grid::set_column(&presets, 1);
     row.children().add(presets);
     parent.children().add(row);
+}
+
+// A deliberate replacement must also overwrite an unfinished or invalid edit.
+fn replace_reading_value(editor: &NumberBox, value: f64) {
+    let validation = editor.validation_mode();
+    editor.set_validation_mode(NumberBoxValidationMode::InvalidInputOverwritten);
+    editor.set_numeric_value(value);
+    editor.set_validation_mode(validation);
 }
 
 fn reading_number(
@@ -1090,6 +1135,25 @@ mod tests {
             MenuItem::click_event(),
         ));
         assert_eq!(size_editor.text().as_deref(), Some("14"));
+        let reset = named("Reset theme & type").cast::<Button>().unwrap();
+        let reduced = named("Reduce motion").cast::<CheckBox>().unwrap();
+        reduced.set_is_checked(Some(true));
+        size_editor.set_text(Some("invalid"));
+        reset.raise_event(&ferroui_base::interactivity::RoutedEventArgs::with_event(
+            Button::click_event(),
+        ));
+        assert_eq!(applied.borrow().font_size, 14.0, "reset must stay a draft");
+        assert_eq!(size_editor.text().as_deref(), Some("16"));
+        assert_eq!(preview.font_size(), 16.0);
+        shell.settle();
+        apply();
+        assert_eq!(
+            *applied.borrow(),
+            Preferences {
+                reduced_motion: true,
+                ..Default::default()
+            }
+        );
         window.close();
     }
 }
