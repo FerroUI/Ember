@@ -129,6 +129,7 @@ fn an_author_can_be_muted_and_restored_without_losing_the_open_profile() {
     let (shell, window, view) = start(1440.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
     view.get_control::<TextBox>("SearchBox")
         .set_text(Some("https://news.ycombinator.com/user?id=ada"));
+    shell.settle();
     click(&shell, &window, &view.get_control::<Button>("SearchButton"));
     assert_eq!(
         view.get_control::<TextBlock>("DetailTitle")
@@ -159,5 +160,36 @@ fn an_author_can_be_muted_and_restored_without_losing_the_open_profile() {
     assert_eq!(mute.is_checked(), Some(false));
     assert_eq!(stories.items().count(), count);
     assert!(!persisted().mutes.users.contains("ada"));
+    window.close();
+}
+
+#[test]
+fn profile_mute_waits_for_saved_rules_before_accepting_changes() {
+    let inner = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    state.mutes.users.insert("ada".into());
+    ready(inner.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let store = Rc::new(DelayedStartupStore {
+        inner,
+        started: Cell::new(false),
+        released: Cell::new(false),
+        waker: RefCell::new(None),
+        fail_read: false,
+    });
+    let (shell, window, view) = start(1440.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
+    view.get_control::<TextBox>("SearchBox")
+        .set_text(Some("https://news.ycombinator.com/user?id=ada"));
+    shell.settle();
+    click(&shell, &window, &view.get_control::<Button>("SearchButton"));
+    let mute = action(&view, "Mute ada in feeds")
+        .cast::<ferroui_controls::primitives::ToggleButton>()
+        .unwrap();
+    assert!(!mute.is_enabled());
+    store.release();
+    for _ in 0..8 {
+        shell.settle();
+    }
+    assert!(mute.is_enabled());
+    assert_eq!(mute.is_checked(), Some(true));
     window.close();
 }

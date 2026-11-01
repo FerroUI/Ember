@@ -270,11 +270,11 @@ pub fn build(
             SearchSort::Relevance
         };
         let value = author.text().unwrap_or_default();
-        let value = value.trim();
-        let value = value.strip_prefix('@').unwrap_or(value);
+        let entered = value.trim();
+        let value = entered.strip_prefix('@').unwrap_or(entered);
         check.check(
             &author,
-            if value.is_empty() {
+            if entered.is_empty() {
                 Ok(())
             } else {
                 validate_username(value)
@@ -575,6 +575,8 @@ mod tests {
         let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
         let last = Rc::new(RefCell::new(None));
         let result = last.clone();
+        let opened = Rc::new(RefCell::new(None));
+        let destination = opened.clone();
         let forgotten = Rc::new(RefCell::new(Vec::new()));
         let forgotten_terms = forgotten.clone();
         let search = build(
@@ -585,7 +587,9 @@ mod tests {
             Rc::new(move |q| {
                 result.replace(Some(q));
             }),
-            Rc::new(|_| panic!("Enter in search submitted the profile form")),
+            Rc::new(move |target| {
+                destination.replace(Some(target));
+            }),
         );
         let window = Window::new();
         window.set_width(720.0);
@@ -614,6 +618,18 @@ mod tests {
             shell.settle();
             assert!(key.handled());
         };
+        input.set_text(Some("https://news.ycombinator.com/item?id=2002"));
+        assert!(named("Open discussion").is_effectively_visible());
+        enter();
+        assert_eq!(*opened.borrow(), Some(HnDestination::Discussion(2002)));
+        assert!(last.borrow().is_none());
+        input.set_text(Some("https://news.ycombinator.com/user?id=aDa"));
+        enter();
+        assert_eq!(
+            *opened.borrow(),
+            Some(HnDestination::Profile("aDa".to_owned()))
+        );
+        input.set_text(Some(""));
         let scope = named("Search in");
         let order = named("Sort by");
         assert_eq!(
@@ -653,7 +669,10 @@ mod tests {
             &date
         ));
         assert!(last.borrow().is_none(), "invalid fields submitted");
-        author.set_text(Some("ada"));
+        author.set_text(Some("@"));
+        enter();
+        assert!(author.is_focused());
+        author.set_text(Some("@ada"));
         enter();
         assert!(date.is_focused());
         assert!(last.borrow().is_none(), "invalid date submitted");
@@ -743,7 +762,7 @@ mod tests {
             bounds.y >= 0.0 && bounds.bottom() <= window.bounds().height,
             "profile field off screen: {bounds:?}"
         );
-        username.set_text(Some("Ada"));
+        username.set_text(Some("https://news.ycombinator.com/user?id=Ada"));
         let mut key = KeyEventArgs::new();
         key.key = Key::Enter;
         key.set_routed_event(Some(InputElement::key_down_event()));
