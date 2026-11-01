@@ -19,6 +19,7 @@ These captures use deterministic Hacker News fixtures and the actual FerroUI con
 [Dark desktop](images/ember-desktop-dark.png) ·
 [Phone feed](images/ember-phone-dark.png) ·
 [Custom tablet theme](images/ember-tablet-custom.png) ·
+[Appearance settings](images/ember-tablet-settings.png) ·
 [Phone discussion in Chromium](images/ember-phone-comments.png) ·
 [Focus reading with Find](images/ember-focus-find.png)
 
