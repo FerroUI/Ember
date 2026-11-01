@@ -817,7 +817,7 @@ fn header(
     {
         let filter = ferroui_controls::primitives::ToggleButton::new();
         filter.set_content(Some(Rc::new("New replies".to_owned())));
-        filter.classes().add("quiet");
+        filter.classes().add("feed-filter");
         filter.classes().set("active", reading.new_count.is_some());
         filter.set_name(Some("NewReplyFilter".to_owned()));
         filter.set_min_height(44.0);
