@@ -1,7 +1,7 @@
 //! The virtualized native conversation surface. Only realized rows create rich-text controls.
 
 use crate::widgets::{self, bind_resource, muted, text as label};
-use ember_content::{HtmlDocument, RenderOptions};
+use ember_content::{FindHighlight, HtmlDocument, RenderOptions};
 use ember_core::{
     flatten_thread, flatten_thread_with_match, relative_time, HnItem, ItemKind, ReaderState,
     ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
@@ -114,6 +114,7 @@ struct ReadingContext {
     seen: BTreeSet<u64>,
     show_dead: bool,
     typography: RenderOptions,
+    find_foreground: Option<Rc<dyn IBrush>>,
 }
 
 impl PartialEq for ConversationRow {
@@ -237,10 +238,15 @@ pub fn build(
         seen: local.map(|s| s.seen_comments.clone()).unwrap_or_default(),
         show_dead: state.preferences.show_dead,
         typography: render_options(state),
+        find_foreground: if query.is_empty() {
+            None
+        } else {
+            brush("EmberSurface")
+        },
     };
     let bulk_collapse = (query.is_empty() && !snapshot.root.kids.is_empty())
         .then_some(!options.collapsed.is_empty());
-    let query = query.to_owned();
+    let query = query.to_lowercase();
     let weak_list = list.downgrade();
     let comment_actions: Rc<dyn Fn(ThreadAction)> = {
         let forward = on_action.clone();
@@ -266,7 +272,7 @@ pub fn build(
                         &row.document,
                         &snapshot.root,
                         &reading,
-                        !query.is_empty(),
+                        &query,
                         &comment_actions,
                     );
                     if comment.matches_query {
@@ -625,8 +631,12 @@ fn header(
         body.children().add(muted("This item is marked dead on Hacker News. Enable dead items in Reader settings to show its content."));
     } else if let Some(html) = &story.text {
         if !html.trim().is_empty() {
-            body.children()
-                .add(rich_document(&HtmlDocument::parse(html), options, actions));
+            body.children().add(rich_document(
+                &HtmlDocument::parse(html),
+                options,
+                None,
+                actions,
+            ));
         }
     }
     if !story.parts.is_empty() {
@@ -706,9 +716,10 @@ fn comment_row(
     document: &OnceCell<HtmlDocument>,
     root: &HnItem,
     reading: &ReadingContext,
-    searching: bool,
+    query: &str,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
+    let searching = !query.is_empty();
     let outer = Border::new();
     outer.set_border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0));
     bind_resource(
@@ -724,7 +735,12 @@ fn comment_row(
     byline.set_vertical_alignment(VerticalAlignment::Center);
     if let Some(item) = &row.item {
         if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
-            byline.children().add(author_button(author, actions));
+            let button = author_button(author, actions);
+            if row.matches_query && author.to_lowercase().contains(query) {
+                button.classes().add("active");
+                AutomationProperties::set_item_status(&button, Some("Author matches search"));
+            }
+            byline.children().add(button);
             if root.by.as_ref() == Some(author) {
                 byline.children().add(badge("OP"));
             }
@@ -845,9 +861,23 @@ fn comment_row(
             )),
             Some(item) => {
                 if let Some(html) = item.text.as_deref().filter(|s| !s.trim().is_empty()) {
+                    let highlight = if row.matches_query {
+                        reading
+                            .find_foreground
+                            .as_ref()
+                            .zip(reading.typography.link_brush.as_ref())
+                            .map(|(foreground, background)| FindHighlight {
+                                query,
+                                foreground: foreground.clone(),
+                                background: background.clone(),
+                            })
+                    } else {
+                        None
+                    };
                     body.children().add(rich_document(
                         document.get_or_init(|| HtmlDocument::parse(html)),
                         &reading.typography,
+                        highlight,
                         actions,
                     ));
                 } else {
@@ -1006,14 +1036,15 @@ fn empty(
 fn rich_document(
     document: &HtmlDocument,
     options: &RenderOptions,
+    highlight: Option<FindHighlight<'_>>,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let actions = actions.clone();
-    ember_content::render(
-        document,
-        options,
-        Rc::new(move |url| actions(ThreadAction::OpenUrl(url.to_owned()))),
-    )
+    let open: Rc<dyn Fn(&str)> = Rc::new(move |url| actions(ThreadAction::OpenUrl(url.to_owned())));
+    match highlight {
+        Some(highlight) => ember_content::render_with_find(document, options, highlight, open),
+        None => ember_content::render(document, options, open),
+    }
 }
 
 /// Shared typography, palette and touch metrics for comments, story bodies and biographies.
@@ -1155,6 +1186,7 @@ mod tests {
             show_dead: false,
             seen: BTreeSet::new(),
             typography: RenderOptions::default(),
+            find_foreground: None,
         };
         let calls = Rc::new(RefCell::new(Vec::new()));
         let observed = calls.clone();
@@ -1397,8 +1429,9 @@ mod tests {
                     seen: BTreeSet::new(),
                     show_dead: false,
                     typography: render_options(&state),
+                    find_foreground: None,
                 },
-                false,
+                "",
                 &actions,
             );
             let text = control
@@ -1643,6 +1676,17 @@ mod tests {
                 .filter(|row| row.classes().contains("current-find-result"))
                 .collect();
             assert_eq!(active.len(), 1);
+            let marked: Vec<_> = active[0]
+                .get_logical_descendants()
+                .filter_map(|node| node.cast::<ferroui_controls::documents::Run>())
+                .filter(|run| run.background().is_some())
+                .filter_map(|run| run.text())
+                .collect();
+            assert_eq!(
+                marked,
+                ["native"],
+                "recycled comments must paint the current search text"
+            );
             assert_eq!(
                 AutomationProperties::get_item_status(&active[0]),
                 Some(format!("Search result {} of 200", found.ordinal))
