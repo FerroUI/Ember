@@ -321,6 +321,8 @@ pub struct ItemState {
     pub hidden: bool,
     pub last_opened_at: Option<u64>,
     pub scroll_anchor: Option<ItemId>,
+    /// Logical pixels already read within the anchored story header or comment.
+    pub scroll_inset: u32,
     pub collapsed: BTreeSet<ItemId>,
     pub seen_comments: BTreeSet<ItemId>,
 }

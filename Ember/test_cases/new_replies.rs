@@ -141,3 +141,94 @@ fn keyboard_folding_and_sorting_keep_focus_on_the_replacement_control() {
     assert_eq!(list().items().count(), 3);
     window.close();
 }
+
+#[test]
+fn reading_a_filtered_reply_in_context_opens_only_its_path_and_focuses_the_same_comment() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
+    use ferroui_controls::Border;
+
+    for (width, height, using_find) in [(390.0, 844.0, false), (1024.0, 820.0, true)] {
+        let store = Rc::new(MemoryStore::default());
+        let mut state = ReaderState::default();
+        state.preferences.reduced_motion = true;
+        let local = state.items.entry(1001).or_default();
+        local.seen_comments.extend([1001, 2001, 2003, 2004]);
+        local.collapsed.extend([2001, 2002, 2003]);
+        ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+        let http = Rc::new(CountingHttp {
+            fixture: FixtureHttp {
+                offline: Rc::new(Cell::new(false)),
+            },
+            requests: Cell::new(0),
+        });
+        let (shell, window, view) = start_with_http(width, height, store.clone(), http.clone());
+        click_in_view(&shell, &window, &first_story(&window));
+        let requests = http.requests.get();
+        let conversation = || {
+            view.get_visual_descendants()
+                .filter_map(|node| node.cast::<ListBox>())
+                .find(|list| list.classes().contains("thread-list"))
+                .unwrap()
+        };
+
+        if using_find {
+            click(&shell, &window, &view.get_control::<Button>("FindButton"));
+            let field = view.get_control::<TextBox>("ThreadFind");
+            field.set_text(Some("predictable"));
+            // Submit during debounce, before the replacement list exists.
+            let mut enter = KeyEventArgs::new();
+            enter.key = Key::Enter;
+            enter.key_modifiers = KeyModifiers::CONTROL;
+            enter.set_routed_event(Some(InputElement::key_down_event()));
+            field.raise_event(&enter);
+        } else {
+            let filter = conversation()
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<ToggleButton>())
+                .find(|b| b.name().as_deref() == Some("NewReplyFilter"))
+                .unwrap();
+            click_in_view(&shell, &window, &filter);
+            let filtered = conversation();
+            filtered.scroll_into_view(2);
+            for _ in 0..4 {
+                shell.settle();
+            }
+            let action = filtered
+                .container_from_index(2)
+                .unwrap()
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<Button>())
+                .find(|b| AutomationProperties::get_name(b).as_deref() == Some("Read in context"))
+                .unwrap();
+            click_in_view(&shell, &window, &action);
+        }
+        for _ in 0..5 {
+            shell.settle();
+        }
+        assert!(!view.get_control::<Border>("ThreadTools").is_visible());
+        let list = conversation();
+        assert_eq!(list.items().count(), 4); // Header, Lin, Ada (fully open), folded Mira.
+        let target = list.container_from_index(2).unwrap();
+        assert!(
+            target.is_keyboard_focus_within(),
+            "the activated comment must receive focus"
+        );
+        assert!(target
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<Border>())
+            .any(|b| AutomationProperties::get_name(&b).as_deref()
+                == Some("Comment by ada, level 2")));
+        assert_eq!(http.requests.get(), requests);
+        let saved =
+            ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            saved.items[&1001]
+                .collapsed
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2003]
+        );
+        window.close();
+    }
+}

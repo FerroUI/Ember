@@ -5,7 +5,7 @@ mod offline;
 use crate::controls::{StoryCard, StorySummary};
 use crate::markup::xaml_class;
 use crate::settings::SettingsAction;
-use crate::thread_view::ThreadAction;
+use crate::thread_view::{ReadingPosition, ThreadAction};
 use crate::{services, widgets};
 use ember_core::{
     DataSource, FeedKind, FetchMode, HnItem, ReaderState, Repository, SearchKind, SearchQuery,
@@ -211,8 +211,8 @@ pub struct ReaderView {
     applied_find_query: RefCell<String>,
     find_match_id: Cell<Option<u64>>,
     // Unfiltered reading position (the root identifies the story header).
-    find_origin: Cell<Option<u64>>,
-    new_replies_origin: Cell<Option<u64>>,
+    find_origin: Cell<Option<ReadingPosition>>,
+    new_replies_origin: Cell<Option<ReadingPosition>>,
     focus_reading: Cell<bool>,
     layout_mode: Cell<Option<WorkspaceLayout>>,
     layout_update_queued: Cell<bool>,
@@ -489,25 +489,40 @@ impl ReaderView {
             },
         );
         let weak = self.to_ref().downgrade();
-        self.textbox("ThreadFind").add_handler(
+        let find_field = self.textbox("ThreadFind");
+        let find_help = "Enter for the next match, Shift+Enter for the previous match, Ctrl or Command+Enter to read the match in context.";
+        AutomationProperties::set_help_text(&find_field, Some(find_help));
+        ToolTip::set_tip(&find_field, Some(Rc::new(find_help.to_owned())));
+        find_field.add_handler(
             InputElement::key_down_event(),
             move |_, e: &KeyEventArgs| {
-                if e.key == Key::Enter
-                    && (e.key_modifiers == KeyModifiers::NONE
-                        || e.key_modifiers == KeyModifiers::SHIFT)
-                {
-                    if let Some(view) = weak
-                        .upgrade()
-                        .filter(|v| !v.textbox("ThreadFind").is_composing_text())
-                    {
-                        view.step_find(if e.key_modifiers == KeyModifiers::SHIFT {
-                            -1
-                        } else {
-                            1
-                        });
-                        e.set_handled(true);
-                    }
+                if e.key != Key::Enter {
+                    return;
                 }
+                let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| !v.textbox("ThreadFind").is_composing_text())
+                else {
+                    return;
+                };
+                match e.key_modifiers {
+                    KeyModifiers::NONE => view.step_find(1),
+                    KeyModifiers::SHIFT => view.step_find(-1),
+                    KeyModifiers::CONTROL | KeyModifiers::META => {
+                        // Apply the field value before resolving the ID, even when
+                        // Enter arrives before the debounced search has run.
+                        view.step_find(0);
+                        if let Some(id) = view
+                            .find_match_id
+                            .get()
+                            .filter(|_| !view.find_query().is_empty())
+                        {
+                            view.read_in_context(id);
+                        }
+                    }
+                    _ => return,
+                }
+                e.set_handled(true);
             },
         );
         let weak = self.to_ref().downgrade();
@@ -1732,6 +1747,9 @@ impl ReaderView {
         self.render_stories();
     }
     fn render_thread(&self) {
+        self.render_thread_at(None);
+    }
+    fn render_thread_at(&self, focus_comment: Option<u64>) {
         if !matches!(*self.detail.borrow(), DetailRoute::Thread(_)) {
             return;
         }
@@ -1751,13 +1769,18 @@ impl ReaderView {
         if target.is_some() {
             self.pending_comment.set(None);
         }
-        let mut anchor = target.or_else(|| match self.thread_control.borrow().as_ref() {
-            Some(control) => crate::thread_view::viewport_anchor(control),
-            None => state
-                .items
-                .get(&thread.root.id)
-                .and_then(|local| local.scroll_anchor),
-        });
+        let mut anchor = focus_comment
+            .or(target)
+            .map(ReadingPosition::start)
+            .or_else(|| match self.thread_control.borrow().as_ref() {
+                Some(control) => crate::thread_view::viewport_position(control),
+                None => state.items.get(&thread.root.id).and_then(|local| {
+                    Some(ReadingPosition {
+                        item: local.scroll_anchor?,
+                        inset: local.scroll_inset,
+                    })
+                }),
+            });
         if self.applied_find_query.borrow().as_str() != query {
             self.find_match_id.set(None);
         }
@@ -1766,7 +1789,9 @@ impl ReaderView {
                 anchor = Some(original);
             }
         } else if self.find_origin.get().is_none() {
-            self.find_origin.set(Some(anchor.unwrap_or(thread.root.id)));
+            self.find_origin.set(Some(
+                anchor.unwrap_or(ReadingPosition::start(thread.root.id)),
+            ));
         }
         self.applied_find_query.replace(query.clone());
         let weak = self.to_ref().downgrade();
@@ -1791,8 +1816,12 @@ impl ReaderView {
             self.show_find_result(result, true);
         } else {
             self.show_find_result(None, false);
-            if let Some(id) = anchor {
-                crate::thread_view::restore_anchor(&control, id);
+            if let Some(position) = anchor {
+                crate::thread_view::restore_position(
+                    &control,
+                    position,
+                    focus_comment == Some(position.item),
+                );
             }
         }
         *self.thread_control.borrow_mut() = Some(control);
@@ -1815,16 +1844,18 @@ impl ReaderView {
             .thread_control
             .borrow()
             .as_ref()
-            .and_then(|c| crate::thread_view::viewport_anchor(c));
+            .and_then(|c| crate::thread_view::viewport_position(c));
         let mut state = self.state.borrow_mut();
         let local = state.items.entry(id).or_default();
         local.seen_comments.extend(thread.items.keys().copied());
-        local.scroll_anchor = self
+        let position = self
             .new_replies_origin
             .get()
             .or(self.find_origin.get())
             .or(anchor)
-            .filter(|&anchor| anchor != id);
+            .filter(|&position| position != ReadingPosition::start(id));
+        local.scroll_anchor = position.map(|p| p.item);
+        local.scroll_inset = position.map_or(0, |p| p.inset);
         drop(state);
         self.changed();
     }
@@ -1839,8 +1870,8 @@ impl ReaderView {
                         .thread_control
                         .borrow()
                         .as_ref()
-                        .and_then(|control| crate::thread_view::viewport_anchor(control))
-                        .or(self.selected.get());
+                        .and_then(|control| crate::thread_view::viewport_position(control))
+                        .or_else(|| self.selected.get().map(ReadingPosition::start));
                     self.new_replies_origin.set(origin);
                 }
                 let restore = if enabled {
@@ -1851,13 +1882,16 @@ impl ReaderView {
                 self.render_thread();
                 if let Some(control) = self.thread_control.borrow().as_ref() {
                     if let Some(origin) = restore {
-                        crate::thread_view::restore_anchor(control, origin);
+                        crate::thread_view::restore_position(control, origin, false);
                     }
-                    if restore.is_none() || restore == self.selected.get() {
+                    if restore.is_none()
+                        || restore == self.selected.get().map(ReadingPosition::start)
+                    {
                         crate::thread_view::focus_thread_tool(control, None, "NewReplyFilter");
                     }
                 }
             }
+            ThreadAction::ReadInContext(id) => self.read_in_context(id),
             ThreadAction::ToggleAll => self.toggle_collapse_all(),
             ThreadAction::ToggleCollapse(id) => {
                 if let Some(root) = self.selected.get() {
@@ -1910,6 +1944,35 @@ impl ReaderView {
             }
             ThreadAction::GoToItem(id) => self.open_item_internal(id, true),
         }
+    }
+    fn read_in_context(&self, id: u64) {
+        let Some(root) = self.selected.get() else {
+            return;
+        };
+        let Some(path) = self
+            .thread_control
+            .borrow()
+            .as_ref()
+            .and_then(|control| crate::thread_view::displayed_comment_path(control, id))
+        else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        let folds = &mut state.items.entry(root).or_default().collapsed;
+        let previous_count = folds.len();
+        for id in path {
+            folds.remove(&id);
+        }
+        let expanded = folds.len() != previous_count;
+        drop(state);
+        if expanded {
+            self.changed();
+        }
+        self.new_replies_origin.set(None);
+        self.find_origin.set(None);
+        self.set_find_bar_visible(false);
+        self.textbox("ThreadFind").set_text(Some(""));
+        self.render_thread_at(Some(id));
     }
     fn render_thread_focusing(&self, item: Option<u64>, name: &'static str) {
         self.render_thread();
@@ -2316,10 +2379,13 @@ impl ReaderView {
             label.set_text(Some(&message));
         }
     }
-    fn set_find_open(&self, open: bool) {
+    fn set_find_bar_visible(&self, open: bool) {
         self.get_control::<Border>("ThreadTools")
             .set_is_visible(open);
         self.button("FindButton").classes().set("active", open);
+    }
+    fn set_find_open(&self, open: bool) {
+        self.set_find_bar_visible(open);
         if open {
             self.textbox("ThreadFind").focus();
         } else {
@@ -2682,10 +2748,10 @@ impl ReaderView {
             .thread_control
             .borrow()
             .as_ref()
-            .and_then(|c| crate::thread_view::viewport_anchor(c));
+            .and_then(|c| crate::thread_view::viewport_position(c));
         self.apply_layout();
         if let (Some(anchor), Some(thread)) = (anchor, self.thread_control.borrow().as_ref()) {
-            crate::thread_view::restore_anchor(thread, anchor);
+            crate::thread_view::restore_position(thread, anchor, false);
         }
         let focus = self.button("FocusButton");
         if focus.is_effectively_visible() {

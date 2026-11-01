@@ -31,6 +31,7 @@ pub enum ThreadAction {
     ToggleCollapse(u64),
     ToggleAll,
     ShowNewReplies(bool),
+    ReadInContext(u64),
     Share,
     CopyCommentLink(u64),
     CopyCode(String),
@@ -276,8 +277,8 @@ pub fn build(
         Rc::new(move |action| {
             if let ThreadAction::GoToItem(id) = action {
                 if let Some(list) = weak_list.upgrade() {
-                    if let Some(index) = anchor_index(&list, id) {
-                        reveal_index(&list, index, true);
+                    if let Some((index, _)) = anchor_index(&list, id) {
+                        reveal_index(&list, index, 0, true);
                         return;
                     }
                 }
@@ -373,7 +374,7 @@ pub(crate) fn select_find_match(
     }
     update_realized_match(&list, row, Some(selected));
     // The template reads current_match when a later scroll first realizes this row.
-    reveal_index(&list, row, false);
+    reveal_index(&list, row, 0, false);
     Some(selected)
 }
 
@@ -394,50 +395,91 @@ fn mark_find_result(row: &Control, result: Option<FindMatch>) {
     AutomationProperties::set_item_status(row, status.as_deref());
 }
 
-/// The first comment intersecting the viewport, including a partially visible comment.
-/// Returns `None` while the story header is visible so a refresh preserves the top.
-/// This uses realized containers rather than estimating an index from variable row heights.
-pub fn viewport_anchor(control: &Control) -> Option<u64> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReadingPosition {
+    pub item: u64,
+    /// Distance from the top of the row in logical pixels.
+    pub inset: u32,
+}
+
+impl ReadingPosition {
+    pub fn start(item: u64) -> Self {
+        Self { item, inset: 0 }
+    }
+}
+
+/// Capture the first intersecting row and how far it has scrolled. A single
+/// long comment or a text-only story header can span several screens.
+pub(crate) fn viewport_position(control: &Control) -> Option<ReadingPosition> {
     let list = conversation_list(control)?;
-    let height = list.bounds().height;
+    let tag = list.tag()?;
+    let root = tag.downcast_ref::<ThreadAnchors>()?.root;
+    let scroll = list.scroll()?.cast::<ScrollViewer>()?;
+    let height = scroll.viewport().height;
     list.get_realized_containers()
         .into_iter()
         .filter_map(|container| {
             if !container.is_effectively_visible() {
                 return None;
             }
-            let origin = container.translate_point(Point::new(0.0, 0.0), &list)?;
+            let origin = container.translate_point(Point::new(0.0, 0.0), &scroll)?;
             if origin.y >= height || origin.y + container.bounds().height <= 0.0 {
                 return None;
             }
             let item = list.item_from_container(&container)?;
             let row = item.downcast_ref::<Rc<ConversationRow>>()?;
             match &row.kind {
-                RowKind::Header => Some((origin.y, None)),
-                RowKind::Comment(comment) => Some((origin.y, Some(comment.id))),
+                RowKind::Header => Some((origin.y, root)),
+                RowKind::Comment(comment) => Some((origin.y, comment.id)),
                 _ => None,
             }
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .and_then(|(_, id)| id)
+        .map(|(top, item)| ReadingPosition {
+            item,
+            inset: (-top).max(0.0).round() as u32,
+        })
+}
+
+/// Return the displayed path, including the result itself when its text was folded.
+pub(crate) fn displayed_comment_path(control: &Control, mut id: u64) -> Option<Vec<u64>> {
+    let list = conversation_list(control)?;
+    let tag = list.tag()?;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let mut path = Vec::new();
+    while id != anchors.root {
+        let index = usize::try_from(*anchors.indices.get(&id)?).ok()?;
+        let item = list.items().get_at(index)?;
+        let row = item.downcast_ref::<Rc<ConversationRow>>()?;
+        let RowKind::Comment(comment) = &row.kind else {
+            return None;
+        };
+        path.push(id);
+        // Filtered rows include the entire ancestry of each hit. Follow the actual
+        // display tree even if a malformed snapshot lists a child under two parents.
+        id = comment.parent_id;
+    }
+    Some(path)
 }
 
 /// Restores reading context after rebuilding a thread. If an ancestor was collapsed,
 /// the nearest visible ancestor is used. A filtered-out branch falls back to its root.
 /// Calling this before attaching the newly built control is supported.
-pub fn restore_anchor(control: &Control, id: u64) {
+pub(crate) fn restore_position(control: &Control, position: ReadingPosition, focus_row: bool) {
     let Some(list) = conversation_list(control) else {
         return;
     };
-    let Some(index) = anchor_index(&list, id) else {
+    let Some((index, exact)) = anchor_index(&list, position.item) else {
         return;
     };
-    reveal_index(&list, index, false);
+    // When the former row is folded away, show its ancestor from the start.
+    let inset = if exact { position.inset } else { 0 };
+    reveal_index(&list, index, inset, focus_row);
 }
 
-fn reveal_index(list: &Ref<ListBox>, index: i32, focus_row: bool) {
+fn reveal_index(list: &Ref<ListBox>, index: i32, inset: u32, focus_row: bool) {
     let reveal = move |list: &ListBox| {
-        scroll_anchor_into_view(list, index);
+        scroll_anchor_into_view(list, index, inset);
         if focus_row {
             if let Some(container) = list.container_from_index(index) {
                 container.focus();
@@ -523,23 +565,24 @@ fn conversation_list(control: &Control) -> Option<Ref<ListBox>> {
         })
 }
 
-fn anchor_index(list: &ListBox, mut id: u64) -> Option<i32> {
+fn anchor_index(list: &ListBox, target: u64) -> Option<(i32, bool)> {
+    let mut id = target;
     let tag = list.tag()?;
     let anchors = tag.downcast_ref::<ThreadAnchors>()?;
     let mut seen = BTreeSet::new();
     while seen.insert(id) {
         if id == anchors.root {
-            return Some(0);
+            return Some((0, target == id));
         }
         if let Some(&index) = anchors.indices.get(&id) {
-            return Some(index);
+            return Some((index, target == id));
         }
         id = *anchors.parents.get(&id)?;
     }
     None
 }
 
-fn scroll_anchor_into_view(list: &ListBox, index: i32) {
+fn scroll_anchor_into_view(list: &ListBox, index: i32, inset: u32) {
     list.scroll_into_view(index);
     if let (Some(container), Some(scroll)) = (
         list.container_from_index(index),
@@ -550,7 +593,11 @@ fn scroll_anchor_into_view(list: &ListBox, index: i32) {
         // at the top instead of merely making its final pixel visible at the bottom.
         if let Some(origin) = container.translate_point(Point::new(0.0, 0.0), &scroll) {
             let offset = scroll.offset();
-            scroll.set_offset(Vector::new(offset.x, (offset.y + origin.y).max(0.0)));
+            let inset = f64::from(inset).min((container.bounds().height - 1.0).max(0.0));
+            scroll.set_offset(Vector::new(
+                offset.x,
+                (offset.y + origin.y + inset).max(0.0),
+            ));
         }
     }
 }
@@ -1034,6 +1081,18 @@ fn comment_row(
         };
         disclosure.set_name(Some("FoldReply".to_owned()));
         commands.children().add(disclosure);
+    }
+    if row.matches_query
+        || (reading.new_count.is_some() && is_new_reply(row, &reading.seen, reading.show_dead))
+    {
+        let context = icon_action(
+            "Read in context",
+            "chat",
+            ThreadAction::ReadInContext(row.id),
+            actions,
+        );
+        context.set_name(Some("ReadInContext".to_owned()));
+        commands.children().add(context);
     }
     commands
         .children()
@@ -2107,6 +2166,86 @@ mod tests {
     }
 
     #[test]
+    fn rebuilt_discussions_restore_interior_positions_in_long_stories_and_comments() {
+        let shell = Shell::start(&crate::SAMPLE, 390.0, 620.0, || crate::App::new().upcast());
+        let long_text = "<p>This paragraph is part of a long discussion.</p>".repeat(56);
+        let root = HnItem {
+            id: 1,
+            kids: vec![2, 4],
+            text: Some(long_text.clone()),
+            ..Default::default()
+        };
+        let snapshot = ThreadSnapshot {
+            root,
+            items: [
+                HnItem {
+                    id: 2,
+                    kids: vec![3],
+                    text: Some(long_text.clone()),
+                    ..Default::default()
+                },
+                HnItem {
+                    id: 3,
+                    text: Some(long_text.clone()),
+                    ..Default::default()
+                },
+                HnItem {
+                    id: 4,
+                    text: Some(long_text),
+                    ..Default::default()
+                },
+            ]
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect(),
+            complete: true,
+            ..Default::default()
+        };
+        let make_view = |state: &ReaderState| {
+            build(
+                &snapshot,
+                state,
+                "",
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            )
+        };
+        let state = ReaderState::default();
+        let window = Window::new();
+        window.set_width(390.0);
+        window.set_height(620.0);
+        window.show();
+        for item in [1, 3] {
+            let anchor = ReadingPosition { item, inset: 340 };
+            let view = make_view(&state);
+            restore_position(&view, anchor, false);
+            window.set_content(Some(Control::boxed(&view)));
+            for _ in 0..5 {
+                shell.settle();
+            }
+            assert_eq!(viewport_position(&view), Some(anchor));
+        }
+        let mut folded = state;
+        folded.items.entry(1).or_default().collapsed.insert(2);
+        let view = make_view(&folded);
+        restore_position(
+            &view,
+            ReadingPosition {
+                item: 3,
+                inset: 340,
+            },
+            false,
+        );
+        window.set_content(Some(Control::boxed(&view)));
+        for _ in 0..5 {
+            shell.settle();
+        }
+        assert_eq!(viewport_position(&view), Some(ReadingPosition::start(2)));
+        window.close();
+    }
+
+    #[test]
     fn long_threads_virtualize_rows_and_keep_scrolled_actions_attached_to_their_item() {
         let shell = Shell::start(&crate::SAMPLE, 390.0, 620.0, || crate::App::new().upcast());
         let root = HnItem {
@@ -2157,16 +2296,19 @@ mod tests {
         }
         assert_eq!(list.items().count(), 201);
         assert_eq!(
-            viewport_anchor(&content),
-            None,
+            viewport_position(&content),
+            Some(ReadingPosition::start(1000)),
             "a visible story header anchors the top"
         );
         for index in [20, 170, 10] {
-            restore_anchor(&content, 2000 + index as u64);
+            restore_position(&content, ReadingPosition::start(2000 + index as u64), false);
             for _ in 0..4 {
                 shell.settle();
             }
-            assert_eq!(viewport_anchor(&content), Some(2000 + index as u64));
+            assert_eq!(
+                viewport_position(&content),
+                Some(ReadingPosition::start(2000 + index as u64))
+            );
             assert!(
                 list.get_realized_containers().len() < 50,
                 "a phone viewport must not realize the entire conversation"
@@ -2223,8 +2365,15 @@ mod tests {
             for _ in 0..4 {
                 shell.settle();
             }
-            let expected = (destination != 0).then_some(2000 + destination as u64);
-            assert_eq!(viewport_anchor(&content), expected);
+            let expected = if destination == 0 {
+                1000
+            } else {
+                2000 + destination as u64
+            };
+            assert_eq!(
+                viewport_position(&content),
+                Some(ReadingPosition::start(expected))
+            );
             assert!(list
                 .container_from_index(destination)
                 .unwrap()
@@ -2266,12 +2415,15 @@ mod tests {
             Rc::new(|_| {}),
         );
         // A rebuilt view is not attached yet when the controller applies saved context.
-        restore_anchor(&replacement, 2010);
+        restore_position(&replacement, ReadingPosition::start(2010), false);
         window.set_content(Some(Control::boxed(&replacement)));
         for _ in 0..4 {
             shell.settle();
         }
-        assert_eq!(viewport_anchor(&replacement), Some(2010));
+        assert_eq!(
+            viewport_position(&replacement),
+            Some(ReadingPosition::start(2010))
+        );
         let filtered = build(
             &snapshot,
             &ReaderState::default(),
@@ -2297,7 +2449,10 @@ mod tests {
                 shell.settle();
             }
             assert_eq!(found.id, expected);
-            assert_eq!(viewport_anchor(&filtered), Some(expected));
+            assert_eq!(
+                viewport_position(&filtered),
+                Some(ReadingPosition::start(expected))
+            );
             let active: Vec<_> = list
                 .get_visual_descendants()
                 .filter_map(|node| node.cast::<Border>())
