@@ -18,9 +18,9 @@ All previews use deterministic Hacker News data. Chromium captured the release W
 
 | View | Previews |
 | --- | --- |
-| Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
-| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Focus reading with Find](images/ember-focus-find.png) |
-| Discovery and library | [Author profile](images/ember-desktop-profile.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) |
+| Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Landscape reader](images/ember-landscape-reader.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
+| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Focus reading with Find](images/ember-focus-find.png) · [New replies](images/ember-new-replies.png) |
+| Discovery and library | [Author profile](images/ember-desktop-profile.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) · [Find in a collection](images/ember-library-find.png) |
 | Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Domain mute on a phone](images/ember-domain-mute.png) |
 
 The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
