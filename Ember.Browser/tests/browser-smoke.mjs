@@ -32,7 +32,7 @@ const initScript = `(() => {
         if (url.hostname === "hn.algolia.com") {
             globalThis.__emberLastSearch = url.href;
             value = { hits: [{ objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url }], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
-        else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
+        } else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
         else if (/\\/item\\//.test(url.pathname)) value = items[Number(url.pathname.split("/").pop().replace(".json", ""))] ?? null;
         else if (/\\/user\\//.test(url.pathname)) value = { id: "maker", karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
         return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
