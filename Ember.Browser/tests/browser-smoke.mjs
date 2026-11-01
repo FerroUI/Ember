@@ -254,6 +254,7 @@ await run([
             assert(menu, "No overflow next to the new reply");
             await page.click(menu.x + menu.width / 2, menu.y + menu.height / 2);
             await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
             // Flyout menus can use a separate popup root. Select the first action by keyboard.
             await page.press("Home");
             await page.press("Enter");
