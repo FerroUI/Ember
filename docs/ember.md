@@ -12,7 +12,7 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-All previews use deterministic Hacker News data. Chromium captured the release WebAssembly reader in landscape, the phone discussion, the Downloaded shelf, the permalink search action, text presets and the domain mute editor. The native test host rendered the other views with Skia and HarfBuzz.
+All previews use deterministic Hacker News data. Chromium captured the release WebAssembly reading and swipe interactions, discussion search, code tools, Downloads, and storage and mute controls. The native test host rendered the other views with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
@@ -21,7 +21,7 @@ All previews use deterministic Hacker News data. Chromium captured the release W
 | Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Compact feed](images/ember-compact-feed.png) · [Swipe preview](images/ember-swipe-preview.png) · [Landscape reader](images/ember-landscape-reader.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
 | Discussions | [Phone discussion](images/ember-phone-comments.png) · [Focus reading with Find](images/ember-focus-find.png) · [New replies](images/ember-new-replies.png) · [Code tools](images/ember-code-tools.png) · [Search this discussion](images/ember-discussion-search.png) |
 | Discovery and library | [Open a permalink](images/ember-open-link.png) · [Author profile](images/ember-desktop-profile.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) · [Find in a collection](images/ember-library-find.png) |
-| Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Domain mute on a phone](images/ember-domain-mute.png) · [Offline storage](images/ember-offline-storage.png) |
+| Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Domain mute on a phone](images/ember-domain-mute.png) · [Discard mute edits](images/ember-mute-drafts.png) · [Offline storage](images/ember-offline-storage.png) |
 
 The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
