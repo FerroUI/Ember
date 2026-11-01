@@ -5,7 +5,7 @@ mod offline;
 use crate::controls::{StoryCard, StorySummary};
 use crate::markup::xaml_class;
 use crate::settings::SettingsAction;
-use crate::thread_view::{ReadingPosition, ThreadAction};
+use crate::thread_view::{Discussion, ReadingPosition, ThreadAction};
 use crate::{services, widgets};
 use ember_core::{
     DataSource, FeedKind, FetchMode, HnItem, ReaderState, Repository, SearchKind, SearchQuery,
@@ -246,7 +246,7 @@ pub struct ReaderView {
     live_settings: RefCell<Option<crate::settings::LivePreferences>>,
     downloaded_only: Cell<bool>,
     library_find: RefCell<library_find::LibraryFind>,
-    thread: RefCell<Option<ThreadSnapshot>>,
+    thread: RefCell<Option<Rc<Discussion>>>,
     thread_control: RefCell<Option<Ref<Control>>>,
     cache_work: Cell<CacheWork>,
     transfer: RefCell<Option<offline::Transfer>>,
@@ -1737,8 +1737,8 @@ impl ReaderView {
         self.thread
             .borrow()
             .as_ref()
-            .filter(|v| Some(v.root.id) == self.selected.get())
-            .map(|v| v.root.clone())
+            .filter(|v| Some(v.snapshot.root.id) == self.selected.get())
+            .map(|v| v.snapshot.root.clone())
     }
     fn open_item(&self, row: u64) {
         // A scoped hit can be far beyond the locally loaded part of its thread.
@@ -1889,6 +1889,20 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
+        if let Some(warning) = thread.warning.as_deref() {
+            self.status(warning);
+        }
+        // A fresh cache-first load can return the exact offline preview. Keep its
+        // realized controls, Find index, scroll position and keyboard focus intact.
+        if self.pending_comment.get().is_none()
+            && self
+                .thread
+                .borrow()
+                .as_ref()
+                .is_some_and(|old| old.snapshot == thread)
+        {
+            return;
+        }
         let summary = crate::thread_view::discussion_summary(&thread);
         let headline = crate::thread_view::discussion_title(
             &thread.root,
@@ -1896,9 +1910,6 @@ impl ReaderView {
         );
         self.label("DetailTitle").set_text(Some(&headline));
         self.label("DetailEyebrow").set_text(Some(&summary));
-        if let Some(warning) = thread.warning.as_deref() {
-            self.status(warning);
-        }
         // The cache preview, refresh and final network result are one visit.
         let reached_comment = self
             .pending_comment
@@ -1938,9 +1949,11 @@ impl ReaderView {
             drop(state);
             self.changed();
         }
-        self.thread.replace(Some(thread));
+        self.thread.replace(Some(Rc::new(Discussion::new(thread))));
         self.render_thread();
-        self.render_stories();
+        if first_load || reached_comment.is_some() {
+            self.render_stories();
+        }
     }
     fn render_thread(&self) {
         self.render_thread_at(None);
@@ -1950,9 +1963,10 @@ impl ReaderView {
             return;
         }
         let snapshot = self.thread.borrow();
-        let Some(thread) = snapshot.as_ref() else {
+        let Some(discussion) = snapshot.as_ref() else {
             return;
         };
+        let thread = &discussion.snapshot;
         if Some(thread.root.id) != self.selected.get() {
             return;
         }
@@ -1991,8 +2005,8 @@ impl ReaderView {
         }
         self.applied_find_query.replace(query.clone());
         let weak = self.to_ref().downgrade();
-        let control = crate::thread_view::build(
-            thread,
+        let control = crate::thread_view::build_discussion(
+            discussion.clone(),
             &state,
             &query,
             self.thread_sort.get(),
@@ -2030,7 +2044,7 @@ impl ReaderView {
             return;
         };
         let snapshot = self.thread.borrow();
-        let Some(thread) = snapshot.as_ref() else {
+        let Some(thread) = snapshot.as_ref().map(|discussion| &discussion.snapshot) else {
             return;
         };
         if thread.root.id != id {
@@ -2189,7 +2203,7 @@ impl ReaderView {
     }
     fn toggle_collapse_all(&self) {
         let snapshot = self.thread.borrow();
-        let Some(thread) = snapshot.as_ref() else {
+        let Some(thread) = snapshot.as_ref().map(|discussion| &discussion.snapshot) else {
             return;
         };
         let mut state = self.state.borrow_mut();

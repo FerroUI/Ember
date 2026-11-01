@@ -372,3 +372,30 @@ mod render {
             .any(|node| node.is::<HyperlinkButton>()));
     }
 }
+
+#[test]
+#[ignore = "plain and formatted content parsing timing workload"]
+fn measure_content_parse_and_extract() {
+    let inputs = (0..4096)
+        .map(|id| format!("GPU text  layout {id}: a scoped experiment — Ελληνικά"))
+        .collect::<Vec<_>>();
+    let rich = inputs
+        .iter()
+        .map(|s| format!("<p>{s} <i>on</i> a <b>phone</b>.</p>"))
+        .collect::<Vec<_>>();
+    for (label, inputs) in [("plain", inputs), ("formatted", rich)] {
+        let mut times = Vec::new();
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            for input in &inputs {
+                std::hint::black_box(HtmlDocument::parse(input).plain_text());
+            }
+            times.push(start.elapsed().as_micros());
+        }
+        times.sort_unstable();
+        eprintln!(
+            "4096 {label} parse + text extractions; median {} us; samples {times:?}",
+            times[3]
+        );
+    }
+}

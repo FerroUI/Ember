@@ -1,8 +1,9 @@
 use crate::{DataSource, HnItem, ItemId};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSnapshot {
     pub root: HnItem,
     pub items: BTreeMap<ItemId, HnItem>,
@@ -43,14 +44,29 @@ impl Default for ThreadOptions {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThreadRow {
+pub struct ThreadRow<T = Option<HnItem>> {
     pub id: ItemId,
     pub parent_id: ItemId,
     pub depth: usize,
-    pub item: Option<HnItem>,
+    pub item: T,
     pub collapsed: bool,
     pub child_count: usize,
     pub matches_query: bool,
+}
+
+impl<T> ThreadRow<T> {
+    /// Preserve display identity and flags while selecting an owned, borrowed or deferred payload.
+    pub fn with_item<U>(&self, item: U) -> ThreadRow<U> {
+        ThreadRow {
+            id: self.id,
+            parent_id: self.parent_id,
+            depth: self.depth,
+            item,
+            collapsed: self.collapsed,
+            child_count: self.child_count,
+            matches_query: self.matches_query,
+        }
+    }
 }
 
 /// Iterative, cycle-safe traversal. Search includes ancestor context and searches
@@ -75,8 +91,21 @@ pub fn flatten_thread(snapshot: &ThreadSnapshot, options: &ThreadOptions) -> Vec
 pub fn flatten_thread_with_match(
     snapshot: &ThreadSnapshot,
     options: &ThreadOptions,
-    mut matches: impl FnMut(&HnItem, &str) -> bool,
+    matches: impl FnMut(&HnItem, &str) -> bool,
 ) -> Vec<ThreadRow> {
+    project_thread_with_match(snapshot, options, matches)
+        .into_iter()
+        .map(|row| row.with_item(row.item.cloned()))
+        .collect()
+}
+
+/// Borrow payloads directly from the immutable snapshot. Virtualized views can keep only
+/// the display metadata and resolve the item by ID when a row is realized.
+pub fn project_thread_with_match<'a>(
+    snapshot: &'a ThreadSnapshot,
+    options: &ThreadOptions,
+    mut matches: impl FnMut(&HnItem, &str) -> bool,
+) -> Vec<ThreadRow<Option<&'a HnItem>>> {
     let query = options.query.trim().to_lowercase();
     collect_rows(snapshot, options, !query.is_empty(), true, |item| {
         matches(item, &query)
@@ -91,43 +120,55 @@ pub fn flatten_thread_since(
     options: &ThreadOptions,
     previous: &BTreeSet<ItemId>,
 ) -> Vec<ThreadRow> {
+    project_thread_since(snapshot, options, previous)
+        .into_iter()
+        .map(|row| row.with_item(row.item.cloned()))
+        .collect()
+}
+
+/// Borrowed projection of the previous-visit reply filter.
+pub fn project_thread_since<'a>(
+    snapshot: &'a ThreadSnapshot,
+    options: &ThreadOptions,
+    previous: &BTreeSet<ItemId>,
+) -> Vec<ThreadRow<Option<&'a HnItem>>> {
     collect_rows(snapshot, options, true, false, |item| {
         !previous.contains(&item.id)
     })
 }
 
-fn collect_rows(
-    snapshot: &ThreadSnapshot,
+fn collect_rows<'a>(
+    snapshot: &'a ThreadSnapshot,
     options: &ThreadOptions,
     filtered: bool,
     text_search: bool,
     mut matches: impl FnMut(&HnItem) -> bool,
-) -> Vec<ThreadRow> {
-    let mut rows = Vec::new();
-    let mut matching = Vec::new();
+) -> Vec<ThreadRow<Option<&'a HnItem>>> {
+    let mut rows: Vec<ThreadRow<Option<&HnItem>>> = Vec::new();
+    let mut retained: Vec<(Option<usize>, bool)> = Vec::new();
     let mut seen = BTreeSet::from([snapshot.root.id]);
-    let mut stack = Vec::new();
-    let children = ordered_children(&snapshot.root.kids, snapshot, options.sort);
-    for id in children.into_iter().rev() {
-        stack.push((id, snapshot.root.id, 0));
-    }
-    while let Some((id, parent_id, depth)) = stack.pop() {
+    let mut stack: Vec<(_, Option<usize>, _)> =
+        ordered_children(&snapshot.root.kids, snapshot, options.sort)
+            .iter()
+            .rev()
+            .map(|&id| (id, None, 0))
+            .collect();
+    while let Some((id, parent, depth)) = stack.pop() {
         if !seen.insert(id) {
             continue;
         }
-        let item = snapshot.items.get(&id).cloned();
+        let item = snapshot.items.get(&id);
         let collapsed = options.collapsed.contains(&id);
         let matched = filtered
-            && item.as_ref().is_some_and(|item| {
+            && item.is_some_and(|item| {
                 (!item.dead || options.show_dead) && !item.deleted && matches(item)
             });
-        if matched {
-            matching.push(id);
+        if filtered {
+            retained.push((parent, matched));
         }
-        let children = item
-            .as_ref()
-            .map(|item| ordered_children(&item.kids, snapshot, options.sort))
-            .unwrap_or_default();
+        let index = rows.len();
+        let parent_id = parent.map_or(snapshot.root.id, |i| rows[i].id);
+        let children = item.map_or(&[][..], |item| item.kids.as_slice());
         rows.push(ThreadRow {
             id,
             parent_id,
@@ -137,44 +178,93 @@ fn collect_rows(
             child_count: children.len(),
             matches_query: text_search && matched,
         });
-        if depth < options.max_depth.min(256) && (!collapsed || filtered) {
-            for child in children.into_iter().rev() {
-                stack.push((child, id, depth + 1));
-            }
+        if depth < options.max_depth.min(256) && (!collapsed || filtered) && !children.is_empty() {
+            let children = ordered_children(children, snapshot, options.sort);
+            stack.extend(
+                children
+                    .iter()
+                    .rev()
+                    .map(|&child| (child, Some(index), depth + 1)),
+            );
         }
     }
     if filtered {
-        let parents: BTreeMap<_, _> = rows.iter().map(|row| (row.id, row.parent_id)).collect();
-        let mut retained = BTreeSet::new();
-        for mut current in matching {
-            while retained.insert(current) {
-                let Some(parent) = parents.get(&current) else {
-                    break;
-                };
-                current = *parent;
+        // DFS emits every parent before its children. Propagate membership once per
+        // edge in reverse, using the actual display parent even for repeated/cyclic IDs.
+        for index in (0..retained.len()).rev() {
+            if let (Some(parent), true) = retained[index] {
+                retained[parent].1 = true;
             }
         }
-        rows.retain(|row| retained.contains(&row.id));
+        let mut flags = retained.into_iter();
+        rows.retain(|_| flags.next().expect("one flag per visited row").1);
     }
     rows
 }
 
-fn ordered_children(ids: &[ItemId], snapshot: &ThreadSnapshot, sort: ThreadSort) -> Vec<ItemId> {
-    let mut ids = ids.to_vec();
-    if sort != ThreadSort::Ranked {
-        ids.sort_by_key(|id| {
-            (
-                snapshot
-                    .items
-                    .get(id)
-                    .and_then(|item| item.time)
-                    .unwrap_or(0),
-                *id,
-            )
-        });
-        if sort == ThreadSort::Newest {
-            ids.reverse();
-        }
+fn ordered_children<'a>(
+    ids: &'a [ItemId],
+    snapshot: &ThreadSnapshot,
+    sort: ThreadSort,
+) -> Cow<'a, [ItemId]> {
+    if sort == ThreadSort::Ranked || ids.len() < 2 {
+        return Cow::Borrowed(ids);
     }
-    ids
+    let mut sorted = ids.to_vec();
+    sorted.sort_by_cached_key(|id| {
+        (
+            snapshot
+                .items
+                .get(id)
+                .and_then(|item| item.time)
+                .unwrap_or(0),
+            *id,
+        )
+    });
+    if sort == ThreadSort::Newest {
+        sorted.reverse();
+    }
+    Cow::Owned(sorted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projected_rows_borrow_original_bodies_and_keep_the_first_display_parent() {
+        let mut snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 1,
+                kids: vec![2, 3],
+                ..Default::default()
+            },
+            ..ThreadSnapshot::default()
+        };
+        for (id, kids) in [(2, vec![4]), (3, vec![4]), (4, vec![2, 1])] {
+            snapshot.items.insert(
+                id,
+                HnItem {
+                    id,
+                    kids,
+                    text: Some(format!("Reply {id}")),
+                    ..Default::default()
+                },
+            );
+        }
+        let options = ThreadOptions {
+            query: "4".into(),
+            ..Default::default()
+        };
+        let rows = project_thread_with_match(&snapshot, &options, |item, _| item.id == 4);
+        assert_eq!(
+            rows.iter().map(|r| (r.id, r.parent_id)).collect::<Vec<_>>(),
+            [(2, 1), (4, 2)]
+        );
+        assert!(std::ptr::eq(rows[1].item.unwrap(), &snapshot.items[&4]));
+        assert_eq!(
+            flatten_thread(&snapshot, &options)[1].item.as_ref(),
+            rows[1].item
+        );
+    }
 }

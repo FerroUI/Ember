@@ -47,13 +47,31 @@ pub(crate) fn parse(html: &str, options: &ParseOptions) -> HtmlDocument {
     while !html.is_char_boundary(end) {
         end -= 1;
     }
+    let input = &html[..end];
+    let truncated = end < html.len();
+    // Titles and many comments contain just a single text node. Use the same whitespace
+    // and paragraph rules, and defer anything requiring HTML tokenization to html5ever.
+    if options.max_nodes > 0
+        && !input.starts_with('\u{feff}')
+        && !input.bytes().any(|c| matches!(c, b'<' | b'&' | 0 | b'\r'))
+    {
+        let mut blocks = Vec::new();
+        let mut inlines = Vec::new();
+        append_text(&mut inlines, input, false);
+        flush(&mut inlines, &mut blocks);
+        return HtmlDocument { blocks, truncated };
+    }
+    parse_fragment(input, options, truncated)
+}
+
+fn parse_fragment(input: &str, options: &ParseOptions, truncated: bool) -> HtmlDocument {
     // scraper uses html5ever and an arena-backed tree. Unlike a nested Rc tree, releasing an
     // adversarially deep source DOM does not recurse through a chain of child destructors.
-    let fragment = Html::parse_fragment(&html[..end]);
+    let fragment = Html::parse_fragment(input);
     let mut state = Parser {
         remaining: options.max_nodes,
         max_depth: options.max_depth.min(64),
-        truncated: end < html.len(),
+        truncated,
     };
     let blocks = state.blocks(fragment.root_element(), 0);
     HtmlDocument {
@@ -334,8 +352,22 @@ fn flush(inlines: &mut Vec<Inline>, blocks: &mut Vec<Block>) {
     }
     normalize_inline_spaces(inlines);
     let content = std::mem::take(inlines);
-    if !Inline::plain_text(&content).trim().is_empty() {
+    if content.iter().any(has_visible_text) {
         blocks.push(Block::Paragraph(content));
+    }
+}
+
+fn has_visible_text(inline: &Inline) -> bool {
+    match inline {
+        Inline::Text(text) | Inline::Code(text) => !text.trim().is_empty(),
+        Inline::Strong(children)
+        | Inline::Emphasis(children)
+        | Inline::Underline(children)
+        | Inline::Strike(children)
+        | Inline::Link {
+            content: children, ..
+        } => children.iter().any(has_visible_text),
+        Inline::LineBreak => false,
     }
 }
 
@@ -380,7 +412,7 @@ fn normalize_inline_spaces(inlines: &mut Vec<Inline>) {
     }
     fn trim_end(inlines: &mut [Inline]) {
         match inlines.last_mut() {
-            Some(Inline::Text(text)) => *text = text.trim_end_matches(' ').to_owned(),
+            Some(Inline::Text(text)) => text.truncate(text.trim_end_matches(' ').len()),
             Some(Inline::Strong(children))
             | Some(Inline::Emphasis(children))
             | Some(Inline::Underline(children))
@@ -393,4 +425,47 @@ fn normalize_inline_spaces(inlines: &mut Vec<Inline>) {
     }
     collapse(inlines, &mut true);
     trim_end(inlines);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_only_fast_path_agrees_with_the_html5_parser() {
+        for text in [
+            "",
+            "  ",
+            "  A  headline",
+            "a > b",
+            "x\t\n\u{c}  y",
+            " ελληνικά  😸  ",
+            "\u{a0}",
+            "\u{a0}A\u{a0}",
+            "\u{feff}hello",
+            "a\0b",
+            "a\r\nb",
+            "HTML &amp; <b>formatting</b>",
+            "İΟΣ—\u{2009}ñ",
+        ] {
+            for bytes in [0, 1, 3, text.len()] {
+                for nodes in [0, 1, 8] {
+                    let options = ParseOptions {
+                        max_input_bytes: bytes,
+                        max_nodes: nodes,
+                        max_depth: 0,
+                    };
+                    let mut end = text.len().min(bytes);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    assert_eq!(
+                        parse(text, &options),
+                        parse_fragment(&text[..end], &options, end < text.len()),
+                        "text={text:?}, bytes={bytes}, nodes={nodes}"
+                    );
+                }
+            }
+        }
+    }
 }

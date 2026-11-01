@@ -3,8 +3,8 @@
 use crate::widgets::{self, bind_resource, muted, text as label};
 use ember_content::{FindHighlight, HtmlDocument, RenderOptions};
 use ember_core::{
-    flatten_thread, flatten_thread_since, flatten_thread_with_match, relative_time, HnItem,
-    ItemKind, ReaderState, ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
+    project_thread_since, project_thread_with_match, relative_time, HnItem, ItemKind, ReaderState,
+    ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
 };
 use ferroui_base::controls::ResourceKey;
 use ferroui_base::layout::{HorizontalAlignment, Orientation, VerticalAlignment};
@@ -19,7 +19,7 @@ use ferroui_controls::{
     Application, Border, Button, ColumnDefinitions, ComboBox, Control, Grid, ItemsSource, ListBox,
     MenuFlyout, MenuItem, ProgressBar, ScrollViewer, StackPanel, TextBlock, ToolTip, WrapPanel,
 };
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -50,7 +50,7 @@ pub enum ThreadAction {
 #[derive(Clone)]
 enum RowKind {
     Header,
-    Comment(ThreadRow),
+    Comment(ThreadRow<()>),
     Empty,
     Footer,
 }
@@ -73,15 +73,96 @@ pub(crate) struct FindMatch {
 struct ThreadAnchors {
     root: u64,
     indices: BTreeMap<u64, i32>,
-    parents: BTreeMap<u64, u64>,
+    parents: Rc<BTreeMap<u64, u64>>,
     /// Only matches, in display order. Context ancestors remain in the ordinary row index.
     matches: Vec<(i32, u64)>,
     current_match: Rc<Cell<Option<FindMatch>>>,
     pending_reveal: Cell<Option<(i32, u32, bool)>>,
 }
 
-/// Comment rows already own their item data. Keep only the header/footer payload here,
-/// rather than retaining another copy of every comment body in a downloaded thread.
+/// Immutable payloads and derived data shared by successive projections of one discussion.
+pub(crate) struct Discussion {
+    pub(crate) snapshot: ThreadSnapshot,
+    search: RefCell<SearchText>,
+    parents: OnceCell<Rc<BTreeMap<u64, u64>>>,
+    header: OnceCell<Rc<ThreadContext>>,
+}
+
+impl Discussion {
+    pub(crate) fn new(snapshot: ThreadSnapshot) -> Self {
+        Self {
+            snapshot,
+            search: RefCell::default(),
+            parents: OnceCell::new(),
+            header: OnceCell::new(),
+        }
+    }
+
+    fn parents(&self) -> Rc<BTreeMap<u64, u64>> {
+        self.parents
+            .get_or_init(|| {
+                let mut parents = BTreeMap::new();
+                for item in self
+                    .snapshot
+                    .items
+                    .values()
+                    .chain(std::iter::once(&self.snapshot.root))
+                {
+                    for &child in &item.kids {
+                        parents.entry(child).or_insert(item.id);
+                    }
+                }
+                Rc::new(parents)
+            })
+            .clone()
+    }
+}
+
+// Keep searchable, decoded text instead of an HTML tree for every unrendered comment.
+// The index belongs to a single immutable snapshot. Oversized discussions still search
+// every visible body; entries beyond the byte budget are evaluated without retention.
+const FIND_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct SearchText {
+    bodies: BTreeMap<u64, Box<str>>,
+    bytes: usize,
+}
+
+impl SearchText {
+    fn matches(
+        &mut self,
+        item: &HnItem,
+        query: &str,
+        documents: &mut BTreeMap<u64, HtmlDocument>,
+    ) -> bool {
+        if item
+            .by
+            .as_ref()
+            .is_some_and(|name| name.to_lowercase().contains(query))
+        {
+            return true;
+        }
+        let Some(html) = item.text.as_deref().filter(|text| !text.is_empty()) else {
+            return false;
+        };
+        if let Some(text) = self.bodies.get(&item.id) {
+            return text.contains(query);
+        }
+        let document = HtmlDocument::parse(html);
+        let text = document.plain_text().to_lowercase();
+        let matched = text.contains(query);
+        if text.len() <= FIND_TEXT_BYTES - self.bytes {
+            self.bytes += text.len();
+            self.bodies.insert(item.id, text.into_boxed_str());
+        }
+        if matched && documents.len() < 128 {
+            documents.insert(item.id, document);
+        }
+        matched
+    }
+}
+
 struct ThreadContext {
     root: HnItem,
     poll_options: BTreeMap<u64, HnItem>,
@@ -103,11 +184,16 @@ impl From<&ThreadSnapshot> for ThreadContext {
                 .iter()
                 .filter_map(|id| snapshot.items.get(id).map(|item| (*id, item.clone())))
                 .collect(),
-            loaded_comments: snapshot
-                .items
-                .keys()
-                .filter(|&&id| id != snapshot.root.id && !snapshot.root.parts.contains(&id))
-                .count(),
+            loaded_comments: if snapshot.root.parts.is_empty() {
+                snapshot.items.len() - usize::from(snapshot.items.contains_key(&snapshot.root.id))
+            } else {
+                let parts: BTreeSet<_> = snapshot.root.parts.iter().copied().collect();
+                snapshot
+                    .items
+                    .keys()
+                    .filter(|&&id| id != snapshot.root.id && !parts.contains(&id))
+                    .count()
+            },
             pending_items: snapshot.pending_ids.len(),
             missing_items: snapshot.missing_ids.len(),
             complete: snapshot.complete,
@@ -134,14 +220,15 @@ impl PartialEq for ConversationRow {
 
 /// The parent must arrange this control into a finite-height viewport; putting it inside an
 /// outer ScrollViewer would disable ListBox's VirtualizingStackPanel.
-pub fn build(
-    snapshot: &ThreadSnapshot,
+pub(crate) fn build_discussion(
+    discussion: Rc<Discussion>,
     state: &ReaderState,
     query: &str,
     sort: ThreadSort,
     new_only: bool,
     on_action: Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
+    let snapshot = &discussion.snapshot;
     let query = query.trim();
     let local = state.items.get(&snapshot.root.id);
     let options = ThreadOptions {
@@ -156,26 +243,11 @@ pub fn build(
     // Find always searches the whole loaded discussion and restores the selected scope on close.
     let new_only = new_only && !seen.is_empty() && query.is_empty();
     let comments = if new_only {
-        flatten_thread_since(snapshot, &options, &seen)
-    } else if query.is_empty() {
-        flatten_thread(snapshot, &options)
+        project_thread_since(snapshot, &options, &seen)
     } else {
-        flatten_thread_with_match(snapshot, &options, |item, query| {
-            if item
-                .by
-                .as_ref()
-                .is_some_and(|author| author.to_lowercase().contains(query))
-            {
-                return true;
-            }
-            let document = HtmlDocument::parse(item.text.as_deref().unwrap_or_default());
-            let matches = document.plain_text().to_lowercase().contains(query);
-            // Reuse search parsing for the first matching rows, without retaining thousands
-            // of parsed documents when a broad query matches a downloaded conversation.
-            if matches && matched_documents.len() < 128 {
-                matched_documents.insert(item.id, document);
-            }
-            matches
+        let mut search = discussion.search.borrow_mut();
+        project_thread_with_match(snapshot, &options, |item, query| {
+            search.matches(item, query, &mut matched_documents)
         })
     };
     let new_count = new_only.then(|| {
@@ -207,7 +279,7 @@ pub fn build(
             .unwrap_or_default();
         rows.push(Rc::new(ConversationRow {
             key: rows.len(),
-            kind: RowKind::Comment(comment),
+            kind: RowKind::Comment(comment.with_item(())),
             document,
         }));
     }
@@ -240,28 +312,21 @@ pub fn build(
             _ => None,
         })
         .collect();
-    let mut parents = BTreeMap::new();
-    for item in snapshot
-        .items
-        .values()
-        .chain(std::iter::once(&snapshot.root))
-    {
-        for &child in &item.kids {
-            parents.entry(child).or_insert(item.id);
-        }
-    }
     let current_match: Rc<Cell<Option<FindMatch>>> = Rc::default();
     list.set_tag(Some(Rc::new(ThreadAnchors {
         root: snapshot.root.id,
         indices,
-        parents,
+        parents: discussion.parents(),
         matches,
         current_match: current_match.clone(),
         pending_reveal: Cell::new(None),
     }) as BoxedValue));
     list.set_items_source(Some(ItemsSource::from_values(rows)));
     AutomationProperties::set_name(&list, Some("Hacker News conversation"));
-    let snapshot = Rc::new(ThreadContext::from(snapshot));
+    let snapshot = discussion
+        .header
+        .get_or_init(|| Rc::new(ThreadContext::from(snapshot)))
+        .clone();
     let reading = ReadingContext {
         hidden: local.is_some_and(|s| s.hidden),
         seen,
@@ -305,7 +370,7 @@ pub fn build(
                 ),
                 RowKind::Comment(comment) => {
                     let control = comment_row(
-                        comment,
+                        &comment.with_item(discussion.snapshot.items.get(&comment.id)),
                         &row.document,
                         &snapshot.root,
                         &reading,
@@ -1028,7 +1093,11 @@ fn visible_author(item: &HnItem, show_dead: bool) -> Option<&str> {
         .filter(|name| !name.is_empty() && !item.deleted && (!item.dead || show_dead))
 }
 
-fn is_new_reply(row: &ThreadRow, previous: &BTreeSet<u64>, show_dead: bool) -> bool {
+fn is_new_reply(
+    row: &ThreadRow<Option<&HnItem>>,
+    previous: &BTreeSet<u64>,
+    show_dead: bool,
+) -> bool {
     !previous.is_empty()
         && !previous.contains(&row.id)
         && row
@@ -1038,7 +1107,7 @@ fn is_new_reply(row: &ThreadRow, previous: &BTreeSet<u64>, show_dead: bool) -> b
 }
 
 fn comment_row(
-    row: &ThreadRow,
+    row: &ThreadRow<Option<&HnItem>>,
     document: &OnceCell<HtmlDocument>,
     root: &HnItem,
     reading: &ReadingContext,
@@ -1269,7 +1338,7 @@ fn comment_row(
 
 /// Populate on first open so scrolling a long thread need only realize the overflow trigger.
 fn comment_menu(
-    row: &ThreadRow,
+    row: &ThreadRow<Option<&HnItem>>,
     root: &HnItem,
     neighbors: ReplyNeighbors,
     actions: &Rc<dyn Fn(ThreadAction)>,
@@ -1689,7 +1758,170 @@ mod tests {
     use ferroui_controls::testing::UnitTestApplication;
     use ferroui_controls::{HyperlinkButton, SelectableTextBlock, Window};
     use sample_testing::{Shell, TestGlobalClock};
-    use std::cell::RefCell;
+
+    fn build(
+        snapshot: &ThreadSnapshot,
+        state: &ReaderState,
+        query: &str,
+        sort: ThreadSort,
+        new_only: bool,
+        on_action: Rc<dyn Fn(ThreadAction)>,
+    ) -> Ref<Control> {
+        build_discussion(
+            Rc::new(Discussion::new(snapshot.clone())),
+            state,
+            query,
+            sort,
+            new_only,
+            on_action,
+        )
+    }
+
+    #[test]
+    fn find_reuses_only_visible_content_from_the_current_snapshot_with_a_bounded_text_index() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let mut snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 1,
+                kids: vec![2, 3, 4],
+                ..Default::default()
+            },
+            complete: true,
+            ..ThreadSnapshot::default()
+        };
+        for (id, dead, deleted) in [(2, false, false), (3, true, false), (4, false, true)] {
+            snapshot.items.insert(
+                id,
+                HnItem {
+                    id,
+                    dead,
+                    deleted,
+                    text: Some("<p>Rare <em>needle</em> &amp; thread</p>".into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let original = Rc::new(Discussion::new(snapshot.clone()));
+        let matches = |discussion: &Rc<Discussion>, show_dead, query| {
+            let mut state = ReaderState::default();
+            state.preferences.show_dead = show_dead;
+            let control = build_discussion(
+                discussion.clone(),
+                &state,
+                query,
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            );
+            control
+                .cast::<ListBox>()
+                .unwrap()
+                .tag()
+                .unwrap()
+                .downcast_ref::<ThreadAnchors>()
+                .unwrap()
+                .matches
+                .iter()
+                .map(|(_, id)| *id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matches(&original, false, "NEEDLE &"), [2]);
+        assert_eq!(original.search.borrow().bodies.len(), 1);
+        assert_eq!(matches(&original, true, "rare needle"), [2, 3]);
+        assert_eq!(original.search.borrow().bodies.len(), 2);
+        assert_eq!(matches(&original, false, "rare needle"), [2]);
+        assert!(matches(&original, false, "<em>").is_empty());
+
+        let mut documents = BTreeMap::new();
+        assert!(original.search.borrow_mut().matches(
+            &snapshot.items[&2],
+            "rare needle",
+            &mut documents
+        ));
+        assert!(documents.is_empty(), "a warm hit must not reparse HTML");
+        snapshot.items.get_mut(&2).unwrap().text = Some("replaced by server".into());
+        let refreshed = Rc::new(Discussion::new(snapshot));
+        assert!(matches(&refreshed, false, "rare needle").is_empty());
+        assert_eq!(matches(&refreshed, false, "replaced"), [2]);
+
+        let mut full = SearchText {
+            bytes: FIND_TEXT_BYTES - 1,
+            ..Default::default()
+        };
+        assert!(full.matches(&refreshed.snapshot.items[&2], "replaced", &mut documents));
+        assert!(
+            full.bodies.is_empty(),
+            "items over budget are searched without retention"
+        );
+        assert_eq!(full.bytes, FIND_TEXT_BYTES - 1);
+    }
+
+    #[test]
+    #[ignore = "native thread projection timing workload"]
+    fn measure_large_thread_projection_and_find() {
+        use std::time::Instant;
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let mut snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 1,
+                kind: Some(ItemKind::Story),
+                ..Default::default()
+            },
+            complete: true,
+            ..Default::default()
+        };
+        for id in 2..4098u64 {
+            let branch = (id - 2) % 8 == 0;
+            if branch {
+                snapshot.root.kids.push(id);
+            }
+            let match_text = if id % 128 == 0 {
+                "Rare <i>needle</i>"
+            } else {
+                "notes"
+            };
+            snapshot.items.insert(id, HnItem {
+                id, kind: Some(ItemKind::Comment), by: Some(format!("reader{}", id % 73)),
+                text: Some(format!("<p>Entry {id}: <b>layout</b> &amp; paint. {match_text}.</p><p>Second paragraph with <code>UTF-8</code> details.</p>")),
+                kids: if branch { (id + 1..id + 8).collect() } else { Vec::new() },
+                ..Default::default()
+            });
+        }
+        let state = ReaderState::default();
+        let discussion = Rc::new(Discussion::new(snapshot));
+        let start = Instant::now();
+        let project = |query: &str| {
+            let control = build_discussion(
+                discussion.clone(),
+                &state,
+                query,
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            );
+            let count = control.cast::<ListBox>().unwrap().items().count();
+            std::hint::black_box(control);
+            count
+        };
+        assert_eq!(project(""), 4097);
+        let browse = start.elapsed();
+        let start = Instant::now();
+        assert_eq!(project("rare needle"), 65);
+        let cold = start.elapsed();
+        let mut samples = Vec::new();
+        for _ in 0..7 {
+            let start = Instant::now();
+            for query in ["absent", "rare", "layout", "rare needle"] {
+                assert!(project(query) > 1);
+            }
+            samples.push(start.elapsed().as_micros());
+        }
+        samples.sort_unstable();
+        eprintln!("4096 replies; browse {} us; first Find {} us; median four successive Find projections {} us; samples {samples:?}",
+            browse.as_micros(), cold.as_micros(), samples[3]);
+    }
 
     #[test]
     fn overflow_keeps_story_actions_accessible_and_uses_the_current_item() {
@@ -2124,7 +2356,7 @@ mod tests {
             };
             let document = OnceCell::new();
             let control = comment_row(
-                &row,
+                &row.with_item(row.item.as_ref()),
                 &document,
                 &root,
                 &ReadingContext {
