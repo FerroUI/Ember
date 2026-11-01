@@ -119,6 +119,9 @@ impl HttpClient for FixtureHttp {
                     ][(id - 1007) as usize];
                     json!({"id":id,"type":"story","title":title,"by":author,"time":1792580000u64,"url":format!("https://example.org/notes/{id}"),"score":85-(id-1007)*5,"descendants":0,"kids":[]})
                 }
+                3000..=3034 => {
+                    json!({"id":id,"type":"story","title":format!("Saved fixture {id}"),"by":"fixture","kids":[]})
+                }
                 2001 => {
                     json!({"id":2001,"type":"comment","parent":1001,"by":"lin","time":1792601000u64,"kids":[2002],"text":"<p>The best tools disappear into the work. You stop thinking about the interface and start thinking about the idea.</p><blockquote>A good tool changes how you see the problem.</blockquote>"})
                 }
@@ -138,19 +141,34 @@ impl HttpClient for FixtureHttp {
     }
 }
 
+struct CountingHttp {
+    fixture: FixtureHttp,
+    requests: Cell<usize>,
+}
+impl HttpClient for CountingHttp {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+        self.requests.set(self.requests.get() + 1);
+        self.fixture.get(url)
+    }
+}
+
 fn start(
     width: f64,
     height: f64,
     store: Rc<dyn Store>,
     offline: Rc<Cell<bool>>,
 ) -> (Shell, Ref<Window>, Ref<ReaderView>) {
+    start_with_http(width, height, store, Rc::new(FixtureHttp { offline }))
+}
+
+fn start_with_http(
+    width: f64,
+    height: f64,
+    store: Rc<dyn Store>,
+    http: Rc<dyn HttpClient>,
+) -> (Shell, Ref<Window>, Ref<ReaderView>) {
     crate::set_repository_factory(Rc::new(move || {
-        Rc::new(Repository::new(
-            Rc::new(FixtureHttp {
-                offline: offline.clone(),
-            }),
-            store.clone(),
-        ))
+        Rc::new(Repository::new(http.clone(), store.clone()))
     }));
     let shell = Shell::start(&SAMPLE, width, height, || App::new().upcast());
     let view = ReaderView::new();
@@ -566,6 +584,153 @@ fn phone_back_navigation_and_offline_reopen_keep_saved_content() {
         .text()
         .unwrap_or_default()
         .contains("4 comments"));
+    window.close();
+}
+
+#[test]
+fn downloaded_shelf_filters_before_paging_and_reads_stale_threads_without_http() {
+    let store = Rc::new(MemoryStore::default());
+    let http = Rc::new(CountingHttp {
+        fixture: FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        },
+        requests: Cell::new(0),
+    });
+    // The genuine download will be older than the first page of ordinary bookmarks.
+    let mut state = ReaderState::default();
+    let later = crate::services::now() + 86_400;
+    for id in 3000..=3034 {
+        state.toggle_saved(id, later + id);
+    }
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start_with_http(1440.0, 940.0, store.clone(), http.clone());
+    let command = |name: &str| click(&shell, &window, &view.get_control::<Button>(name));
+    let persisted =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+
+    click(&shell, &window, &first_story(&window));
+    command("DownloadButton");
+    let saved = persisted().saved_ids();
+    assert_eq!(saved.len(), 36);
+    assert_eq!(saved.last(), Some(&1001));
+    assert!(persisted().downloaded_threads[&1001].contains(&2004));
+    command("NavSaved");
+    let stories = view.get_control::<ListBox>("Stories");
+    assert_eq!(stories.items().count(), 30);
+    assert!(view
+        .get_control::<Button>("LoadMoreButton")
+        .is_effectively_visible());
+
+    // Age the real root and all replies via the repository's fetch clock. A
+    // cache-first shelf would refresh each of these, even with a working cache.
+    let repo = Repository::new(http.clone(), store.clone());
+    assert!(
+        ready(Box::pin(repo.load_thread(
+            1001,
+            100,
+            1,
+            ember_core::FetchMode::Refresh
+        )))
+        .unwrap()
+        .complete
+    );
+    assert!(http.requests.get() > 0);
+    http.requests.set(0);
+    command("DownloadedOnly");
+    assert_eq!(stories.items().count(), 1);
+    assert_eq!(
+        first_story(&window).headline().as_deref(),
+        Some("Small tools, carefully made")
+    );
+    assert!(!view
+        .get_control::<Button>("LoadMoreButton")
+        .is_effectively_visible());
+    click(&shell, &window, &first_story(&window));
+    assert!(
+        view.get_visual_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .any(|b| {
+                AutomationProperties::get_name(&b).as_deref() == Some("View lin’s profile")
+            }),
+        "a comment from the saved thread must be rendered"
+    );
+    assert_eq!(
+        http.requests.get(),
+        0,
+        "opening the shelf and reading cannot hit the wire"
+    );
+
+    command("ThemeButton");
+    let maintenance = view
+        .get_visual_descendants()
+        .filter_map(|n| n.cast::<ferroui_controls::Expander>())
+        .find(|e| AutomationProperties::get_name(e).as_deref() == Some("Clear local data"))
+        .unwrap();
+    maintenance.set_is_expanded(true);
+    shell.settle();
+    for name in ["Clear cached content", "Remove cached content"] {
+        let button = view
+            .get_visual_descendants()
+            .filter_map(|n| n.cast::<Button>())
+            .find(|b| AutomationProperties::get_name(b).as_deref() == Some(name))
+            .unwrap();
+        click_in_view(&shell, &window, &button);
+    }
+    let library = persisted();
+    assert!(library.downloaded_threads.is_empty());
+    assert_eq!(
+        library.saved_ids(),
+        saved,
+        "clearing the download preserves all bookmark timestamps and order"
+    );
+    assert!(ready(store.get("cache:item:2004")).unwrap().is_none());
+    window.close();
+}
+
+#[test]
+fn empty_feed_actions_restore_all_saved_read_or_front_page_stories() {
+    let store = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    for id in 1001..=1012 {
+        state.mark_read(id, 1);
+    }
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1440.0, 940.0, store, Rc::new(Cell::new(false)));
+    let command = |name: &str| click(&shell, &window, &view.get_control::<Button>(name));
+    let stories = view.get_control::<ListBox>("Stories");
+    let recover = |title: &str, action: &str| {
+        assert_eq!(stories.items().count(), 0);
+        assert_eq!(
+            view.get_control::<TextBlock>("EmptyTitle")
+                .text()
+                .as_deref(),
+            Some(title)
+        );
+        let button = view.get_control::<Button>("RetryButton");
+        assert_eq!(
+            AutomationProperties::get_name(&button).as_deref(),
+            Some(action)
+        );
+        click_in_view(&shell, &window, &button);
+    };
+    command("NavSaved");
+    recover("No saved stories", "Browse front page");
+    assert_eq!(title(&view), "Front page");
+    assert_eq!(stories.items().count(), 12);
+    command("UnreadButton");
+    recover("No unread stories here", "Show read stories");
+    assert_eq!(stories.items().count(), 12);
+    click(&shell, &window, &first_story(&window));
+    command("SaveButton");
+    command("NavSaved");
+    command("DownloadedOnly");
+    recover("No downloaded discussions", "View all saved stories");
+    assert_eq!(title(&view), "Saved for later");
+    assert_eq!(stories.items().count(), 1);
+    assert_eq!(
+        first_story(&window).status_label().as_deref(),
+        Some("SAVED")
+    );
     window.close();
 }
 
