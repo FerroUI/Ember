@@ -11,8 +11,9 @@ use ferroui_base::media::{Color, SolidColorBrush};
 use ferroui_base::{BoxedValue, CornerRadius, Ref, Thickness, WeakRef};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::{
-    Border, Button, CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode,
-    NumberBoxValidationMode, ScrollViewer, StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
+    Border, Button, CheckBox, ColumnDefinitions, Control, DropDownButton, Grid, MenuFlyout,
+    MenuItem, NumberBox, NumberBoxSpinButtonPlacementMode, NumberBoxValidationMode, ScrollViewer,
+    StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
 };
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
@@ -101,9 +102,7 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         2.2,
         0.1,
     );
-    appearance
-        .children()
-        .add(text("Reading preview", 12.0, true));
+    reading_preview_header(&appearance, &font_size, &line_height);
     let preview = crate::widgets::text(
         "The best part of a story is often in the discussion.",
         state.preferences.font_size,
@@ -591,6 +590,49 @@ fn accent_choices(parent: &StackPanel, input: &TextBox) {
 fn valid_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
+fn reading_preview_header(parent: &StackPanel, size: &NumberBox, spacing: &NumberBox) {
+    let row = Grid::new();
+    row.set_column_definitions(
+        ColumnDefinitions::parse("*,Auto").expect("reading preview columns"),
+    );
+    let caption = text("Reading preview", 12.0, true);
+    caption.set_vertical_alignment(VerticalAlignment::Center);
+    row.children().add(caption);
+    let presets = DropDownButton::new();
+    presets.classes().add("quiet");
+    presets.set_min_height(44.0);
+    presets.set_content(Some(Rc::new("Text presets".to_owned())));
+    AutomationProperties::set_name(&presets, Some("Text presets"));
+    let menu = MenuFlyout::new();
+    for (label, font_size, line_height) in [
+        ("Small · 14 px / 1.4×", 14.0, 1.4),
+        ("Standard · 16 px / 1.5×", 16.0, 1.5),
+        ("Large · 20 px / 1.6×", 20.0, 1.6),
+        ("Extra large · 24 px / 1.7×", 24.0, 1.7),
+    ] {
+        let item = MenuItem::new();
+        item.set_header(Some(Rc::new(label.to_owned())));
+        let size = size.to_ref().downgrade();
+        let spacing = spacing.to_ref().downgrade();
+        item.click(move |_, _| {
+            for (editor, value) in [(&size, font_size), (&spacing, line_height)] {
+                if let Some(editor) = editor.upgrade() {
+                    // A preset deliberately replaces even an unfinished edit in the number box.
+                    let validation = editor.validation_mode();
+                    editor.set_validation_mode(NumberBoxValidationMode::InvalidInputOverwritten);
+                    editor.set_numeric_value(value);
+                    editor.set_validation_mode(validation);
+                }
+            }
+        });
+        menu.items().add(Some(Control::boxed(item)));
+    }
+    presets.set_flyout(menu);
+    Grid::set_column(&presets, 1);
+    row.children().add(presets);
+    parent.children().add(row);
+}
+
 fn reading_number(
     parent: &StackPanel,
     label: &str,
@@ -1024,6 +1066,30 @@ mod tests {
         size_editor.set_text(Some("20"));
         apply();
         assert_eq!(applied.borrow().font_size, 20.0);
+        let presets = named("Text presets").cast::<DropDownButton>().unwrap();
+        let menu = presets.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+        let small = Control::from_boxed(&menu.items().get_at(0).unwrap())
+            .unwrap()
+            .cast::<MenuItem>()
+            .unwrap();
+        small.raise_event(&ferroui_base::interactivity::RoutedEventArgs::with_event(
+            MenuItem::click_event(),
+        ));
+        assert_eq!(preview.font_size(), 14.0);
+        assert!((preview.line_height() - 19.6).abs() < 0.001);
+        assert_eq!(
+            applied.borrow().font_size,
+            20.0,
+            "preset is a draft until Apply"
+        );
+        apply();
+        assert_eq!(applied.borrow().font_size, 14.0);
+        assert_eq!(applied.borrow().line_height, 1.4);
+        size_editor.set_text(Some("bad draft"));
+        small.raise_event(&ferroui_base::interactivity::RoutedEventArgs::with_event(
+            MenuItem::click_event(),
+        ));
+        assert_eq!(size_editor.text().as_deref(), Some("14"));
         window.close();
     }
 }
