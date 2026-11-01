@@ -15,7 +15,11 @@ use ferroui_controls::{
     MenuItem, NumberBox, NumberBoxSpinButtonPlacementMode, NumberBoxValidationMode, ScrollViewer,
     StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
 };
-use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeSet,
+    rc::Rc,
+};
 
 /// The longest text of a settings field; the backup field takes up to 16 MiB.
 const FIELD_LENGTH: i32 = 8192;
@@ -802,9 +806,71 @@ fn mute_settings(parent: &StackPanel, rules: &MuteRules, on_action: &Rc<dyn Fn(S
         true,
     ));
     let message = feedback(&panel);
+    let changing = text("Unsaved filter changes.", 12.0, true);
+    AutomationProperties::set_live_setting(&changing, AutomationLiveSetting::Polite);
+    panel.children().add(changing.clone());
+    let actions = WrapPanel::new();
     let save = button("Save filters");
-    panel.children().add(save.clone());
-    let [domains, users, keywords] = groups.map(|(_, field)| field);
+    let discard = button("Discard filter edits");
+    discard.classes().add("quiet");
+    actions.children().add(save.clone());
+    actions.children().add(discard.clone());
+    panel.children().add(actions);
+
+    let fields = groups.map(|(_, field)| field);
+    let baseline = Rc::new(RefCell::new(
+        fields
+            .each_ref()
+            .map(|field| field.text().unwrap_or_default()),
+    ));
+    let dirty = Rc::new(Cell::new([false; 3]));
+    let submit = save.downgrade();
+    let undo = discard.downgrade();
+    let refresh = Rc::new(move |flags: [bool; 3]| {
+        let changed = flags.contains(&true);
+        if let Some(save) = submit.upgrade() {
+            save.set_is_enabled(changed);
+        }
+        if let Some(discard) = undo.upgrade() {
+            discard.set_is_visible(changed);
+        }
+        changing.set_is_visible(changed);
+    });
+    refresh(dirty.get());
+    for (i, field) in fields.iter().enumerate() {
+        let (baseline, dirty, refresh) = (baseline.clone(), dirty.clone(), refresh.clone());
+        let input = field.downgrade();
+        field.property_changed(move |event| {
+            if event.property() != TextBox::text_property().as_property() {
+                return;
+            }
+            if let Some(input) = input.upgrade() {
+                let mut flags = dirty.get();
+                flags[i] = input.text().unwrap_or_default() != baseline.borrow()[i];
+                dirty.set(flags);
+                refresh(flags);
+            }
+        });
+    }
+    {
+        let fields = fields.clone();
+        let baseline = baseline.clone();
+        let kind = kind.clone();
+        let message = message.clone();
+        discard.click(move |_, _| {
+            let mut check = FormValidation::default();
+            for (field, saved) in fields.iter().zip(baseline.borrow().iter()) {
+                field.set_text(Some(saved));
+                check.check(field, Ok(()));
+            }
+            message.set_is_visible(false);
+            if let Some(field) = fields.get(kind.selected_index() as usize) {
+                field.focus();
+                field.bring_into_view();
+            }
+        });
+    }
+    let [domains, users, keywords] = fields;
     let callback = on_action.clone();
     save.click(move |_, _| {
         let mut check = FormValidation::default();
@@ -843,9 +909,19 @@ fn mute_settings(parent: &StackPanel, rules: &MuteRules, on_action: &Rc<dyn Fn(S
             users: user_rules.unwrap_or_default(),
             keywords: split(&keywords.text().unwrap_or_default()),
         };
-        domains.set_text(Some(&join(&rules.domains)));
-        users.set_text(Some(&join(&rules.users)));
-        keywords.set_text(Some(&join(&rules.keywords)));
+        baseline.replace([
+            join(&rules.domains),
+            join(&rules.users),
+            join(&rules.keywords),
+        ]);
+        for (field, saved) in [&domains, &users, &keywords]
+            .into_iter()
+            .zip(baseline.borrow().iter())
+        {
+            field.set_text(Some(saved));
+        }
+        dirty.set([false; 3]);
+        refresh(dirty.get());
         summary.set_text(Some(&mute_summary(&rules)));
         callback(SettingsAction::Mutes(rules));
     });
@@ -1015,6 +1091,28 @@ mod tests {
         assert_eq!(join(&rules.keywords), "ai\ngame");
         assert_eq!(domains.text().as_deref(), Some("example.org"));
         assert_eq!(mute_summary(rules), "1 domain · 1 author · 2 keywords");
+        assert!(!named("Save filters").is_enabled());
+        domains.set_text(Some("new.example"));
+        users.set_text(Some("invalid author"));
+        click_save();
+        assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+            &users
+        ));
+        keywords.set_text(Some("one more"));
+        shell.settle();
+        let discard = named("Discard filter edits");
+        assert!(discard.is_effectively_visible());
+        shell.click(0, Shell::bounds_of(&w, &discard).center());
+        shell.settle();
+        assert!(users.is_focused());
+        assert!(!ferroui_controls::DataValidationErrors::get_has_errors(
+            &users
+        ));
+        assert_eq!(domains.text().as_deref(), Some("example.org"));
+        assert_eq!(users.text().as_deref(), Some("Lin"));
+        assert_eq!(keywords.text().as_deref(), Some("ai\ngame"));
+        assert!(!discard.is_effectively_visible());
+        assert!(!named("Save filters").is_enabled());
         w.close();
     }
 
