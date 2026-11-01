@@ -18,6 +18,7 @@ const fixtures = {
     103: { id: 103, type: "story", title: "Ask HN: What have you learned by building something slowly?", by: "curious", time: 1792567200, score: 142, descendants: 0, text: "<p>What did the process teach you?</p>" },
     201: { id: 201, type: "comment", by: "reader", parent: 101, time: 1792573800, kids: [202], text: "<p>Small details make a <b>meaningful difference</b>. A native reading experience feels wonderful.</p><p>See <a href=\"https://example.org/details\">the design notes</a>.</p>" },
     202: { id: 202, type: "comment", by: "maker", parent: 201, time: 1792574000, text: "<p>Thank you! Here is the tiny core:</p><pre><code>fn main() {\n    println!(\"Stay curious.\");\n}</code></pre>" },
+    250: { id: 250, type: "comment", by: "archivist", parent: 101, time: 1792574450, text: "<p>Margin notes are part of the archive.</p>" },
     203: { id: 203, type: "comment", by: "engineer", parent: 101, time: 1792574400, text: "<blockquote>Make the important things easy.</blockquote><p>I keep the design notes available offline.</p><script>globalThis.__emberUnsafeHtml = true</script>" },
 };
 const initScript = `(() => {
@@ -31,7 +32,11 @@ const initScript = `(() => {
         let value = null;
         if (url.hostname === "hn.algolia.com") {
             globalThis.__emberLastSearch = url.href;
-            value = { hits: [{ objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url }], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
+            const scoped = url.searchParams.get("tags") === "comment,story_101";
+            const hit = scoped
+                ? { objectID: "250", story_id: 101, story_title: items[101].title, comment_text: items[250].text, author: items[250].by, _tags: ["comment"] }
+                : { objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url };
+            value = { hits: [hit], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
         } else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
         else if (/\\/item\\//.test(url.pathname)) value = items[Number(url.pathname.split("/").pop().replace(".json", ""))] ?? null;
         else if (/\\/user\\//.test(url.pathname)) value = { id: "maker", karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
@@ -222,6 +227,31 @@ await run([
             await reviewLocalData(page);
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "desktop"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["discussion search opens an indexed comment beyond the loaded thread", async () => {
+        const page = await start(390, 844);
+        try {
+            await byText(page, title);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'More story actions' && e.hit)");
+            await byAutomation(page, "More story actions");
+            await page.press("Home");
+            await page.press("ArrowDown");
+            await page.press("Enter");
+            await waitText(page, "Discussion 101");
+            await byAutomation(page, "Search terms");
+            await page.type("margin notes");
+            await page.screenshot(path.join(captures, "phone-discussion-search.png"));
+            await page.press("Enter");
+            await waitText(page, "Margin notes are part of the archive.");
+            const query = new URL(await page.evaluate("globalThis.__emberLastSearch"));
+            assert(query.searchParams.get("tags") === "comment,story_101", "Discussion scope was lost");
+            assert(query.searchParams.get("query") === "margin notes", "Search terms were lost");
+            await byText(page, "Margin notes are part of the archive.");
+            await waitText(page, "Comment by archivist");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '250'"), "Search opened the containing story instead of the exact comment");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "scoped-search"); throw error; }
         finally { await page.close(); }
     }],
     ["returning readers catch up on new nested replies and copy their link", async () => {
