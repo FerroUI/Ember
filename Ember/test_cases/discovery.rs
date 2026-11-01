@@ -246,12 +246,11 @@ fn discussion_search_keeps_its_scope_and_opens_the_exact_comment() {
     use ferroui_base::interactivity::RoutedEventArgs;
     use ferroui_controls::{ComboBox, Expander, MenuFlyout, MenuItem};
 
-    let (shell, window, view) = start(
-        390.0,
-        844.0,
-        Rc::new(MemoryStore::default()),
-        Rc::new(Cell::new(false)),
-    );
+    let store = Rc::new(MemoryStore::default());
+    let mut initial = ReaderState::default();
+    initial.preferences.reduced_motion = true;
+    ready(store.put("reader:state", &initial.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(390.0, 844.0, store, Rc::new(Cell::new(false)));
     click(&shell, &window, &first_story(&window));
     let menu = action(&view, "More story actions")
         .flyout()
