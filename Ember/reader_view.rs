@@ -1895,17 +1895,24 @@ impl ReaderView {
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
                 if mode != FetchMode::Offline {
-                    if let Ok(mut cached) = repo
+                    let preview = repo
                         .load_thread(id, budget, services::now(), FetchMode::Offline)
-                        .await
-                    {
-                        if let Some(v) = weak.upgrade() {
-                            if v.detail_generation.get() == generation {
-                                // Missing records during a deliberate cache preview are expected;
-                                // the network result below decides whether an error is actionable.
-                                cached.warning = None;
-                                v.accept_thread(cached);
-                            }
+                        .await;
+                    let Some(view) = weak.upgrade().filter(|v| v.detail_generation.get() == generation)
+                    else {
+                        return;
+                    };
+                    if let Ok(mut cached) = preview {
+                        // The cache-first traversal would read these same fresh records again.
+                        // A budget-limited window may have pending children beyond its boundary.
+                        let fresh_window = mode == FetchMode::CacheFirst
+                            && !cached.stale
+                            && cached.missing_ids.is_empty()
+                            && cached.warning.is_none();
+                        cached.warning = None;
+                        view.accept_thread(cached);
+                        if fresh_window || view.detail_generation.get() != generation {
+                            return;
                         }
                     }
                 }

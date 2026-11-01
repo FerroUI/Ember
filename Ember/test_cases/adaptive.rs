@@ -281,3 +281,51 @@ fn a_phone_permalink_defers_the_front_page_until_it_is_visible() {
         window.close();
     }
 }
+
+#[test]
+fn a_cached_permalink_reads_its_fresh_window_once_and_refreshes_a_stale_one() {
+    struct RootReads(MemoryStore, Cell<usize>);
+    impl Store for RootReads {
+        fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Option<String>, ReaderError>> {
+            if key == "cache:item:1002" {
+                self.1.set(self.1.get() + 1);
+            }
+            self.0.get(key)
+        }
+        fn put<'a>(
+            &'a self,
+            key: &'a str,
+            value: &'a str,
+        ) -> BoxFuture<'a, Result<(), ReaderError>> {
+            self.0.put(key, value)
+        }
+        fn remove<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), ReaderError>> {
+            self.0.remove(key)
+        }
+        fn scan_prefix<'a>(
+            &'a self,
+            prefix: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<(String, String)>, ReaderError>> {
+            self.0.scan_prefix(prefix)
+        }
+    }
+    for fresh in [true, false] {
+        let store = Rc::new(RootReads(MemoryStore::default(), Cell::new(0)));
+        let record = json!({"fetched_at": if fresh { crate::services::now() } else { 1 },
+            "value":{"id":1002,"type":"story","title":"Cached title","kids":[]}});
+        ready(store.put("cache:item:1002", &record.to_string())).unwrap();
+        crate::set_initial_location("?item=1002".to_owned());
+        let (_shell, window, view) = start(390.0, 844.0, store.clone(), Rc::new(Cell::new(false)));
+        assert_eq!(store.1.get(), if fresh { 1 } else { 2 });
+        let title = view.get_control::<TextBlock>("DetailTitle").text().unwrap();
+        assert_eq!(
+            title,
+            if fresh {
+                "Cached title"
+            } else {
+                "Ask HN: What changed the way you think about programming?"
+            }
+        );
+        window.close();
+    }
+}
