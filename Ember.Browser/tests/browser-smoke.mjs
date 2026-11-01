@@ -243,15 +243,29 @@ await run([
                 // Browsers may deliver both events when traversing a hash URL.
                 await page.evaluate("dispatchEvent(new PopStateEvent('popstate'))");
                 await waitText(page, "1 matching comment");
-                await page.press("Enter", ["ctrl"]);
+                const context = e => e.name === "ReadInContext";
+                await reveal(page, context);
+                await page.screenshot(path.join(captures, `find-context-${width}.png`));
+                if (width < 760) {
+                    const button = (await state(page)).elements.find(e => e.hit && context(e));
+                    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+                    await page.send("Input.dispatchTouchEvent", {
+                        type: "touchStart",
+                        touchPoints: [{ x: button.x + button.width / 2, y: button.y + button.height / 2 }],
+                    });
+                    await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+                } else {
+                    await byName(page, "ThreadFind");
+                    await page.press("Enter", ["ctrl"]);
+                }
                 await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
-                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.includes('Thank you!'))");
+                // Only the selected nested reply contains a code block.
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Wrap code lines')");
                 await byName(page, "BackButton");
                 await page.waitFor("!location.hash && !new URL(location.href).searchParams.has('item')");
                 assert(page.errors.length === 0, page.errors.join("\n"));
             } catch (error) { await failure(page, `context-${width}`); throw error; }
             finally { await page.close(); }
-
         }
     }],
     ["storage cleanup releases temporary items and preserves verified downloads", async () => {
