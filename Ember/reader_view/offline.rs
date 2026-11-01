@@ -303,11 +303,13 @@ impl ReaderView {
             return;
         };
         self.set_cache_work(CacheWork::Cleaning);
-        let state = self.state.borrow().clone();
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-                let result = repo.clean_temporary_cache(&state).await;
+                let Some(view) = weak.upgrade() else { return };
+                let clean = repo.clean_temporary_cache(&view.state.borrow());
+                drop(view);
+                let result = clean.await;
                 if let Some(view) = weak.upgrade() {
                     view.forget_feed_windows();
                     view.set_cache_work(CacheWork::Idle);

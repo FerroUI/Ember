@@ -899,12 +899,7 @@ impl Repository {
                 let fetched_at = cache_record_time(&json);
                 candidates.push((fetched_at, key));
             }
-            candidates.sort();
-            let keys: Vec<_> = candidates
-                .into_iter()
-                .take(remove)
-                .map(|(_, key)| key)
-                .collect();
+            let keys = oldest_keys(candidates, remove);
             self.remove_keys(&keys).await?;
             Ok(keys.len() + self.prune_metadata_cache().await?)
         })
@@ -926,16 +921,11 @@ impl Repository {
         let mut records = self.store.scan_prefix("cache:user:").await?;
         records.extend(self.store.scan_prefix("cache:search:").await?);
         let remove = records.len().saturating_sub(METADATA_CACHE_LIMIT);
-        let mut candidates: Vec<_> = records
+        let candidates = records
             .into_iter()
             .map(|(key, json)| (cache_record_time(&json), key))
             .collect();
-        candidates.sort();
-        let keys: Vec<_> = candidates
-            .into_iter()
-            .take(remove)
-            .map(|(_, key)| key)
-            .collect();
+        let keys = oldest_keys(candidates, remove);
         self.remove_keys(&keys).await?;
         Ok(keys.len())
     }
@@ -952,29 +942,31 @@ impl Repository {
     }
     /// Release browsing cache while retaining feed lists, bookmarks and every verified
     /// download. Protect both the active library and any state still durable on disk.
-    pub async fn clean_temporary_cache(
-        &self,
+    pub fn clean_temporary_cache<'a>(
+        &'a self,
         state: &ReaderState,
-    ) -> Result<CacheStats, ReaderError> {
+    ) -> BoxFuture<'a, Result<CacheStats, ReaderError>> {
         let mut pinned = state.pinned_items();
-        pinned.extend(self.load_state().await?.pinned_items());
-        let mut removed = CacheStats::default();
-        let mut keys = Vec::new();
-        for (key, value_bytes) in self.store.scan_sizes("cache:").await? {
-            let item = key.strip_prefix("cache:item:");
-            let temporary = match item {
-                Some(id) => !id.parse::<ItemId>().is_ok_and(|id| pinned.contains(&id)),
-                None => key.starts_with("cache:user:") || key.starts_with("cache:search:"),
-            };
-            if temporary {
-                removed.records += 1;
-                removed.items += usize::from(item.is_some());
-                removed.bytes += key.len() + value_bytes;
-                keys.push(key);
+        Box::pin(async move {
+            pinned.extend(self.load_state().await?.pinned_items());
+            let mut removed = CacheStats::default();
+            let mut keys = Vec::new();
+            for (key, value_bytes) in self.store.scan_sizes("cache:").await? {
+                let item = key.strip_prefix("cache:item:");
+                let temporary = match item {
+                    Some(id) => !id.parse::<ItemId>().is_ok_and(|id| pinned.contains(&id)),
+                    None => key.starts_with("cache:user:") || key.starts_with("cache:search:"),
+                };
+                if temporary {
+                    removed.records += 1;
+                    removed.items += usize::from(item.is_some());
+                    removed.bytes += key.len() + value_bytes;
+                    keys.push(key);
+                }
             }
-        }
-        self.remove_keys(&keys).await?;
-        Ok(removed)
+            self.remove_keys(&keys).await?;
+            Ok(removed)
+        })
     }
 
     /// Deletes public cached payloads only. Preferences, bookmarks, history and
@@ -989,6 +981,17 @@ pub struct CacheStats {
     pub records: usize,
     pub items: usize,
     pub bytes: usize,
+}
+
+/// Select only the records above the limit. The usual eviction removes one
+/// page from a much larger cache. Order that subset for deterministic retries.
+fn oldest_keys(mut records: Vec<(u64, String)>, count: usize) -> Vec<String> {
+    if count < records.len() {
+        records.select_nth_unstable(count);
+        records.truncate(count);
+    }
+    records.sort_unstable();
+    records.into_iter().map(|(_, key)| key).collect()
 }
 
 fn decode_record<T: DeserializeOwned>(

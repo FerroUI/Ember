@@ -35,13 +35,21 @@ try {
     const bytes = fs.statSync(path.join(site, modules[0])).size;
     fs.renameSync(path.join(site, modules[0]), path.join(folder, "unavailable.wasm"));
     await page.send("Network.clearBrowserCache");
-    await page.evaluate("navigator.serviceWorker.getRegistration().then(r => r.update()).then(() => true)");
-    await page.waitFor(`caches.keys().then(keys => keys.some(k => k.endsWith(":${next.version}")) && !keys.some(k => k.endsWith(":${initial.version}")))`);
+    await page.evaluate(`new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Updated worker did not take control")), 60000);
+        navigator.serviceWorker.addEventListener("controllerchange", () => { clearTimeout(timeout); resolve(true); }, {once:true});
+        navigator.serviceWorker.getRegistration().then(r => r.update()).catch(reject);
+    })`);
     await page.send("Network.enable");
     await page.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
     const origin = await page.evaluate("performance.timeOrigin");
     await page.send("Page.reload", {});
     await page.waitFor(`performance.timeOrigin !== ${origin} && !!globalThis.ember?.emberState && JSON.parse(ember.emberState())?.elements.some(e => e.name === "FeedTitle")`);
+    const css = await page.evaluate('fetch("./app.css", {cache:"no-store"}).then(r => r.text())');
+    assert.ok(css.includes("shell upgrade probe"), "offline reload must use the *new* shell");
+    const installed = await page.evaluate("caches.keys()");
+    assert.ok(installed.some(k => k.endsWith(":" + next.version)));
+    assert.ok(!installed.some(k => k.endsWith(":" + initial.version)));
     console.log(`Passed: shell updated and reloaded offline with the ${bytes}-byte module unavailable from the server.`);
 } finally {
     if (page) await page.close();

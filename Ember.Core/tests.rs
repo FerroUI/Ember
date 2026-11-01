@@ -894,3 +894,24 @@ fn sqlite_offline_workload() {
         assert_eq!(http.calls.get(), 0);
     });
 }
+
+#[test]
+fn compact_state_writes_snapshot_pending_edits_and_read_existing_backups() {
+    let (repo, _, store) = repository();
+    let old = r#"{
+      "version":1,
+      "items":{"7":{"saved_at":null,"read_at":31,"hidden":false,"last_opened_at":31,"scroll_anchor":null,"scroll_inset":0,"collapsed":[],"seen_comments":[]}}
+    }"#;
+    block_on(store.put("reader:state", old)).unwrap();
+    let mut state = block_on(repo.load_state()).unwrap();
+    let write = repo.save_state(&state);
+    state.toggle_hidden(7);
+    block_on(write).unwrap();
+    let saved = block_on(repo.load_state()).unwrap();
+    assert!(saved.is_read(7));
+    assert!(!saved.items[&7].hidden);
+    let raw = block_on(store.get("reader:state")).unwrap().unwrap();
+    assert!(!raw.contains("seen_comments"));
+    assert!(!raw.contains('\n'));
+    assert_eq!(ReaderState::import_json(&saved.export_json().unwrap()).unwrap(), saved);
+}
