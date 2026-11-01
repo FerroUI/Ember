@@ -224,11 +224,14 @@ await run([
             // Starting independent windows at these widths does not exercise this path.
             for (const [width, height, rail] of [[700, 420, false], [760, 550, true], [390, 844, false]]) {
                 await page.resize(width, height);
-                await page.waitFor(`JSON.parse(ember.emberState()).width === ${width}`);
-                await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop') === ${rail}`);
+                // The viewport changes before the deferred adaptive layout arranges its controls.
+                await page.waitFor(`(() => {
+                    const view = JSON.parse(ember.emberState());
+                    return view.width === ${width} && view.height === ${height}
+                        && view.elements.some(e => e.name === 'NavTop') === ${rail}
+                        && view.elements.some(e => e.name === 'SaveButton' && e.hit);
+                })()`);
                 assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '101'"), "Resizing changed the selected URL");
-                const resized = await state(page);
-                assert(resized.elements.some(e => e.name === "SaveButton" && e.hit), "Resizing lost the selected discussion");
                 assert(page.errors.length === 0, page.errors.join("\n"));
             }
             await page.wheel(340, 600, 0, 440);
