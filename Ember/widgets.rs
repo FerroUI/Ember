@@ -260,3 +260,71 @@ pub(crate) fn welcome(open_search: impl Fn() + 'static) -> Ref<Control> {
     panel.children().add(search);
     scroll(panel.upcast::<Control>())
 }
+
+/// Collect field errors for one submit, then reveal the first editor in form order.
+#[derive(Default)]
+pub(crate) struct FormValidation {
+    first: Option<(Ref<Control>, String)>,
+    count: usize,
+}
+
+impl FormValidation {
+    pub(crate) fn check<T>(&mut self, field: &Control, result: Result<T, String>) -> Option<T> {
+        use ferroui_controls::{DataValidationErrors, NumberBox};
+        // NumberBox's inner editor owns keyboard focus and its validation visual.
+        let editor = field
+            .to_ref()
+            .cast::<NumberBox>()
+            .and_then(|number| {
+                number
+                    .get_visual_descendants()
+                    .find_map(|v| v.cast::<TextBox>())
+                    .map(|v| v.upcast())
+            })
+            .unwrap_or_else(|| field.to_ref());
+        match result {
+            Ok(value) => {
+                if DataValidationErrors::get_has_errors(&editor) {
+                    DataValidationErrors::clear_errors(&editor);
+                    AutomationProperties::set_item_status(&editor, None);
+                }
+                Some(value)
+            }
+            Err(message) => {
+                DataValidationErrors::set_errors(
+                    &editor,
+                    Some(vec![Rc::new(message.clone()) as BoxedValue]),
+                );
+                AutomationProperties::set_item_status(&editor, Some(&message));
+                self.count += 1;
+                if self.first.is_none() {
+                    self.first = Some((editor, message));
+                }
+                None
+            }
+        }
+    }
+
+    pub(crate) fn finish(self, summary: &TextBlock) -> bool {
+        let Some((first, message)) = self.first else {
+            summary.set_is_visible(false);
+            return true;
+        };
+        let message = if self.count > 1 {
+            format!("{} fields need attention. {message}", self.count)
+        } else {
+            message
+        };
+        summary.set_text(Some(&message));
+        summary.set_is_visible(true);
+        for ancestor in first
+            .get_logical_ancestors()
+            .filter_map(|v| v.cast::<Expander>())
+        {
+            ancestor.set_is_expanded(true);
+        }
+        first.focus();
+        first.bring_into_view();
+        false
+    }
+}

@@ -1,6 +1,7 @@
 //! Search and public-profile forms. Filters are data, never interpolated tags.
 use crate::widgets::{
     combo, disclosure, field_pair, form_button as button, icon_button, label as text, section,
+    FormValidation,
 };
 use ember_core::{validate_username, SearchKind, SearchQuery, SearchSort};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
@@ -205,8 +206,10 @@ pub fn build(
         let time = time.clone();
         let message = message.clone();
         reset.click(move |_, _| {
+            let mut check = FormValidation::default();
             for field in &fields {
                 field.set_text(Some(""));
+                check.check(field, Ok(()));
             }
             time.set_selected_index(0);
             message.set_is_visible(false);
@@ -215,67 +218,90 @@ pub fn build(
     let original = query.clone();
     let recent_input = words.downgrade();
     let run: Rc<dyn Fn()> = Rc::new(move || {
-        let result = (|| -> Result<SearchQuery, String> {
-            let mut q = original.clone();
-            q.page = 0;
-            q.query = words.text().unwrap_or_default().trim().to_owned();
-            q.kind = match kind.selected_index() {
-                1 => SearchKind::Comments,
-                2 => SearchKind::All,
-                3 => SearchKind::Ask,
-                4 => SearchKind::Show,
-                5 => SearchKind::Polls,
-                _ => SearchKind::Stories,
-            };
-            q.sort = if sort.selected_index() == 1 {
-                SearchSort::Recent
+        let mut check = FormValidation::default();
+        let mut q = original.clone();
+        q.page = 0;
+        q.query = words.text().unwrap_or_default().trim().to_owned();
+        check.check(
+            &words,
+            if q.query.len() <= FIELD_LENGTH as usize {
+                Ok(())
             } else {
-                SearchSort::Relevance
-            };
-            let value = author.text().unwrap_or_default();
-            let value = value.trim();
-            q.author = if value.is_empty() {
-                None
+                Err("Search terms exceed the 2,048-byte limit.".into())
+            },
+        );
+        q.kind = match kind.selected_index() {
+            1 => SearchKind::Comments,
+            2 => SearchKind::All,
+            3 => SearchKind::Ask,
+            4 => SearchKind::Show,
+            5 => SearchKind::Polls,
+            _ => SearchKind::Stories,
+        };
+        q.sort = if sort.selected_index() == 1 {
+            SearchSort::Recent
+        } else {
+            SearchSort::Relevance
+        };
+        let value = author.text().unwrap_or_default();
+        let value = value.trim();
+        check.check(
+            &author,
+            if value.is_empty() {
+                Ok(())
             } else {
-                validate_username(value).map_err(|e| e.to_string())?;
-                Some(value.to_owned())
-            };
-            q.min_points = optional_number(&points, "Minimum points")?;
-            q.min_comments = optional_number(&comments, "Minimum comments")?;
-            let seconds = match time.selected_index() {
-                1 => Some(86400),
-                2 => Some(7 * 86400),
-                3 => Some(30 * 86400),
-                4 => Some(365 * 86400),
-                _ => None,
-            };
-            if let Some(seconds) = seconds {
-                q.since = Some(crate::services::now().saturating_sub(seconds));
-                q.until = None;
-            } else if time.selected_index() == 5 {
-                q.since =
-                    date_boundary(&from_date.text().unwrap_or_default(), original.since, false)?;
-                q.until = date_boundary(
-                    &through_date.text().unwrap_or_default(),
-                    original.until,
-                    true,
-                )?;
-                if q.since.is_none() && q.until.is_none() {
-                    return Err("Enter a start or end date, or choose Any time.".into());
-                }
-            } else {
-                q.since = None;
-                q.until = None;
-            }
-            q.url().map_err(|e| e.to_string())?;
-            Ok(q)
-        })();
-        match result {
-            Ok(q) => on_search(q),
-            Err(error) => {
-                message.set_text(Some(&error));
-                message.set_is_visible(true);
-            }
+                validate_username(value)
+                    .map_err(|_| "Author must be a Hacker News username.".to_owned())
+            },
+        );
+        q.author = (!value.is_empty()).then(|| value.to_owned());
+        q.min_points = check
+            .check(&points, optional_number(&points, "Minimum points"))
+            .flatten();
+        q.min_comments = check
+            .check(&comments, optional_number(&comments, "Minimum comments"))
+            .flatten();
+        let seconds = match time.selected_index() {
+            1 => Some(86400),
+            2 => Some(7 * 86400),
+            3 => Some(30 * 86400),
+            4 => Some(365 * 86400),
+            _ => None,
+        };
+        let custom = time.selected_index() == 5;
+        let from = from_date.text().unwrap_or_default();
+        let until = through_date.text().unwrap_or_default();
+        let start = if !custom {
+            Ok(None)
+        } else if from.trim().is_empty() && until.trim().is_empty() {
+            Err("Enter a start date or an end date.".to_owned())
+        } else {
+            date_boundary(&from, original.since, false).map_err(|_| {
+                "Enter a valid From date in YYYY-MM-DD format, from 1970 onward.".to_owned()
+            })
+        };
+        q.since = check.check(&from_date, start).flatten();
+        let end = if custom {
+            date_boundary(&until, original.until, true)
+                .map_err(|_| {
+                    "Enter a valid Through date in YYYY-MM-DD format, from 1970 onward.".to_owned()
+                })
+                .and_then(|end| {
+                    if q.since.zip(end).is_some_and(|(start, end)| start > end) {
+                        Err("Through date must be on or after From date.".to_owned())
+                    } else {
+                        Ok(end)
+                    }
+                })
+        } else {
+            Ok(None)
+        };
+        q.until = check.check(&through_date, end).flatten();
+        if let Some(seconds) = seconds {
+            q.since = Some(crate::services::now().saturating_sub(seconds));
+        }
+        if check.finish(&message) {
+            on_search(q);
         }
     });
     bind_submit(&search, &submit, run.clone());
@@ -340,12 +366,13 @@ pub fn build(
         &open,
         Rc::new(move || {
             let name = username.text().unwrap_or_default();
-            match validate_username(name.trim()) {
-                Ok(()) => on_profile(name.trim().to_owned()),
-                Err(error) => {
-                    message.set_text(Some(&error.to_string()));
-                    message.set_is_visible(true);
-                }
+            let mut check = FormValidation::default();
+            check.check(
+                &username,
+                validate_username(name.trim()).map_err(|e| e.to_string()),
+            );
+            if check.finish(&message) {
+                on_profile(name.trim().to_owned());
             }
         }),
     );
@@ -510,11 +537,28 @@ mod tests {
         let published = named("Published").cast::<ComboBox>().unwrap();
         published.set_selected_index(5);
         shell.settle();
-        named("From date")
-            .cast::<TextBox>()
-            .unwrap()
-            .set_text(Some("2024-02-30"));
+        let date = named("From date").cast::<TextBox>().unwrap();
+        date.set_text(Some("2024-02-30"));
+        author.set_text(Some("invalid author!"));
+        filters.set_is_expanded(false);
+        shell.settle();
         enter();
+        assert!(
+            filters.is_expanded(),
+            "validation reveals the hidden fields"
+        );
+        assert!(author.is_focused());
+        assert_eq!(author.text().as_deref(), Some("invalid author!"));
+        assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+            &author
+        ));
+        assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+            &date
+        ));
+        assert!(last.borrow().is_none(), "invalid fields submitted");
+        author.set_text(Some("ada"));
+        enter();
+        assert!(date.is_focused());
         assert!(last.borrow().is_none(), "invalid date submitted");
         named("From date")
             .cast::<TextBox>()
