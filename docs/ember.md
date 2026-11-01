@@ -115,9 +115,14 @@ HN HTML without enlarging every navigation label.
 model. Paragraphs, headings, quotations, nested ordered/unordered lists, code,
 emphasis, strike-through, line breaks and links are rendered with FerroUI controls
 and native text inlines. Text can be selected. Links are focusable controls with
-accessible names and a host navigation callback. Code preserves whitespace and
-scrolls on both axes within a viewport capped at 420 logical pixels high by
-default, with scroll chaining back to its containing discussion.
+accessible names. HN item and profile links in a story, reply, or biography open
+inside Ember. Back returns to the previous view. Other web links open in the browser.
+
+Each preformatted sample has a line count, a **Wrap** toggle and a **Copy code**
+action. Wrap fits that sample to the reading width. Copy takes its full decoded
+source, including indentation, blank lines and trailing newlines, even during
+Find. Long samples scroll inside a viewport capped at 420 logical pixels high,
+with scroll chaining back to the discussion.
 
 The parser removes active subtrees, including scripts, styles, frames, embedded
 objects, forms, SVG and MathML. Remote images become alt text; tables become
