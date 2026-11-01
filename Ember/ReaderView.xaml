@@ -94,6 +94,25 @@
                 <TextBlock x:Name="FindCount" Grid.Row="1" Grid.ColumnSpan="4" FontSize="12" Classes="muted" Margin="4,2,0,3" IsVisible="False" />
               </Grid>
             </Border>
+            <ScrollViewer x:Name="WelcomePane" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+              <StackPanel MaxWidth="492" Margin="22,38,22,24" Spacing="10" HorizontalAlignment="Center">
+                <TextBlock Text="READING DESK" Classes="eyebrow" />
+                <TextBlock Text="Choose a discussion" FontSize="28" FontWeight="Bold" TextWrapping="Wrap" AutomationProperties.HeadingLevel="1" />
+                <TextBlock Text="Open a headline to read the story and its replies." Classes="muted" TextWrapping="Wrap" />
+                <Border x:Name="WelcomeStory" Background="{DynamicResource EmberBackground}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,6,0,0" IsVisible="False">
+                  <StackPanel Spacing="7">
+                    <TextBlock x:Name="WelcomeStoryLabel" Classes="eyebrow" />
+                    <TextBlock x:Name="WelcomeHeadline" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="4" TextTrimming="CharacterEllipsis" AutomationProperties.HeadingLevel="2" />
+                    <TextBlock x:Name="WelcomeStorySource" Classes="muted" FontSize="13" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
+                    <Button x:Name="WelcomeOpen" Classes="accent" Content="Read discussion" HorizontalAlignment="Left" Margin="0,3,0,0" AutomationProperties.Name="Read suggested discussion" />
+                  </StackPanel>
+                </Border>
+                <WrapPanel>
+                  <Button x:Name="WelcomeSearch" Classes="quiet" AutomationProperties.Name="Search Hacker News" />
+                  <Button x:Name="WelcomeSaved" Classes="quiet" AutomationProperties.Name="Open saved stories" />
+                </WrapPanel>
+              </StackPanel>
+            </ScrollViewer>
             <ContentControl x:Name="DetailHost" Grid.Row="2" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
           </Grid>
         </Border>

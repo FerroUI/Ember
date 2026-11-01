@@ -1,6 +1,6 @@
 mod discovery;
 
-use crate::controls::StoryCard;
+use crate::controls::{StoryCard, StorySummary};
 use crate::markup::xaml_class;
 use crate::settings::SettingsAction;
 use crate::thread_view::ThreadAction;
@@ -263,12 +263,6 @@ impl ReaderView {
         this.wire();
         this.configure_detail();
         ACTIVE.with(|v| *v.borrow_mut() = Some(this.downgrade()));
-        let weak = this.downgrade();
-        this.show_content(widgets::welcome(move || {
-            if let Some(v) = weak.upgrade() {
-                v.show_search();
-            }
-        }));
         this
     }
     fn button(&self, name: &str) -> Ref<Button> {
@@ -332,6 +326,17 @@ impl ReaderView {
         ] {
             self.on(name, move |v| v.select_feed(FeedRoute::Feed(feed)));
         }
+        self.on("WelcomeOpen", |v| {
+            if let Some(id) = v
+                .button("WelcomeOpen")
+                .tag()
+                .and_then(|v| v.downcast_ref::<u64>().copied())
+            {
+                v.open_item(id);
+            }
+        });
+        self.on("WelcomeSearch", |v| v.show_search());
+        self.on("WelcomeSaved", |v| v.select_feed(FeedRoute::Saved));
         self.on("NavSaved", |v| v.select_feed(FeedRoute::Saved));
         self.on("MobileSaved", |v| v.select_feed(FeedRoute::Saved));
         self.on("NavHistory", |v| v.select_feed(FeedRoute::History));
@@ -1035,6 +1040,9 @@ impl ReaderView {
     fn render_stories(&self) {
         let state = self.state.borrow();
         let stories = self.visible_stories();
+        if *self.detail.borrow() == DetailRoute::Welcome {
+            self.update_welcome(&stories, &state);
+        }
         let list = self.get_control::<ListBox>("Stories");
         let visibility_changed = self.rendered_show_dead.replace(state.preferences.show_dead)
             != state.preferences.show_dead;
@@ -1185,6 +1193,47 @@ impl ReaderView {
         };
         AutomationProperties::set_name(&unread, Some(label));
         ToolTip::set_tip(&unread, Some(Rc::new(label.to_owned()) as BoxedValue));
+    }
+    fn update_welcome(&self, stories: &[HnItem], state: &ReaderState) {
+        let feed = self.feed.borrow();
+        self.button("WelcomeSaved")
+            .set_is_visible(*feed != FeedRoute::Saved);
+        // History already comes in recency order. Never promote a deliberately hidden
+        // story from the management shelf or a saved collection.
+        let mut available = stories
+            .iter()
+            .filter(|story| state.passes_content_filters(story));
+        let first = available.clone().next();
+        let candidate = if *feed == FeedRoute::History {
+            first
+        } else {
+            available.find(|item| !state.is_read(item.id)).or(first)
+        };
+        self.get_control::<Border>("WelcomeStory")
+            .set_is_visible(candidate.is_some());
+        let open = self.button("WelcomeOpen");
+        open.set_tag(candidate.map(|story| Rc::new(story.id) as BoxedValue));
+        let Some(item) = candidate else {
+            return;
+        };
+        let caption = if *feed == FeedRoute::History {
+            "LAST OPENED"
+        } else if state.is_read(item.id) {
+            "FROM THIS COLLECTION"
+        } else {
+            "NEXT UNREAD"
+        };
+        let summary = StorySummary::new(item, services::now(), state.preferences.show_dead);
+        self.label("WelcomeStoryLabel").set_text(Some(caption));
+        self.label("WelcomeHeadline")
+            .set_text(Some(&summary.headline));
+        let source = [summary.source, summary.byline]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        self.label("WelcomeStorySource").set_text(Some(&source));
+        AutomationProperties::set_help_text(&open, Some(&summary.headline));
     }
     fn story_card(&self, item: &HnItem) -> Ref<StoryCard> {
         let card = StoryCard::new();
@@ -1896,6 +1945,11 @@ impl ReaderView {
         self.animate_detail();
     }
     fn configure_detail(&self) {
+        let welcome = *self.detail.borrow() == DetailRoute::Welcome;
+        self.get_control::<ScrollViewer>("WelcomePane")
+            .set_is_visible(welcome);
+        self.get_control::<ContentControl>("DetailHost")
+            .set_is_visible(!welcome);
         let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
         if !thread {
             self.focus_reading.set(false);
@@ -1980,12 +2034,10 @@ impl ReaderView {
         self.detail_generation
             .set(self.detail_generation.get().wrapping_add(1));
         self.configure_detail();
-        let weak = self.to_ref().downgrade();
-        self.show_content(widgets::welcome(move || {
-            if let Some(v) = weak.upgrade() {
-                v.show_search();
-            }
-        }));
+        self.get_control::<ContentControl>("DetailHost")
+            .set_content(None);
+        self.thread_control.borrow_mut().take();
+        self.thread.borrow_mut().take();
         self.label("DetailEyebrow").set_text(Some("READER"));
         self.label("DetailTitle").set_text(Some("Discussion"));
         self.apply_layout();
@@ -2413,6 +2465,15 @@ impl ReaderView {
         );
     }
     fn populate_navigation(&self) {
+        for (name, icon, label) in [
+            ("WelcomeSearch", "search", "Search"),
+            ("WelcomeSaved", "bookmark", "Saved stories"),
+        ] {
+            self.button(name)
+                .set_content(Some(Control::boxed(&widgets::nav_content(
+                    icon, label, false,
+                ))));
+        }
         for (name, icon, label) in [
             ("NavTop", "home", "Front page"),
             ("NavNew", "clock", "Latest"),

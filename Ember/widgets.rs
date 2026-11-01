@@ -230,37 +230,6 @@ pub(crate) fn scroll(control: Ref<Control>) -> Ref<Control> {
     scroll.set_content(Some(Control::boxed(&control)));
     scroll.upcast::<Control>()
 }
-pub(crate) fn welcome(open_search: impl Fn() + 'static) -> Ref<Control> {
-    let panel = stack(12.0);
-    panel.set_margin(Thickness::new(24.0, 52.0, 24.0, 24.0));
-    panel.set_max_width(400.0);
-    panel.set_horizontal_alignment(HorizontalAlignment::Center);
-    let mark = Border::new();
-    mark.set_width(48.0);
-    mark.set_height(48.0);
-    mark.set_corner_radius(CornerRadius::uniform(12.0));
-    mark.set_horizontal_alignment(HorizontalAlignment::Left);
-    bind_resource(
-        &mark,
-        Border::background_property().as_property(),
-        "EmberTint",
-    );
-    mark.set_child(crate::icons::icon("chat"));
-    panel.children().add(mark);
-    panel.children().add(heading("Choose a story to read"));
-    let body = label(
-        "Select a headline to read the discussion, open the article, or save it for later.",
-        15.0,
-        true,
-    );
-    body.set_line_height(23.0);
-    panel.children().add(body);
-    let search = action("Search Hacker News", "search", open_search);
-    search.set_horizontal_alignment(HorizontalAlignment::Left);
-    panel.children().add(search);
-    scroll(panel.upcast::<Control>())
-}
-
 /// Collect field errors for one submit, then reveal the first editor in form order.
 #[derive(Default)]
 pub(crate) struct FormValidation {

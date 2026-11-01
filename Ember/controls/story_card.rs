@@ -103,14 +103,14 @@ impl StoryCard {
     }
 }
 
-struct StorySummary {
-    source: String,
-    headline: String,
-    byline: String,
+pub(crate) struct StorySummary {
+    pub source: String,
+    pub headline: String,
+    pub byline: String,
 }
 
 impl StorySummary {
-    fn new(item: &HnItem, now: u64, show_dead: bool) -> Self {
+    pub(crate) fn new(item: &HnItem, now: u64, show_dead: bool) -> Self {
         let comment = item.kind == Some(ItemKind::Comment);
         let headline = if item.deleted {
             "[deleted]".to_owned()
