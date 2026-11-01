@@ -21,12 +21,40 @@ repository = "https://github.com/FerroUI/Ember"
 
 [workspace.dependencies]
 # >>> FerroUI workspace dependencies (written by FerroUI/scripts/apps/sync-workspace.py from FerroUI/Cargo.toml; do not edit)
+# The Dock port (docs/porting/dock): its crates and the dependencies only it has.
+ferrodock-controls-recycling-model = { path = "FerroUI/src/Dock/FerroDock.Controls.Recycling.Model" }
+ferrodock-controls-recycling-model-ferro = { path = "FerroUI/src/Dock/FerroDock.Controls.Recycling.Model.Ferro" }
+ferrodock-model = { path = "FerroUI/src/Dock/FerroDock.Model" }
+ferrodock-model-ferro = { path = "FerroUI/src/Dock/FerroDock.Model.Ferro" }
+ferrodock-runtime = { path = "FerroUI/src/Dock/FerroDock.Runtime" }
+ferrodock-settings = { path = "FerroUI/src/Dock/FerroDock.Settings" }
+ryu = "1.0"
+serde = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
+
+ferroui-pretext-contracts = { version = "=0.4.0", path = "FerroUI/src/Pretext/FerroUI.Pretext.Contracts" }
+ferroui-pretext = { version = "=0.4.0", path = "FerroUI/src/Pretext/FerroUI.Pretext" }
+ferroui-pretext-layout = { version = "=0.4.0", path = "FerroUI/src/Pretext/FerroUI.Pretext.Layout" }
+ferroui-pretext-media = { version = "=0.4.0", path = "FerroUI/src/Pretext/FerroUI.Pretext.Media" }
+ferroui-designer-core = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Core" }
+ferroui-designer-project = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Project" }
+ferroui-designer-tools = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Tools" }
+ferroui-designer-language = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Language" }
+ferroui-designer-animation = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Animation" }
+ferroui-designer-collaboration = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Collaboration" }
+ferroui-designer-collaboration-host = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer.Collaboration.Host" }
+ferroui-designer = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Designer" }
 ferroui-hot-reload = { version = "=0.4.0", path = "FerroUI/src/FerroUI.HotReload" }
 ferroui-hot-patch = { version = "=0.4.0", path = "FerroUI/src/FerroUI.HotPatch" }
 ferroui-inspect = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Inspect" }
 ferroui-devtools = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DevTools", default-features = false }
 ferroui-mcp = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Mcp" }
 ferroui-system = { version = "=0.4.0", path = "FerroUI/src/FerroUI.System" }
+ferroui-protranslate-core = { version = "=0.4.0", path = "FerroUI/src/ProTranslate/FerroUI.ProTranslate.Core" }
+ferroui-protranslate-formats = { version = "=0.4.0", path = "FerroUI/src/ProTranslate/FerroUI.ProTranslate.Formats" }
+ferroui-protranslate-build = { version = "=0.4.0", path = "FerroUI/src/ProTranslate/FerroUI.ProTranslate.Build" }
+ferroui-protranslate-studio = { version = "=0.4.0", path = "FerroUI/src/ProTranslate/FerroUI.ProTranslate.Studio" }
+ferroui-protranslate = { version = "=0.4.0", path = "FerroUI/src/ProTranslate/FerroUI.ProTranslate" }
 ferroui-reactive = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Reactive" }
 ferroui-reactive-testing = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Reactive.Testing" }
 ferroui-dependency-injection = { version = "=0.4.0", path = "FerroUI/src/FerroUI.DependencyInjection" }
@@ -41,6 +69,9 @@ ferroui-view = { version = "=0.4.0", path = "FerroUI/src/FerroUI.View" }
 ferroui-view-macros = { version = "=0.4.0", path = "FerroUI/src/FerroUI.View.Macros" }
 ferroui-controls-color-picker = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.ColorPicker" }
 ferroui-controls-charts = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.Charts" }
+ferroui-livecharts = { version = "=0.4.0", path = "FerroUI/src/FerroUI.LiveCharts" }
+ferroui-controls-livecharts = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.LiveCharts" }
+ferroui-controls-repeater = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.Repeater" }
 ferroui-controls-inking = { version = "=0.4.0", path = "FerroUI/src/FerroUI.Controls.Inking" }
 ferroui-treedatagrid-core = { version = "=0.4.0", path = "FerroUI/src/TreeDataGrid/FerroUI.TreeDataGrid.Core" }
 ferroui-controls-treedatagrid = { version = "=0.4.0", path = "FerroUI/src/TreeDataGrid/FerroUI.Controls.TreeDataGrid" }
@@ -49,6 +80,7 @@ ferroui-static-view-locator-macros = { version = "=0.4.0", path = "FerroUI/src/S
 ferroui-static-view-locator-build = { version = "=0.4.0", path = "FerroUI/src/StaticViewLocator/FerroUI.StaticViewLocator.Build" }
 ferroui-markup = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup" }
 ferroui-markup-xaml = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup.Xaml" }
+ferroui-markup-xaml-winui = { version = "=0.4.0", path = "FerroUI/src/Markup/FerroUI.Markup.Xaml.WinUI" }
 # Without the default features: the default is the run-time back end, which links the XAML runtime library
 # and the controls, and the build tool (`ferroui-build`) takes the compiler alone. Every crate that loads
 # markup at run time states the `runtime` feature.
@@ -103,9 +135,28 @@ ferroui-skia = { version = "=0.4.0", path = "FerroUI/src/Skia/FerroUI.Skia" }
 ferroui-vello = { version = "=0.4.0", path = "FerroUI/src/Vello/FerroUI.Vello" }
 ferroui-harfbuzz = { version = "=0.4.0", path = "FerroUI/src/HarfBuzz/FerroUI.HarfBuzz" }
 bitflags = "2"
+# The legacy code pages of RTF (the optional feature `rtf-codepages` of ferroui-controls,
+# docs/porting/winui-rich-text.md, decision D2): strict byte decoding, no platform code page.
+encoding_rs = { version = "=0.8.42", default-features = false }
+# ICU4X, one version for the whole workspace (owner decision, 2026-10-30): its crates require each
+# other within a minor version (`~2.4.0`), so two crates of the workspace on different minor
+# versions cannot be resolved together. The text preparation of the Pretext port (segmentation) and
+# the formatting of the ProTranslate port (locales, numbers, calendars, dates) take them from here,
+# with the compiled data and without the default features; a crate adds the features it needs.
+icu_segmenter = { version = "2.4", default-features = false, features = ["compiled_data"] }
+icu_locale_core = "2.4"
+icu_properties = "2.4"
+icu_locale = "2.4"
+icu_decimal = { version = "2.4", features = ["alloc"] }
+icu_calendar = { version = "2.4", default-features = false, features = ["compiled_data"] }
+icu_datetime = { version = "2.4", default-features = false, features = ["compiled_data"] }
 # A fast hasher for maps keyed by identities and short keys (the TreeDataGrid's recycle pools).
 rustc-hash = "2.1"
 smallvec = "1.16"
+# GUIDs and UUIDs, one type for the workspace (docs/idiomatic-rust.md, section 2.2): the identifiers
+# of Splat, the remote protocol and MicroCom are built on it. Without the random generator here; a
+# crate that makes random identifiers adds the feature `v4`.
+uuid = { version = "1.28", default-features = false, features = ["std"] }
 # The bindings of the Windows API for the Windows platform backend (docs/porting/win32-platform.md,
 # section 2). Without features here: the backend names the API namespaces it calls.
 windows-sys = { version = "0.61.2" }
