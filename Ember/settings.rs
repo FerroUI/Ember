@@ -2,15 +2,17 @@
 //! the owner so persistence failures remain visible to the user.
 use crate::widgets::{
     action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
+    FormValidation,
 };
 use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs};
 use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
-use ferroui_base::{BoxedValue, Ref, Thickness, WeakRef};
+use ferroui_base::media::{Color, SolidColorBrush};
+use ferroui_base::{BoxedValue, CornerRadius, Ref, Thickness, WeakRef};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
 use ferroui_controls::{
-    Button, CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode, ScrollViewer,
-    StackPanel, TextBlock, TextBox, WrapPanel,
+    Border, Button, CheckBox, Control, NumberBox, NumberBoxSpinButtonPlacementMode,
+    NumberBoxValidationMode, ScrollViewer, StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
 };
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
@@ -63,6 +65,8 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         "#FF6B35",
         false,
     );
+    color_preview(&accent, None);
+    accent_choices(&accent_field, &accent);
     let custom = stack(4.0);
     custom.set_is_visible(theme.selected_index() == 3);
     appearance.children().add(custom.clone());
@@ -73,6 +77,7 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         "Optional, for example #172126",
         false,
     );
+    color_preview(&background, Some("#181B1F"));
     let weak_theme = theme.downgrade();
     theme.selection_changed(move |_, _| {
         if let Some(theme) = weak_theme.upgrade() {
@@ -148,50 +153,66 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
     let current = RefCell::new(state.preferences.clone());
     let callback = on_action.clone();
     apply.click(move |_, _| {
-        let result = (|| -> Result<Preferences, String> {
-            let mut p = current.borrow().clone();
-            p.theme = match theme.selected_index() {
-                1 => ThemeMode::Light,
-                2 => ThemeMode::Dark,
-                3 => ThemeMode::Custom,
-                _ => ThemeMode::System,
-            };
-            let accent = accent.text().unwrap_or_default();
-            if !valid_color(accent.trim()) {
-                return Err("Use a six-digit hex accent, such as #FF6B35.".into());
-            }
-            p.accent = accent.trim().to_owned();
-            let background = background.text().unwrap_or_default();
-            let background = background.trim();
-            if p.theme == ThemeMode::Custom && !background.is_empty() && !valid_color(background) {
-                return Err("Use a six-digit hex background or leave it empty.".into());
-            }
-            if p.theme == ThemeMode::Custom {
-                p.custom_background = (!background.is_empty()).then(|| background.to_owned());
-            }
-            p.font_size = reading_value(&font_size, "Font size")?;
-            p.line_height = reading_value(&line_height, "Line spacing")?;
-            p.cache_max_items = cache_limit
-                .text()
-                .unwrap_or_default()
-                .trim()
-                .parse::<usize>()
-                .ok()
-                .filter(|v| (100..=100_000).contains(v))
-                .ok_or("Cache size must be a whole number between 100 and 100000.")?;
+        let mut check = FormValidation::default();
+        let mut p = current.borrow().clone();
+        p.theme = match theme.selected_index() {
+            1 => ThemeMode::Light,
+            2 => ThemeMode::Dark,
+            3 => ThemeMode::Custom,
+            _ => ThemeMode::System,
+        };
+        let value = accent.text().unwrap_or_default();
+        p.accent = value.trim().to_owned();
+        check.check(
+            &accent,
+            if valid_color(&p.accent) {
+                Ok(())
+            } else {
+                Err("Accent color needs six hex digits, for example #FF6B35.".into())
+            },
+        );
+        let value = background.text().unwrap_or_default();
+        let value = value.trim();
+        check.check(
+            &background,
+            if p.theme != ThemeMode::Custom || value.is_empty() || valid_color(value) {
+                Ok(())
+            } else {
+                Err("Custom background needs six hex digits, or leave it empty.".into())
+            },
+        );
+        if p.theme == ThemeMode::Custom {
+            p.custom_background = (!value.is_empty()).then(|| value.to_owned());
+        }
+        if let Some(size) = check.check(&font_size, reading_value(&font_size, "Reading font size"))
+        {
+            p.font_size = size;
+        }
+        if let Some(spacing) =
+            check.check(&line_height, reading_value(&line_height, "Line spacing"))
+        {
+            p.line_height = spacing;
+        }
+        let limit = cache_limit
+            .text()
+            .unwrap_or_default()
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|v| (100..=100_000).contains(v))
+            .ok_or_else(|| {
+                "Maximum cached items must be a whole number between 100 and 100,000.".to_owned()
+            });
+        if let Some(limit) = check.check(&cache_limit, limit) {
+            p.cache_max_items = limit;
+        }
+        if check.finish(&validation) {
             p.compact = compact.is_checked() == Some(true);
             p.reduced_motion = motion.is_checked() == Some(true);
             p.show_dead = show_dead.is_checked() == Some(true);
             p.hide_read = hide_read.is_checked() == Some(true);
-            Ok(p)
-        })();
-        match result {
-            Ok(p) => {
-                validation.set_is_visible(false);
-                current.replace(p.clone());
-                callback(SettingsAction::Preferences(p));
-            }
-            Err(error) => show_error(&validation, &error),
+            current.replace(p.clone());
+            callback(SettingsAction::Preferences(p));
         }
     });
 
@@ -271,12 +292,18 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
     );
     let review = Rc::new(RefCell::new(None::<PendingReview>));
     let edited = review.clone();
+    let input = json.downgrade();
     json.property_changed(move |e| {
-        if e.property() == TextBox::text_property().as_property()
-            && edited
-                .borrow()
-                .as_ref()
-                .is_some_and(|review| matches!(review.action, SettingsAction::Import(_)))
+        if e.property() != TextBox::text_property().as_property() {
+            return;
+        }
+        if let Some(input) = input.upgrade() {
+            FormValidation::default().check(&input, Ok(()));
+        }
+        if edited
+            .borrow()
+            .as_ref()
+            .is_some_and(|review| matches!(review.action, SettingsAction::Import(_)))
         {
             finish_review(&edited, false);
         }
@@ -289,9 +316,17 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         move || {
             let value = json.text().unwrap_or_default();
             if value.trim().is_empty() {
-                return Err("Paste an Ember backup first.".to_owned());
+                return Err((
+                    json.clone().upcast(),
+                    "Paste an Ember backup first.".to_owned(),
+                ));
             }
-            let state = ReaderState::import_json(&value).map_err(|error| error.to_string())?;
+            let state = ReaderState::import_json(&value).map_err(|error| {
+                (
+                    json.clone().upcast(),
+                    format!("Reading data JSON is invalid. {error}"),
+                )
+            })?;
             let saved = state
                 .items
                 .values()
@@ -365,7 +400,7 @@ fn reviewed_action(
     review: &Rc<RefCell<Option<PendingReview>>>,
     (label, icon): (&str, &str),
     confirm_label: &str,
-    prepare: impl Fn() -> Result<(String, SettingsAction), String> + 'static,
+    prepare: impl Fn() -> Result<(String, SettingsAction), (Ref<Control>, String)> + 'static,
     on_action: &Rc<dyn Fn(SettingsAction)>,
 ) {
     let trigger = button(label);
@@ -419,7 +454,11 @@ fn reviewed_action(
                 cancel.focus();
                 cancel.bring_into_view();
             }
-            Err(message) => show_error(&error, &message),
+            Err((field, message)) => {
+                let mut check = FormValidation::default();
+                check.check::<()>(&field, Err(message));
+                check.finish(&error);
+            }
         }
     });
     let state = review.clone();
@@ -459,11 +498,6 @@ fn feedback(parent: &StackPanel) -> Ref<TextBlock> {
     message
 }
 
-fn show_error(message: &TextBlock, value: &str) {
-    message.set_text(Some(value));
-    message.set_is_visible(true);
-}
-
 fn toggle(parent: &StackPanel, label: &str, value: bool) -> Ref<CheckBox> {
     let input = CheckBox::new();
     input.set_content(Some(Rc::new(label.to_owned()) as BoxedValue));
@@ -475,6 +509,111 @@ fn toggle(parent: &StackPanel, label: &str, value: bool) -> Ref<CheckBox> {
     parent.children().add(input.clone());
     input
 }
+/// Put the draft color in the field so custom hex values get the same preview as presets.
+fn color_preview(input: &TextBox, default: Option<&'static str>) {
+    let swatch = Border::new();
+    swatch.set_width(16.0);
+    swatch.set_height(16.0);
+    swatch.set_margin(Thickness::new(8.0, 0.0, 0.0, 0.0));
+    swatch.set_corner_radius(CornerRadius::uniform(8.0));
+    swatch.set_vertical_alignment(VerticalAlignment::Center);
+    swatch.set_border_thickness(Thickness::uniform(1.0));
+    crate::widgets::bind_resource(
+        &swatch,
+        Border::border_brush_property().as_property(),
+        "EmberMuted",
+    );
+    input.set_inner_left_content(Some(Control::boxed(&swatch)));
+    let weak_input = input.to_ref().downgrade();
+    let update = move || {
+        if let Some(input) = weak_input.upgrade() {
+            let raw = input.text().unwrap_or_default();
+            let value = if raw.trim().is_empty() {
+                default.unwrap_or("")
+            } else {
+                raw.trim()
+            };
+            swatch.set_background(
+                valid_color(value)
+                    .then(|| Color::parse(value).ok())
+                    .flatten()
+                    .map(|c| SolidColorBrush::with_color(c).into()),
+            );
+        }
+    };
+    update();
+    input.property_changed(move |e| {
+        if e.property() == TextBox::text_property().as_property() {
+            update();
+        }
+    });
+}
+
+fn accent_choices(parent: &StackPanel, input: &TextBox) {
+    let choices = WrapPanel::new();
+    choices.set_item_spacing(2.0);
+    for (name, hex, ink) in [
+        ("Ember", "#FF6B35", "#151515"),
+        ("Ocean", "#2864A7", "#FFFFFF"),
+        ("Forest", "#216E58", "#FFFFFF"),
+        ("Plum", "#805990", "#FFFFFF"),
+    ] {
+        let choice = Button::new();
+        choice.classes().add("quiet");
+        choice.set_width(44.0);
+        choice.set_height(44.0);
+        choice.set_padding(Thickness::uniform(8.0));
+        let chip = Border::new();
+        chip.set_width(24.0);
+        chip.set_height(24.0);
+        chip.set_corner_radius(CornerRadius::uniform(12.0));
+        chip.set_background(Some(
+            SolidColorBrush::with_color(Color::parse(hex).expect("accent preset")).into(),
+        ));
+        let mark = crate::icons::icon("check");
+        mark.set_width(14.0);
+        mark.set_height(14.0);
+        mark.set_horizontal_alignment(HorizontalAlignment::Center);
+        mark.set_vertical_alignment(VerticalAlignment::Center);
+        mark.set_foreground(Some(
+            SolidColorBrush::with_color(Color::parse(ink).expect("accent mark")).into(),
+        ));
+        chip.set_child(mark.clone());
+        choice.set_content(Some(Control::boxed(chip)));
+        let label = format!("{name} accent");
+        AutomationProperties::set_name(&choice, Some(&label));
+        ToolTip::set_tip(
+            &choice,
+            Some(Rc::new(format!("{name} · {hex}")) as BoxedValue),
+        );
+        let editor = input.to_ref().downgrade();
+        choice.click(move |_, _| {
+            if let Some(input) = editor.upgrade() {
+                input.set_text(Some(hex));
+            }
+        });
+        let editor = input.to_ref().downgrade();
+        let button = choice.downgrade();
+        let update = move || {
+            if let (Some(input), Some(button)) = (editor.upgrade(), button.upgrade()) {
+                let selected = input
+                    .text()
+                    .is_some_and(|s| s.trim().eq_ignore_ascii_case(hex));
+                mark.set_is_visible(selected);
+                AutomationProperties::set_item_status(&button, selected.then_some("Selected"));
+            }
+        };
+        update();
+        input.property_changed(move |e| {
+            if e.property() == TextBox::text_property().as_property() {
+                update();
+            }
+        });
+        choices.children().add(choice);
+    }
+    parent.children().add(choices);
+}
+
 fn valid_color(value: &str) -> bool {
     value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -491,6 +630,7 @@ fn reading_number(
     input.set_minimum(min);
     input.set_maximum(max);
     input.set_small_change(step);
+    input.set_validation_mode(NumberBoxValidationMode::Disabled);
     input.set_numeric_value(value);
     input.set_spin_button_placement_mode(NumberBoxSpinButtonPlacementMode::Inline);
     AutomationProperties::set_name(&input, Some(label));
@@ -499,7 +639,7 @@ fn reading_number(
 }
 
 fn reading_value(input: &NumberBox, label: &str) -> Result<f64, String> {
-    if input.validate_input() && input.value().is_finite() {
+    if input.validate_input() && (input.minimum()..=input.maximum()).contains(&input.value()) {
         Ok(input.value())
     } else {
         Err(format!(
@@ -626,6 +766,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {name}"))
         };
 
+        let accent = named("Accent color").cast::<TextBox>().unwrap();
+        let ocean = named("Ocean accent");
+        shell.click(0, Shell::bounds_of(&window, &ocean).center());
+        shell.settle();
+        assert_eq!(accent.text().as_deref(), Some("#2864A7"));
+        assert_eq!(
+            AutomationProperties::get_item_status(&ocean).as_deref(),
+            Some("Selected")
+        );
+        assert!(accent.inner_left_content().is_some());
         let size = named("Reading font size").cast::<NumberBox>().unwrap();
         size.step_value(size.small_change());
         let preview = window
@@ -662,6 +812,31 @@ mod tests {
             Some("#29405D")
         );
         assert_eq!(applied.borrow().font_size, 17.0);
+        assert_eq!(applied.borrow().accent, "#2864A7");
+
+        let cache = named("Maximum cached items").cast::<TextBox>().unwrap();
+        cache.set_text(Some("many"));
+        accent.set_text(Some("#123"));
+        apply();
+        assert!(accent.is_focused());
+        assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+            &accent
+        ));
+        assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+            &cache
+        ));
+        assert_eq!(accent.text().as_deref(), Some("#123"));
+        assert!(AutomationProperties::get_item_status(&ocean).is_none());
+
+        accent.set_text(Some("#196B73"));
+        apply();
+        assert!(cache.is_focused());
+        assert!(cache.is_effectively_visible());
+        assert_eq!(cache.text().as_deref(), Some("many"));
+        assert_eq!(applied.borrow().accent, "#2864A7");
+        cache.set_text(Some("5000"));
+        apply();
+        assert_eq!(applied.borrow().accent, "#196B73");
         window.close();
     }
 }
