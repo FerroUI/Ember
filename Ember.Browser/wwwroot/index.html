@@ -14,12 +14,13 @@
 </head>
 <body>
     <main id="out" aria-label="Ember Hacker News reader">
-        <div class="boot-surface ferroui-splash" role="status">
+        <div class="boot-surface ferroui-splash">
             <div class="boot-content">
                 <img src="./icon.svg" width="40" height="40" alt="">
                 <h1>Ember</h1>
-                <p>Opening your reader…</p>
+                <p role="status">Opening your reader…</p>
                 <span class="loading-line" aria-hidden="true"></span>
+                <a class="boot-link" href="https://news.ycombinator.com/">Read Hacker News</a>
             </div>
         </div>
         <noscript>
@@ -27,7 +28,7 @@
                 <div class="boot-content">
                     <h1>Ember</h1>
                     <p>Turn on JavaScript to open this reader.</p>
-                    <a href="https://news.ycombinator.com/">Read Hacker News</a>
+                    <a class="boot-link" href="https://news.ycombinator.com/">Read Hacker News</a>
                 </div>
             </div>
         </noscript>
@@ -38,7 +39,10 @@
                 <img src="./icon.svg" width="40" height="40" alt="">
                 <h1 id="error-title" tabindex="-1">Ember couldn’t open</h1>
                 <p></p>
-                <button type="button">Reload reader</button>
+                <div class="boot-actions">
+                    <button type="button">Reload reader</button>
+                    <a class="boot-link" href="https://news.ycombinator.com/">Read Hacker News</a>
+                </div>
                 <details>
                     <summary>Technical details</summary>
                     <pre></pre>

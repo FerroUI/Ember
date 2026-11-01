@@ -156,6 +156,26 @@ async function failure(page, name) {
 }
 
 await run([
+    ["startup recovery keeps the discussion reachable by keyboard on a narrow screen", async () => {
+        const page = await open(site, {
+            width: 320, height: 420, query: "?item=08",
+            initScript: 'Object.defineProperty(globalThis, "WebAssembly", {value: undefined})',
+        });
+        try {
+            await page.waitFor("document.activeElement?.id === 'error-title'");
+            assert(await page.evaluate("document.querySelector('#out p').textContent.includes('WebAssembly')"), "Missing capability explanation");
+            await page.press("Tab");
+            assert(await page.evaluate("document.activeElement?.textContent === 'Reload reader'"), "Reload is unreachable by keyboard");
+            await page.press("Tab");
+            const link = await page.evaluate(`(() => {
+                const { href, textContent } = document.activeElement;
+                const { width, height, left, right } = document.activeElement.getBoundingClientRect();
+                return { href, textContent, width, height, left, right };
+            })()`);
+            assert(link.href === "https://news.ycombinator.com/item?id=8", "The fallback lost the discussion ID");
+            assert(link.height >= 44 && link.left >= 0 && link.right <= 320, "Fallback link is clipped or too small");
+        } finally { await page.close(); }
+    }],
     ["desktop renders and opens a rich thread with shareable history", async () => {
         const page = await start(1440, 960);
         try {
