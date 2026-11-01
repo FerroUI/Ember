@@ -107,6 +107,7 @@ impl ReaderView {
             ("Search", "Ctrl / ⌘ + K"),
             ("Find in discussion", "Ctrl / ⌘ + F"),
             ("Next / previous story", "J / K"),
+            ("Unread filter in feeds", "U"),
             ("Save story", "S"),
             ("Open article", "O"),
             ("Focus reading", "F"),

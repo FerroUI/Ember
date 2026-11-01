@@ -2,6 +2,149 @@ use super::*;
 use ferroui_controls::{primitives::ToggleButton, ScrollViewer};
 
 #[test]
+fn unread_discovery_skips_filtered_pages_in_bounded_batches_and_preserves_loaded_rows() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+
+    struct PagedFeed;
+    impl HttpClient for PagedFeed {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            Box::pin(async move {
+                if url.ends_with("topstories.json") {
+                    return Ok(json!((1..=181).collect::<Vec<_>>()).to_string());
+                }
+                let id: u64 = url
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .trim_end_matches(".json")
+                    .parse()
+                    .unwrap();
+                let by = if id == 61 { "muted" } else { "reader" };
+                Ok(
+                    json!({"id":id,"type":"story","title":format!("Story {id}"),"by":by})
+                        .to_string(),
+                )
+            })
+        }
+    }
+
+    let store = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    for id in 1..=181 {
+        if !matches!(id, 61 | 78 | 136 | 175) {
+            state.mark_read(id, id);
+        }
+    }
+    state.toggle_hidden(78);
+    state.mutes.users.insert("muted".to_owned());
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start_with_http(390.0, 700.0, store, Rc::new(PagedFeed));
+    let rows = view.get_control::<ListBox>("Stories");
+    let unread = view.get_control::<ToggleButton>("UnreadButton");
+    let more = view.get_control::<Button>("LoadMoreButton");
+    let toggle = || {
+        let mut e = KeyEventArgs::new();
+        e.key = Key::U;
+        e.set_routed_event(Some(InputElement::key_down_event()));
+        view.raise_event(&e);
+        shell.settle();
+        assert!(e.handled());
+    };
+    let next = || click_in_view(&shell, &window, &more);
+
+    assert_eq!(rows.items().count(), 30);
+    toggle();
+    assert_eq!(
+        AutomationProperties::get_name(&more).as_deref(),
+        Some("Find more unread")
+    );
+    assert_eq!(rows.items().count(), 0);
+    next(); // Three more pages, all read, muted, or hidden.
+    assert_eq!(rows.items().count(), 0);
+    toggle();
+    assert_eq!(
+        rows.items().count(),
+        118,
+        "the search must stop after three pages"
+    );
+    toggle();
+    next(); // Stop at the first matching page, before story 175.
+    assert_eq!(rows.items().count(), 1);
+    assert_eq!(
+        first_story(&window).headline().as_deref(),
+        Some("Story 136")
+    );
+    assert_eq!(
+        AutomationProperties::get_help_text(&unread).as_deref(),
+        Some("1 unread story on the loaded pages")
+    );
+    next();
+    assert_eq!(rows.items().count(), 2);
+    next();
+    assert!(!more.is_effectively_visible());
+    assert_eq!(rows.items().count(), 2);
+    toggle();
+    assert_eq!(rows.items().count(), 179);
+    assert_eq!(
+        AutomationProperties::get_help_text(&unread).as_deref(),
+        Some("2 unread stories on the loaded pages")
+    );
+    window.close();
+}
+
+#[test]
+fn opening_a_comment_search_result_updates_unread_without_duplicating_history() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    use ferroui_controls::ComboBox;
+
+    let store = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    state.preferences.hide_read = true;
+    state
+        .items
+        .entry(1001)
+        .or_default()
+        .collapsed
+        .extend([2001, 2003]);
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(390.0, 700.0, store.clone(), Rc::new(Cell::new(false)));
+    click_in_view(&shell, &window, &view.get_control::<Button>("MobileSearch"));
+    view.get_visual_descendants()
+        .filter_map(|e| e.cast::<ComboBox>())
+        .find(|e| AutomationProperties::get_name(e).as_deref() == Some("Search in"))
+        .unwrap()
+        .set_selected_index(1); // Comments
+    let terms = view
+        .get_visual_descendants()
+        .filter_map(|e| e.cast::<TextBox>())
+        .find(|e| AutomationProperties::get_name(e).as_deref() == Some("Search terms"))
+        .unwrap();
+    terms.set_text(Some("predictable"));
+    let mut enter = KeyEventArgs::new();
+    enter.key = Key::Enter;
+    enter.set_routed_event(Some(InputElement::key_down_event()));
+    terms.raise_event(&enter);
+    for _ in 0..5 {
+        shell.settle();
+    }
+    click_in_view(&shell, &window, &first_story(&window));
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
+    click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 0);
+    let raw = ready(store.get("reader:state")).unwrap().unwrap();
+    let state = ReaderState::import_json(&raw).unwrap();
+    assert!(state.is_read(2002));
+    assert_eq!(state.history_ids(), [1001]);
+    assert_eq!(state.items[&1001].collapsed, [2003].into_iter().collect());
+    window.close();
+}
+
+#[test]
 fn active_phone_tab_returns_to_loaded_pages_and_filters_expose_checked_state() {
     let store = Rc::new(MemoryStore::default());
     let mut state = ReaderState::default();

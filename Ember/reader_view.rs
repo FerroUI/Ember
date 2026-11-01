@@ -417,7 +417,15 @@ impl ReaderView {
         });
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
-                v.load_feed(offset, FetchMode::CacheFirst);
+                // A deliberate unread search can cross fully read or muted pages.
+                // Bound each tap so a heavily filtered feed cannot drain the entire API.
+                let pages =
+                    if !v.feed.borrow().is_library() && v.state.borrow().preferences.hide_read {
+                        3
+                    } else {
+                        1
+                    };
+                v.load_feed_pages(offset, FetchMode::CacheFirst, pages);
             }
         });
         self.on("BackButton", |v| v.go_back());
@@ -600,6 +608,13 @@ impl ReaderView {
                     }
                     Key::J => v.move_selection(true),
                     Key::K => v.move_selection(false),
+                    Key::U
+                        if !v.feed.borrow().is_library()
+                            && v.get_control::<Border>("FeedPane").is_effectively_visible() =>
+                    {
+                        let enabled = !v.state.borrow().preferences.hide_read;
+                        v.set_unread_only(enabled);
+                    }
                     Key::O => {
                         if let Some(item) = v
                             .current_item()
@@ -858,6 +873,9 @@ impl ReaderView {
         self.load_feed(0, FetchMode::Refresh);
     }
     fn load_feed(&self, offset: usize, mode: FetchMode) {
+        self.load_feed_pages(offset, mode, 1);
+    }
+    fn load_feed_pages(&self, offset: usize, mode: FetchMode, pages_left: usize) {
         let Some(repo) = self.repo() else {
             return;
         };
@@ -882,7 +900,13 @@ impl ReaderView {
             FeedRoute::Search(_) => "Search results",
         };
         self.label("FeedTitle").set_text(Some(title));
-        self.label("FeedSummary").set_text(Some("Updating…"));
+        self.label("FeedSummary").set_text(Some(
+            if offset > 0 && !route.is_library() && self.state.borrow().preferences.hide_read {
+                "Looking for unread stories…"
+            } else {
+                "Updating…"
+            },
+        ));
         // Refresh a local collection without discarding already loaded pages.
         let local_page_size = if offset == 0 {
             self.stories.borrow().len().max(30)
@@ -1002,7 +1026,23 @@ impl ReaderView {
                             view.search_story_ids.borrow_mut().clear();
                         }
                         view.search_story_ids.borrow_mut().extend(story_ids);
+                        let previous_len = view.stories.borrow().len();
+                        let continue_at = next.filter(|&cursor| {
+                            pages_left > 1 && cursor > offset && warning.is_none()
+                        });
                         view.accept_items(items, offset, next, total, source, warning);
+                        if let Some(cursor) = continue_at {
+                            let no_new_unread = {
+                                let state = view.state.borrow();
+                                state.preferences.hide_read
+                                    && !view.stories.borrow()[previous_len..]
+                                        .iter()
+                                        .any(|item| state.is_visible(item))
+                            };
+                            if no_new_unread && view.feed_generation.get() == generation {
+                                view.load_feed_pages(cursor, mode, pages_left - 1);
+                            }
+                        }
                     }
                     Err(error) => {
                         view.label("FeedSummary")
@@ -1092,6 +1132,12 @@ impl ReaderView {
     fn render_stories(&self) {
         let state = self.state.borrow();
         let stories = self.visible_stories();
+        let filterable = !self.feed.borrow().is_library();
+        let unread_count = if state.preferences.hide_read || !filterable {
+            stories.len()
+        } else {
+            stories.iter().filter(|s| !state.is_read(s.id)).count()
+        };
         if *self.detail.borrow() == DetailRoute::Welcome {
             self.update_welcome(&stories, &state);
         }
@@ -1140,7 +1186,6 @@ impl ReaderView {
         self.get_control::<StackPanel>("FeedEmpty")
             .set_is_visible(empty);
         let route = self.feed.borrow();
-        let filterable = matches!(*route, FeedRoute::Feed(_) | FeedRoute::Search(_));
         if empty {
             use EmptyAction::*;
             let (title, message, action) = match self.feed_load.get() {
@@ -1198,7 +1243,11 @@ impl ReaderView {
                     {
                         (
                             "No unread stories here",
-                            "Show previously read stories or load another page.",
+                            if self.next.get().is_some() {
+                                "All visible stories on these pages are read. Find more unread stories below."
+                            } else {
+                                "You’ve read all the stories that match your filters."
+                            },
                             Some(ShowRead),
                         )
                     }
@@ -1245,13 +1294,44 @@ impl ReaderView {
         unread.set_is_checked(Some(state.preferences.hide_read));
         unread.set_is_visible(filterable);
         unread.classes().set("active", state.preferences.hide_read);
+        if filterable {
+            let count = format!("Unread · {unread_count}");
+            if !unread
+                .content()
+                .is_some_and(|old| old.downcast_ref::<String>() == Some(&count))
+            {
+                unread.set_content(Some(Rc::new(count)));
+            }
+            let noun = if unread_count == 1 {
+                "story"
+            } else {
+                "stories"
+            };
+            AutomationProperties::set_help_text(
+                &unread,
+                Some(&format!("{unread_count} unread {noun} on the loaded pages")),
+            );
+        }
+        let more = self.button("LoadMoreButton");
+        let action = if filterable && state.preferences.hide_read {
+            "Find more unread"
+        } else {
+            "Load more"
+        };
+        if !more
+            .content()
+            .is_some_and(|old| old.downcast_ref::<String>().map(String::as_str) == Some(action))
+        {
+            more.set_content(Some(Rc::new(action.to_owned())));
+        }
+        AutomationProperties::set_name(&more, Some(action));
         let label = if state.preferences.hide_read {
             "Show all stories"
         } else {
             "Show unread only"
         };
         AutomationProperties::set_name(&unread, Some(label));
-        ToolTip::set_tip(&unread, Some(Rc::new(label.to_owned()) as BoxedValue));
+        ToolTip::set_tip(&unread, Some(Rc::new(format!("{label} (U)")) as BoxedValue));
     }
     fn update_welcome(&self, stories: &[HnItem], state: &ReaderState) {
         let feed = self.feed.borrow();
@@ -1609,17 +1689,45 @@ impl ReaderView {
             self.status(warning);
         }
         // The cache preview, refresh and final network result are one visit.
-        if self.thread.replace(Some(thread)).is_none() {
-            if matches!(self.undo_story.get(), Some(UndoStoryEdit::Read { id: edited, .. }) if edited == id)
+        let reached_comment = self
+            .pending_comment
+            .get()
+            .filter(|comment| thread.items.contains_key(comment));
+        let first_load = self.thread.borrow().is_none();
+        if first_load || reached_comment.is_some() {
+            if matches!(self.undo_story.get(), Some(UndoStoryEdit::Read { id: edited, .. }) if (first_load && edited == id) || Some(edited) == reached_comment)
             {
                 self.undo_story.set(None);
                 self.button("UndoStory").set_is_visible(false);
                 self.get_control::<Border>("StatusBar")
                     .set_is_visible(false);
             }
-            self.state.borrow_mut().mark_read(id, services::now());
+            let now = services::now();
+            let mut state = self.state.borrow_mut();
+            if first_load {
+                state.mark_read(id, now);
+            }
+            if let Some(comment) = reached_comment {
+                // The search result was read in its parent discussion. Keep History
+                // anchored to the discussion and the unread filter anchored to the result.
+                state.items.entry(comment).or_default().read_at = Some(now);
+                let folds = &mut state.items.entry(id).or_default().collapsed;
+                if !folds.is_empty() {
+                    let mut cursor = Some(comment);
+                    let mut seen = BTreeSet::new();
+                    while let Some(item) = cursor.and_then(|i| thread.items.get(&i)) {
+                        if item.id == id || !seen.insert(item.id) {
+                            break;
+                        }
+                        folds.remove(&item.id);
+                        cursor = item.parent;
+                    }
+                }
+            }
+            drop(state);
             self.changed();
         }
+        self.thread.replace(Some(thread));
         self.render_thread();
         self.render_stories();
     }
