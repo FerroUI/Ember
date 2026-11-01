@@ -51,6 +51,7 @@
             <StackPanel x:Name="FeedHeader" Background="{DynamicResource EmberBackground}" Spacing="1" Margin="0">
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4" Margin="14,5,6,0">
                 <TextBlock x:Name="FeedTitle" Text="Front page" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <Button x:Name="DownloadedOnly" Grid.Column="1" Classes="quiet" Content="Downloaded" FontSize="12" IsVisible="False" AutomationProperties.Name="Show downloaded discussions only" />
                 <Button x:Name="UnreadButton" Grid.Column="1" Classes="quiet" Content="Unread" FontSize="12" ToolTip.Tip="Show unread only" AutomationProperties.Name="Show unread only" />
               </Grid>
               <TextBlock x:Name="FeedSummary" Text="Loading stories…" Classes="muted" FontSize="12" Margin="15,0,10,9" TextTrimming="CharacterEllipsis" />

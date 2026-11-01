@@ -50,6 +50,37 @@ enum DetailRoute {
     More,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeedLoad {
+    Ready,
+    Loading,
+    Unavailable,
+    StorageUnavailable,
+}
+
+#[derive(Clone, Copy)]
+enum EmptyAction {
+    Retry,
+    FrontPage,
+    EditSearch,
+    ShowRead,
+    AllSaved,
+    Settings,
+}
+
+impl EmptyAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Retry => "Try again",
+            Self::FrontPage => "Browse front page",
+            Self::EditSearch => "Edit search",
+            Self::ShowRead => "Show read stories",
+            Self::AllSaved => "View all saved stories",
+            Self::Settings => "Reading settings",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum StoryFlag {
     Saved,
@@ -125,7 +156,9 @@ pub struct ReaderView {
     next: Cell<Option<usize>>,
     feed_generation: Cell<u64>,
     detail_generation: Cell<u64>,
-    busy: Cell<bool>,
+    feed_load: Cell<FeedLoad>,
+    empty_action: Cell<Option<EmptyAction>>,
+    downloaded_only: Cell<bool>,
     thread: RefCell<Option<ThreadSnapshot>>,
     thread_control: RefCell<Option<Ref<Control>>>,
     pruning: Cell<bool>,
@@ -193,7 +226,9 @@ impl ReaderView {
             next: Cell::new(None),
             feed_generation: Cell::new(0),
             detail_generation: Cell::new(0),
-            busy: Cell::new(false),
+            feed_load: Cell::new(FeedLoad::Ready),
+            empty_action: Cell::new(None),
+            downloaded_only: Cell::new(false),
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
             pruning: Cell::new(false),
@@ -311,7 +346,18 @@ impl ReaderView {
         self.on("FindNext", |v| v.step_find(1));
         self.on("FindPrevious", |v| v.step_find(-1));
         self.on("CloseFind", |v| v.set_find_open(false));
-        self.on("RetryButton", |v| v.refresh());
+        self.on("RetryButton", |v| match v.empty_action.get() {
+            Some(EmptyAction::Retry) => v.load_feed(0, FetchMode::Refresh),
+            Some(EmptyAction::FrontPage) => v.select_feed(FeedRoute::Feed(FeedKind::Top)),
+            Some(EmptyAction::EditSearch) => v.show_search(),
+            Some(EmptyAction::ShowRead) => v.set_unread_only(false),
+            Some(EmptyAction::AllSaved) => v.set_downloaded_only(false),
+            Some(EmptyAction::Settings) => v.show_settings(),
+            None => {}
+        });
+        self.on("DownloadedOnly", |v| {
+            v.set_downloaded_only(!v.downloaded_only.get())
+        });
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
                 v.load_feed(offset, FetchMode::CacheFirst);
@@ -330,11 +376,8 @@ impl ReaderView {
             v.get_control::<Border>("StatusBar").set_is_visible(false)
         });
         self.on("UnreadButton", |v| {
-            let mut state = v.state.borrow_mut();
-            state.preferences.hide_read = !state.preferences.hide_read;
-            drop(state);
-            v.changed();
-            v.render_stories();
+            let enabled = !v.state.borrow().preferences.hide_read;
+            v.set_unread_only(enabled);
         });
         let weak = self.to_ref().downgrade();
         self.size_changed(move |_, event| {
@@ -520,7 +563,7 @@ impl ReaderView {
         let summary = previous_summary.clone();
         header.add_handler(InputElement::pull_gesture_event(), move |_, e| {
             if let Some(view) = weak.upgrade() {
-                if view.busy.get() {
+                if view.feed_load.get() == FeedLoad::Loading {
                     return;
                 }
                 if summary.borrow().is_none() {
@@ -539,7 +582,7 @@ impl ReaderView {
         let weak = self.to_ref().downgrade();
         header.add_handler(InputElement::pull_gesture_ended_event(), move |_, _| {
             if let Some(view) = weak.upgrade() {
-                if pull_distance.replace(0.0) >= 72.0 && !view.busy.get() {
+                if pull_distance.replace(0.0) >= 72.0 && view.feed_load.get() != FeedLoad::Loading {
                     view.refresh();
                 } else if let Some(summary) = previous_summary.borrow().as_deref() {
                     view.label("FeedSummary").set_text(Some(summary));
@@ -585,10 +628,8 @@ impl ReaderView {
             Ok(repo) => repo,
             Err(error) => {
                 self.status(&format!("Cannot open the reading database: {error}"));
-                self.empty(
-                    "Storage could not be opened",
-                    "Close other instances or check app storage, then restart Ember.",
-                );
+                self.feed_load.set(FeedLoad::StorageUnavailable);
+                self.render_stories();
                 return;
             }
         };
@@ -626,11 +667,32 @@ impl ReaderView {
         self.label("StatusText").set_text(Some(message));
         self.get_control::<Border>("StatusBar").set_is_visible(true);
     }
-    fn empty(&self, title: &str, message: &str) {
+    fn set_unread_only(&self, enabled: bool) {
+        self.state.borrow_mut().preferences.hide_read = enabled;
+        self.changed();
+        self.render_stories();
+    }
+    fn set_downloaded_only(&self, enabled: bool) {
+        self.downloaded_only.set(enabled);
+        self.next.set(None);
+        self.button("LoadMoreButton").set_is_visible(false);
+        // Re-page the chosen collection before fetching any rows.
+        self.load_feed(0, FetchMode::CacheFirst);
+        self.render_stories();
+    }
+    fn downloaded_shelf(&self) -> bool {
+        self.downloaded_only.get() && *self.feed.borrow() == FeedRoute::Saved
+    }
+    fn empty(&self, title: &str, message: &str, action: Option<EmptyAction>) {
         self.label("EmptyTitle").set_text(Some(title));
         self.label("EmptyMessage").set_text(Some(message));
-        self.get_control::<StackPanel>("FeedEmpty")
-            .set_is_visible(self.get_control::<ListBox>("Stories").items().count() == 0);
+        self.empty_action.set(action);
+        let button = self.button("RetryButton");
+        button.set_is_visible(action.is_some());
+        if let Some(action) = action {
+            button.set_content(Some(Rc::new(action.label().to_owned())));
+            AutomationProperties::set_name(&button, Some(action.label()));
+        }
     }
     fn changed(&self) {
         if !self.state_ready.get() {
@@ -712,11 +774,14 @@ impl ReaderView {
         };
         let generation = self.feed_generation.get().wrapping_add(1);
         self.feed_generation.set(generation);
-        self.busy.set(true);
+        self.feed_load.set(FeedLoad::Loading);
         self.button("LoadMoreButton").set_is_enabled(false);
-        self.button("RetryButton").set_is_visible(false);
         if self.stories.borrow().is_empty() {
-            self.empty("Loading stories…", "Checking for stories on this device.");
+            self.empty(
+                "Loading stories…",
+                "Checking for stories on this device.",
+                None,
+            );
         }
         let route = self.feed.borrow().clone();
         let title = match &route {
@@ -734,8 +799,16 @@ impl ReaderView {
         } else {
             30
         };
+        let downloaded_shelf = self.downloaded_shelf();
         let local_ids = match &route {
-            FeedRoute::Saved => self.state.borrow().saved_ids(),
+            FeedRoute::Saved => {
+                let state = self.state.borrow();
+                let mut ids = state.saved_ids();
+                if downloaded_shelf {
+                    ids.retain(|id| state.downloaded_threads.contains_key(id));
+                }
+                ids
+            }
             FeedRoute::History => self.state.borrow().history_ids(),
             FeedRoute::Hidden => self
                 .state
@@ -807,7 +880,11 @@ impl ReaderView {
                             .load_items(
                                 ids.get(offset..end).unwrap_or_default(),
                                 services::now(),
-                                mode,
+                                if downloaded_shelf {
+                                    FetchMode::Offline
+                                } else {
+                                    mode
+                                },
                             )
                             .await;
                         Ok((
@@ -826,11 +903,14 @@ impl ReaderView {
                 else {
                     return;
                 };
-                view.busy.set(false);
+                view.feed_load.set(FeedLoad::Ready);
                 view.button("LoadMoreButton").set_is_enabled(true);
                 match result {
                     Ok((items, next, total, source, warning, story_ids)) => {
                         if offset == 0 {
+                            if items.is_empty() && total > 0 && warning.is_some() {
+                                view.feed_load.set(FeedLoad::Unavailable);
+                            }
                             view.search_story_ids.borrow_mut().clear();
                         }
                         view.search_story_ids.borrow_mut().extend(story_ids);
@@ -839,14 +919,11 @@ impl ReaderView {
                     Err(error) => {
                         view.label("FeedSummary")
                             .set_text(Some("Update unavailable"));
-                        view.button("RetryButton").set_is_visible(true);
+                        view.feed_load.set(FeedLoad::Unavailable);
                         view.button("LoadMoreButton")
                             .set_is_visible(view.next.get().is_some());
                         view.status(&format!("Could not refresh: {error}"));
-                        view.empty(
-                            "Couldn’t load stories",
-                            "Check your connection and try again.",
-                        );
+                        view.render_stories();
                     }
                 }
             }),
@@ -902,7 +979,10 @@ impl ReaderView {
         self.render_stories();
         // Pruning reads every cached item, so it runs once a session after a feed has loaded,
         // and again after a download or a change of the cache limit, not after every refresh.
-        if !self.busy.get() && !self.pruned_after_feed.get() && self.prune_cache() {
+        if self.feed_load.get() != FeedLoad::Loading
+            && !self.pruned_after_feed.get()
+            && self.prune_cache()
+        {
             self.pruned_after_feed.set(true);
         }
     }
@@ -913,7 +993,11 @@ impl ReaderView {
             .borrow()
             .iter()
             .filter(|item| match &*route {
-                FeedRoute::Saved => state.is_saved(item.id),
+                FeedRoute::Saved => {
+                    state.is_saved(item.id)
+                        && (!self.downloaded_only.get()
+                            || state.downloaded_threads.contains_key(&item.id))
+                }
                 FeedRoute::History => state
                     .items
                     .get(&item.id)
@@ -973,32 +1057,100 @@ impl ReaderView {
             .set_is_visible(empty);
         let route = self.feed.borrow();
         let filterable = matches!(*route, FeedRoute::Feed(_) | FeedRoute::Search(_));
-        if empty && !self.busy.get() {
-            let (title, message) = match &*route {
-                FeedRoute::Saved => (
-                    "No saved stories",
-                    "Bookmark a story to read it here later.",
+        if empty {
+            use EmptyAction::*;
+            let (title, message, action) = match self.feed_load.get() {
+                FeedLoad::Loading => (
+                    "Loading stories…",
+                    "Checking for stories on this device.",
+                    None,
                 ),
-                FeedRoute::History => (
-                    "No reading history",
-                    "Stories appear here when you open a discussion.",
+                FeedLoad::StorageUnavailable => (
+                    "Storage could not be opened",
+                    "Check app storage and restart Ember.",
+                    None,
                 ),
-                FeedRoute::Hidden => (
-                    "No hidden stories",
-                    "Stories you hide can be restored here.",
+                FeedLoad::Unavailable if self.downloaded_shelf() => (
+                    "Offline copy unavailable",
+                    "Open the saved story while connected to download its discussion again.",
+                    Some(AllSaved),
                 ),
-                _ if !self.stories.borrow().is_empty() => (
-                    "No visible stories",
-                    "Change the unread filter or mute rules, or load more stories.",
+                FeedLoad::Unavailable => (
+                    "Couldn’t load stories",
+                    "Check your connection and try again.",
+                    Some(Retry),
                 ),
-                FeedRoute::Search(_) => (
-                    "No results",
-                    "Try a different search term or broaden your filters.",
-                ),
-                _ => ("No stories yet", "Refresh to check for new stories."),
+                FeedLoad::Ready => match &*route {
+                    FeedRoute::Saved if self.downloaded_only.get() => (
+                        "No downloaded discussions",
+                        "Open a saved story and use Download to keep its replies on this device.",
+                        Some(AllSaved),
+                    ),
+                    FeedRoute::Saved => (
+                        "No saved stories",
+                        "Use the bookmark on a discussion to keep it here.",
+                        Some(FrontPage),
+                    ),
+                    FeedRoute::History => (
+                        "No reading history",
+                        "Stories appear here when you open a discussion.",
+                        Some(FrontPage),
+                    ),
+                    FeedRoute::Hidden => (
+                        "No hidden stories",
+                        "Stories you hide can be restored here.",
+                        Some(FrontPage),
+                    ),
+                    _ if !self.stories.borrow().is_empty()
+                        && state.preferences.hide_read
+                        && self.stories.borrow().iter().any(|item| {
+                            state.is_read(item.id)
+                                && !item.deleted
+                                && (!item.dead || state.preferences.show_dead)
+                                && !state.mutes.matches(item)
+                                && !state.items.get(&item.id).is_some_and(|s| s.hidden)
+                        }) =>
+                    {
+                        (
+                            "No unread stories here",
+                            "Show previously read stories or load another page.",
+                            Some(ShowRead),
+                        )
+                    }
+                    _ if !self.stories.borrow().is_empty() => (
+                        "No visible stories",
+                        "Review your filters and mute rules in reading settings.",
+                        Some(Settings),
+                    ),
+                    FeedRoute::Search(_) => (
+                        "No results",
+                        "Try another term or broaden your filters.",
+                        Some(EditSearch),
+                    ),
+                    _ => (
+                        "No stories yet",
+                        "Refresh to check for new stories.",
+                        Some(Retry),
+                    ),
+                },
             };
-            self.empty(title, message);
+            self.empty(title, message, action);
         }
+        let downloads = self.button("DownloadedOnly");
+        downloads.set_is_visible(*route == FeedRoute::Saved);
+        downloads
+            .classes()
+            .set("active", self.downloaded_only.get());
+        let filter_label = if self.downloaded_only.get() {
+            "Show all saved stories"
+        } else {
+            "Show downloaded discussions only"
+        };
+        AutomationProperties::set_name(&downloads, Some(filter_label));
+        ToolTip::set_tip(
+            &downloads,
+            Some(Rc::new(filter_label.to_owned()) as BoxedValue),
+        );
         let unread = self.button("UnreadButton");
         unread.set_is_visible(filterable);
         unread.classes().set("active", state.preferences.hide_read);
@@ -1189,7 +1341,11 @@ impl ReaderView {
             .children()
             .add(widgets::heading("Opening the conversation"));
         loading.children().add(widgets::text(
-            "Checking this device for a saved copy, then connecting to Hacker News…",
+            if self.thread_fetch_mode(id) == FetchMode::Offline {
+                "Opening the copy on this device…"
+            } else {
+                "Checking for a saved copy…"
+            },
             15.0,
         ));
         self.show_content(loading.upcast());
@@ -1197,10 +1353,17 @@ impl ReaderView {
         self.label("DetailTitle")
             .set_text(Some("Opening the conversation…"));
         self.textbox("ThreadFind").set_text(Some(""));
-        self.fetch_thread(id, FetchMode::CacheFirst);
+        self.fetch_thread(id, self.thread_fetch_mode(id));
         self.render_stories();
         if publish {
             self.publish_location(Some(id));
+        }
+    }
+    fn thread_fetch_mode(&self, id: u64) -> FetchMode {
+        if self.downloaded_shelf() && self.state.borrow().downloaded_threads.contains_key(&id) {
+            FetchMode::Offline
+        } else {
+            FetchMode::CacheFirst
         }
     }
     fn fetch_thread(&self, id: u64, mode: FetchMode) {
@@ -1431,7 +1594,7 @@ impl ReaderView {
                 self.thread_budget
                     .set((self.thread_budget.get() + 200).min(10000));
                 if let Some(id) = self.selected.get() {
-                    self.fetch_thread(id, FetchMode::CacheFirst);
+                    self.fetch_thread(id, self.thread_fetch_mode(id));
                 }
             }
             ThreadAction::Sort(sort) => {
