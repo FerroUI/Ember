@@ -52,7 +52,16 @@
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
           <ControlTemplate>
-            <Grid>
+            <Grid ClipToBounds="True">
+              <Border Name="SwipeReveal" IsVisible="False" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"
+                      Background="{DynamicResource EmberRail}">
+                <StackPanel Name="SwipeCaption" Width="80" Spacing="2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                  <PathIcon Name="SwipeGlyph" Data="{DynamicResource EmberGlyphHide}" Width="16" Height="16"
+                            HorizontalAlignment="Center" Foreground="{DynamicResource EmberMuted}" />
+                  <TextBlock Name="SwipeAction" Text="{TemplateBinding SwipeLabel}" FontWeight="SemiBold" FontSize="12"
+                             HorizontalAlignment="Center" Foreground="{DynamicResource EmberMuted}" />
+                </StackPanel>
+              </Border>
               <Border Name="CardSurface" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
                 <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="3">
                   <TextBlock Text="{TemplateBinding Domain}" FontSize="12" FontWeight="Medium"
@@ -94,6 +103,16 @@
             </Grid>
           </ControlTemplate>
         </Setter>
+        <Style Selector="^.swipe-hide /template/ Border#SwipeReveal"><Setter Property="IsVisible" Value="True" /></Style>
+        <Style Selector="^.swipe-save /template/ Border#SwipeReveal"><Setter Property="IsVisible" Value="True" /></Style>
+        <Style Selector="^.swipe-save /template/ StackPanel#SwipeCaption"><Setter Property="HorizontalAlignment" Value="Right" /></Style>
+        <Style Selector="^.swipe-save /template/ PathIcon#SwipeGlyph"><Setter Property="Data" Value="{DynamicResource EmberGlyphBookmark}" /></Style>
+        <Style Selector="^.swipe-ready /template/ Border#SwipeReveal"><Setter Property="Background" Value="{DynamicResource AccentButtonBackground}" /></Style>
+        <Style Selector="^.swipe-ready /template/ PathIcon#SwipeGlyph">
+          <Setter Property="Data" Value="{DynamicResource EmberGlyphRead}" />
+          <Setter Property="Foreground" Value="{DynamicResource AccentButtonForeground}" />
+        </Style>
+        <Style Selector="^.swipe-ready /template/ TextBlock#SwipeAction"><Setter Property="Foreground" Value="{DynamicResource AccentButtonForeground}" /></Style>
         <Style Selector="^.has-score /template/ StackPanel#Points"><Setter Property="IsVisible" Value="True" /></Style>
         <Style Selector="^.has-comments /template/ StackPanel#Replies"><Setter Property="IsVisible" Value="True" /></Style>
         <Style Selector="^.read /template/ PathIcon#ReadMark"><Setter Property="IsVisible" Value="True" /></Style>

@@ -1,28 +1,53 @@
 use ember_content::HtmlDocument;
 use ember_core::{relative_time, HnItem, ItemKind};
 use ferroui_base::input::InputElementImpl;
-use ferroui_base::interactivity::InteractiveImpl;
+use ferroui_base::interactivity::{InteractiveImpl, RoutedEventArgs};
 use ferroui_base::layout::LayoutableImpl;
+use ferroui_base::media::TranslateTransform;
 use ferroui_base::{
     ferro_class, ferro_class_info, ferro_impl_classes, ferro_properties, instantiate,
     FerroObjectImpl, FerroProperty, Ref, StyledElementImpl, StyledProperty, VisualImpl,
 };
 use ferroui_controls::automation::AutomationProperties;
-use ferroui_controls::primitives::TemplatedControlImpl;
-use ferroui_controls::{Button, ButtonImpl, ContentControlImpl, ControlImpl};
+use ferroui_controls::primitives::{
+    TemplateAppliedEventArgs, TemplatedControlImpl, TemplatedControlImplExt,
+};
+use ferroui_controls::{
+    Border, Button, ButtonImpl, ContentControlImpl, ControlImpl, ControlImplExt,
+};
+use std::cell::{Cell, RefCell};
 /// A touch and keyboard activatable story, styled through a replaceable ControlTheme.
 #[repr(C)]
 pub struct StoryCard {
     base: Button,
+    swipe_distance: Cell<f64>,
+    swipe_surface: RefCell<Option<Ref<Border>>>,
+    swipe_transform: RefCell<Option<Ref<TranslateTransform>>>,
 }
 ferro_class!(StoryCard: Button);
 ferro_class_info!(StoryCard {
     new: StoryCard::new
 });
 ferro_impl_classes!(StoryCard: FerroObjectImpl, StyledElementImpl, VisualImpl, LayoutableImpl,
-    InteractiveImpl, InputElementImpl, ControlImpl, TemplatedControlImpl, ContentControlImpl, ButtonImpl);
+    InteractiveImpl, InputElementImpl, ContentControlImpl, ButtonImpl);
+
+impl TemplatedControlImpl for StoryCard {
+    fn on_apply_template(this: &Self, args: &TemplateAppliedEventArgs) {
+        Self::parent_on_apply_template(this, args);
+        this.finish_swipe();
+        this.swipe_surface
+            .replace(args.name_scope().find_as::<Border>("CardSurface"));
+    }
+}
+impl ControlImpl for StoryCard {
+    fn on_unloaded(this: &Self, args: &RoutedEventArgs) {
+        this.finish_swipe();
+        Self::parent_on_unloaded(this, args);
+    }
+}
 ferro_properties! {
     impl StoryCard {
+        pub fn swipe_label_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("SwipeLabel", None) }
         pub fn headline_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Headline", None) }
         pub fn metadata_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Metadata", None) }
         pub fn domain_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Domain", None) }
@@ -32,14 +57,67 @@ ferro_properties! {
     }
 }
 impl StoryCard {
+    pub(crate) const SWIPE_THRESHOLD: f64 = 80.0;
+
     pub fn construct() -> Self {
         Self {
             base: Button::construct(),
+            swipe_distance: Cell::new(0.0),
+            swipe_surface: RefCell::default(),
+            swipe_transform: RefCell::default(),
         }
     }
     pub fn new() -> Ref<Self> {
         instantiate(Self::construct())
     }
+    /// Retain the full gesture distance for reversal while limiting visual travel.
+    pub(crate) fn track_swipe(&self, displacement: f64) {
+        let distance = self.swipe_distance.get() + displacement;
+        self.swipe_distance.set(distance);
+        let surface = self.swipe_surface.borrow();
+        let Some(surface) = surface.as_ref() else {
+            return;
+        };
+        let mut current = self.swipe_transform.borrow_mut();
+        let transform = current.get_or_insert_with(|| {
+            let transform = TranslateTransform::new();
+            surface.set_render_transform(Some(transform.clone().into()));
+            transform
+        });
+        transform.set_x(distance.clamp(-96.0, 96.0));
+        let save = distance < 0.0;
+        self.classes().set("swipe-save", save);
+        self.classes().set("swipe-hide", distance > 0.0);
+        self.classes()
+            .set("swipe-ready", distance.abs() > Self::SWIPE_THRESHOLD);
+        let label = if save {
+            if self.classes().contains("saved") {
+                "Unsave"
+            } else {
+                "Save"
+            }
+        } else if self.classes().contains("hidden") {
+            "Restore"
+        } else {
+            "Hide"
+        };
+        if self.get_value(Self::swipe_label_property()).as_deref() != Some(label) {
+            self.set_value(Self::swipe_label_property(), Some(label.to_owned()));
+        }
+    }
+
+    pub(crate) fn finish_swipe(&self) -> f64 {
+        if self.swipe_transform.take().is_some() {
+            if let Some(surface) = self.swipe_surface.borrow().as_ref() {
+                surface.set_render_transform(None);
+            }
+            for name in ["swipe-save", "swipe-hide", "swipe-ready"] {
+                self.classes().set(name, false);
+            }
+        }
+        self.swipe_distance.replace(0.0)
+    }
+
     /// Build the summary from the fields HN actually supplied. Jobs have no
     /// discussion count, and a comment search hit can share its parent story's title.
     pub(crate) fn set_item(&self, item: &HnItem, now: u64, show_dead: bool) {

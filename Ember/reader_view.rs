@@ -1312,6 +1312,8 @@ impl ReaderView {
         } else {
             ""
         }));
+        card.classes()
+            .set("hidden", state.items.get(&id).is_some_and(|entry| entry.hidden));
         card.classes().set("read", read);
         card.classes().set("saved", saved);
         card.classes().set("compact", state.preferences.compact);
@@ -1412,19 +1414,21 @@ impl ReaderView {
         swipe.set_can_vertically_swipe(false);
         card.gesture_recognizers()
             .add(swipe.upcast::<ferroui_base::input::gesture_recognizers::GestureRecognizer>());
-        let distance = Rc::new(Cell::new(0.0));
-        let distance_move = distance.clone();
+        let swiped = card.to_ref().downgrade();
         card.add_handler(InputElement::swipe_gesture_event(), move |_, e| {
-            // FerroUI reports content displacement; invert it to follow the finger.
-            distance_move.set(distance_move.get() - e.delta().x);
+            if let Some(card) = swiped.upgrade() {
+                // FerroUI reports content displacement, opposite to the finger.
+                card.track_swipe(-e.delta().x);
+            }
         });
         let weak = self.to_ref().downgrade();
+        let swiped = card.to_ref().downgrade();
         card.add_handler(InputElement::swipe_gesture_ended_event(), move |_, _| {
-            let delta = distance.replace(0.0);
-            if let Some(v) = weak.upgrade() {
-                if delta < -80.0 {
+            if let (Some(v), Some(card)) = (weak.upgrade(), swiped.upgrade()) {
+                let delta = card.finish_swipe();
+                if delta < -StoryCard::SWIPE_THRESHOLD {
                     v.toggle_story_flag(id, StoryFlag::Saved);
-                } else if delta > 80.0 {
+                } else if delta > StoryCard::SWIPE_THRESHOLD {
                     v.toggle_story_flag(id, StoryFlag::Hidden);
                 }
             }

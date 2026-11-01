@@ -33,6 +33,7 @@ impl ApplicationImpl for App {
         this.initialize_component();
         for (key, name) in [
             ("EmberGlyphBookmark", "bookmark"),
+            ("EmberGlyphHide", "eye_off"),
             ("EmberGlyphRead", "check"),
             ("EmberGlyphComments", "chat"),
             ("EmberGlyphPoints", "up"),
