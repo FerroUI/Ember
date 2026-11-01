@@ -837,6 +837,19 @@ mod tests {
         cache.set_text(Some("5000"));
         apply();
         assert_eq!(applied.borrow().accent, "#196B73");
+
+        let size_editor = size
+            .get_visual_descendants()
+            .find_map(|v| v.cast::<TextBox>())
+            .unwrap();
+        size_editor.set_text(Some("twenty"));
+        apply();
+        assert!(size_editor.is_focused());
+        assert_eq!(size_editor.text().as_deref(), Some("twenty"));
+        assert_eq!(applied.borrow().font_size, 17.0);
+        size_editor.set_text(Some("20"));
+        apply();
+        assert_eq!(applied.borrow().font_size, 20.0);
         window.close();
     }
 }
