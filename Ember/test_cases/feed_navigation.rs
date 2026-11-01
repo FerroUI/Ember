@@ -475,7 +475,11 @@ fn keyboard_story_actions_follow_the_focused_feed_row_in_split_view() {
     let list = view.get_control::<ListBox>("Stories");
     click_in_view(&shell, &window, &first_story(&window));
     let second = list.container_from_index(1).unwrap();
-    assert!(second.focus());
+    let card = second
+        .get_visual_descendants()
+        .find_map(|node| node.cast::<crate::controls::StoryCard>())
+        .unwrap();
+    assert!(card.focus());
     let key = |row: &Control, key| {
         let mut event = KeyEventArgs::new();
         event.key = key;
@@ -486,12 +490,20 @@ fn keyboard_story_actions_follow_the_focused_feed_row_in_split_view() {
         }
         assert!(event.handled());
     };
-    key(&second, Key::S);
+    key(&card, Key::S);
     let state =
         || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
     assert!(state().is_saved(1002));
     assert!(!state().is_saved(1001));
     click_in_view(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert!(!state().is_saved(1002));
+    let discussion = view
+        .get_control::<ferroui_controls::ContentControl>("DetailHost")
+        .get_visual_descendants()
+        .find_map(|node| node.cast::<ListBox>())
+        .unwrap();
+    key(&discussion.container_from_index(0).unwrap(), Key::S);
+    assert!(state().is_saved(1001));
     assert!(!state().is_saved(1002));
     let second = list.container_from_index(1).unwrap();
     assert!(second.focus());

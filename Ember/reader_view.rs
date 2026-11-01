@@ -666,13 +666,9 @@ impl ReaderView {
                 }
                 // A split view can keep a different discussion open while keyboard
                 // focus moves down the feed. Resolve the routed row before the detail.
-                let feed_value = source.as_ref().and_then(|source| {
-                    let container = std::iter::once(source.clone())
-                        .chain(source.get_visual_ancestors())
-                        .find_map(|node| node.cast::<ferroui_controls::ListBoxItem>())?;
-                    v.get_control::<ListBox>("Stories")
-                        .item_from_container(&container.upcast::<Control>())
-                });
+                let stories = v.get_control::<ListBox>("Stories");
+                let feed_value = stories.get_container_from_event_source(source.as_ref())
+                    .and_then(|container| stories.item_from_container(&container));
                 let feed_row = feed_value
                     .as_ref()
                     .and_then(|value| value.downcast_ref::<HnItem>());
