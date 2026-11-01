@@ -522,3 +522,78 @@ fn keyboard_story_actions_follow_the_focused_feed_row_in_split_view() {
     );
     window.close();
 }
+
+#[test]
+fn paginating_and_hiding_a_story_only_notify_the_affected_rows() {
+    use ferroui_base::input::ContextRequestedEventArgs;
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::MenuItem;
+
+    let store = Rc::new(MemoryStore::default());
+    let now = crate::services::now();
+    let ids: Vec<u64> = (4000..4300).collect();
+    ready(store.put(
+        "cache:feed:topstories",
+        &json!({"fetched_at":now,"value":ids}).to_string(),
+    ))
+    .unwrap();
+    for &id in &ids {
+        let item = json!({"id":id,"type":"story","title":format!("Story {id}"),"url":format!("https://example.org/{id}")});
+        ready(store.put(
+            &format!("cache:item:{id}"),
+            &json!({"fetched_at":now,"value":item}).to_string(),
+        ))
+        .unwrap();
+    }
+    let (shell, window, view) = start(1280.0, 800.0, store, Rc::new(Cell::new(true)));
+    let list = view.get_control::<ListBox>("Stories");
+    assert_eq!(list.items().count(), 30);
+    let original = list.items().get_at(0).unwrap();
+    let second = list.items().get_at(1).unwrap();
+    let changes = Rc::new(Cell::new((0_usize, 0_usize, 0_usize)));
+    let counters = changes.clone();
+    list.items().add_collection_changed(Rc::new(move |e| {
+        let (events, added, removed) = counters.get();
+        counters.set((
+            events + 1,
+            added + e.new_items.len(),
+            removed + e.old_items.len(),
+        ));
+    }));
+    let started = std::time::Instant::now();
+    for _ in 0..9 {
+        click_in_view(
+            &shell,
+            &window,
+            &view.get_control::<Button>("LoadMoreButton"),
+        );
+    }
+    let append_time = started.elapsed();
+    let appended = changes.replace((0, 0, 0));
+    assert_eq!(list.items().count(), 300);
+    let retained = Rc::ptr_eq(&original, &list.items().get_at(0).unwrap());
+
+    let card = first_story(&window);
+    card.raise_event(&ContextRequestedEventArgs::new());
+    let menu = card.context_menu().unwrap();
+    let entries = menu.items();
+    let hide = (0..entries.count())
+        .filter_map(|i| Control::from_boxed(&entries.get_at(i)?))
+        .filter_map(|c| c.cast::<MenuItem>())
+        .find(|e| {
+            e.header().is_some_and(|h| {
+                h.downcast_ref::<String>().map(String::as_str) == Some("Hide story")
+            })
+        })
+        .unwrap();
+    menu.close();
+    hide.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+    shell.settle();
+    assert_eq!(list.items().count(), 299);
+    eprintln!("300-story feed, nine page appends: {append_time:?}, notifications/additions/removals {appended:?}; hide one row: {:?}", changes.get());
+    assert_eq!(appended, (9, 270, 0));
+    assert_eq!(changes.get(), (1, 0, 1));
+    assert!(retained);
+    assert!(Rc::ptr_eq(&second, &list.items().get_at(0).unwrap()));
+    window.close();
+}

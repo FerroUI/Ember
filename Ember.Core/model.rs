@@ -391,18 +391,31 @@ impl MuteRules {
     }
 
     pub fn matches(&self, item: &HnItem) -> bool {
-        let domain = item.domain().to_ascii_lowercase();
-        let domain = domain.trim_end_matches('.');
-        let title = item.title_text().to_lowercase();
-        self.users.contains(item.author())
-            || self.domains.iter().any(|value| {
+        if self.users.contains(item.author()) {
+            return true;
+        }
+        if !self.domains.is_empty() {
+            let domain = item.domain().to_ascii_lowercase();
+            let domain = domain.trim_end_matches('.');
+            if self.domains.iter().any(|value| {
                 let value = value.trim().to_ascii_lowercase();
                 let value = value.trim_end_matches('.').trim_start_matches("www.");
-                !value.is_empty() && (domain == value || domain.ends_with(&format!(".{value}")))
-            })
-            || self.keywords.iter().any(|value| {
-                !value.trim().is_empty() && title.contains(&value.trim().to_lowercase())
-            })
+                !value.is_empty()
+                    && (domain == value
+                        || domain
+                            .strip_suffix(value)
+                            .is_some_and(|prefix| prefix.ends_with('.')))
+            }) {
+                return true;
+            }
+        }
+        if self.keywords.is_empty() {
+            return false;
+        }
+        let title = item.title_text().to_lowercase();
+        self.keywords
+            .iter()
+            .any(|value| !value.trim().is_empty() && title.contains(&value.trim().to_lowercase()))
     }
 }
 

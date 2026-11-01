@@ -27,6 +27,7 @@ impl ReaderView {
         let title = self
             .current_item()
             .filter(|item| item.id == id)
+            .map(Rc::new)
             .or_else(|| {
                 self.stories
                     .borrow()

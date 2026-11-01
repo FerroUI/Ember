@@ -11,7 +11,7 @@ pub(super) struct LibraryFind {
 }
 
 struct BrowseWindow {
-    stories: Vec<HnItem>,
+    stories: FeedRows,
     next: Option<usize>,
     summary: String,
     position: Vector,
@@ -209,15 +209,7 @@ impl ReaderView {
                         let id = ids[cursor];
                         cursor += 1;
                         if let Some(item) = loaded.next_if(|item| item.id == id) {
-                            let summary = StorySummary::new(&item, services::now(), show_dead);
-                            let text = format!(
-                                "{} {} {}",
-                                summary.headline,
-                                summary.source,
-                                item.by.as_deref().filter(|_| !item.deleted).unwrap_or("")
-                            )
-                            .to_lowercase();
-                            if terms.iter().all(|term| text.contains(term)) {
+                            if StorySummary::matches(&item, &terms, show_dead) {
                                 found.push(item);
                             }
                         } else {

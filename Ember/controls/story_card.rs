@@ -196,8 +196,45 @@ pub(crate) struct StorySummary {
 
 impl StorySummary {
     pub(crate) fn new(item: &HnItem, now: u64, show_dead: bool) -> Self {
+        let mut byline = Vec::new();
+        if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
+            byline.push(author.clone());
+        }
+        if item.time.is_some() {
+            byline.push(relative_time(item.time, now));
+        }
+        Self {
+            source: Self::source(item, show_dead),
+            headline: Self::headline(item, show_dead),
+            byline: byline.join(" · "),
+        }
+    }
+
+    /// Match each query word independently across visible metadata. Searching
+    /// by author or domain does not require parsing every cached comment body.
+    pub(crate) fn matches(item: &HnItem, terms: &[&str], show_dead: bool) -> bool {
+        let author = item
+            .by
+            .as_deref()
+            .filter(|_| !item.deleted)
+            .unwrap_or("")
+            .to_lowercase();
+        let mut source = None;
+        let mut headline = None;
+        terms.iter().all(|term| {
+            author.contains(term)
+                || source
+                    .get_or_insert_with(|| Self::source(item, show_dead).to_lowercase())
+                    .contains(term)
+                || headline
+                    .get_or_insert_with(|| Self::headline(item, show_dead).to_lowercase())
+                    .contains(term)
+        })
+    }
+
+    fn headline(item: &HnItem, show_dead: bool) -> String {
         let comment = item.kind == Some(ItemKind::Comment);
-        let headline = if item.deleted {
+        if item.deleted {
             "[deleted]".to_owned()
         } else if item.dead && !show_dead {
             "[dead]".to_owned()
@@ -220,8 +257,10 @@ impl StorySummary {
             } else {
                 preview
             }
-        };
-        let source = match item.kind {
+        }
+    }
+    fn source(item: &HnItem, show_dead: bool) -> String {
+        match item.kind {
             Some(ItemKind::Comment) if !item.deleted && (!item.dead || show_dead) => item
                 .title
                 .as_deref()
@@ -231,18 +270,6 @@ impl StorySummary {
             Some(ItemKind::Poll) => "Hacker News poll".to_owned(),
             _ if item.url.is_none() => "Hacker News".to_owned(),
             _ => item.domain(),
-        };
-        let mut byline = Vec::new();
-        if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
-            byline.push(author.clone());
-        }
-        if item.time.is_some() {
-            byline.push(relative_time(item.time, now));
-        }
-        Self {
-            source,
-            headline,
-            byline: byline.join(" · "),
         }
     }
 }

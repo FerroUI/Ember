@@ -1,4 +1,5 @@
 mod discovery;
+mod feed_rows;
 mod library_find;
 mod offline;
 
@@ -11,6 +12,8 @@ use ember_core::{
     DataSource, FeedKind, FetchMode, HnItem, ReaderState, Repository, SearchKind, SearchQuery,
     ThreadSnapshot, ThreadSort,
 };
+use feed_rows::{FeedRows, FeedSummaryState};
+use ferroui_base::collections::FerroList;
 use ferroui_base::input::gesture_recognizers::{PullGestureRecognizer, SwipeGestureRecognizer};
 use ferroui_base::input::platform::ClipboardExtensions;
 use ferroui_base::input::{InputElement, InputElementImpl, Key, KeyEventArgs, KeyModifiers};
@@ -65,7 +68,7 @@ impl FeedRoute {
 // Only the six public feeds have resumable sessions. Local shelves are rebuilt from
 // current state and search result identities belong to their individual query.
 struct FeedWindow {
-    stories: Vec<HnItem>,
+    stories: FeedRows,
     next: Option<usize>,
     summary: String,
     position: ferroui_base::Vector,
@@ -224,10 +227,11 @@ pub struct ReaderView {
     detail: RefCell<DetailRoute>,
     history: RefCell<Vec<HistoryEntry>>,
     search_form: RefCell<Option<crate::search_panel::Form>>,
-    stories: RefCell<Vec<HnItem>>,
+    stories: RefCell<FeedRows>,
     feed_windows: RefCell<BTreeMap<FeedKind, FeedWindow>>,
     accepted_feed_summary: RefCell<Option<String>>,
-    rendered_stories: RefCell<Vec<HnItem>>,
+    rendered_stories: Rc<FerroList<Option<BoxedValue>>>,
+    feed_summary: RefCell<FeedSummaryState>,
     rendered_show_dead: Cell<bool>,
     search_story_ids: RefCell<BTreeMap<u64, u64>>,
     selected: Cell<Option<u64>>,
@@ -308,10 +312,11 @@ impl ReaderView {
             detail: RefCell::new(DetailRoute::Welcome),
             history: RefCell::new(Vec::new()),
             search_form: RefCell::new(None),
-            stories: RefCell::new(Vec::new()),
+            stories: RefCell::default(),
             feed_windows: RefCell::default(),
             accepted_feed_summary: RefCell::default(),
-            rendered_stories: RefCell::new(Vec::new()),
+            rendered_stories: Rc::new(FerroList::new()),
+            feed_summary: RefCell::default(),
             rendered_show_dead: Cell::new(false),
             search_story_ids: RefCell::new(BTreeMap::new()),
             selected: Cell::new(None),
@@ -735,8 +740,9 @@ impl ReaderView {
             },
             false,
         );
-        self.get_control::<ListBox>("Stories")
-            .set_item_template(Some(template));
+        let stories = self.get_control::<ListBox>("Stories");
+        stories.set_item_template(Some(template));
+        stories.set_items_source(Some(self.rendered_stories.clone().into()));
         let header = self.get_control::<StackPanel>("FeedHeader");
         header
             .gesture_recognizers()
@@ -1253,13 +1259,8 @@ impl ReaderView {
         source: DataSource,
         warning: Option<String>,
     ) {
-        if offset == 0 {
-            *self.stories.borrow_mut() = items;
-        } else {
-            let mut stories = self.stories.borrow_mut();
-            let mut ids: BTreeSet<_> = stories.iter().map(|v| v.id).collect();
-            stories.extend(items.into_iter().filter(|v| ids.insert(v.id)));
-        }
+        let append_at = (offset != 0).then(|| self.stories.borrow().len());
+        self.stories.borrow_mut().accept(items, offset == 0);
         self.next.set(next);
         self.button("LoadMoreButton").set_is_visible(next.is_some());
         let route = self.feed.borrow();
@@ -1301,7 +1302,7 @@ impl ReaderView {
         if let Some(warning) = warning {
             self.status(&warning);
         }
-        self.render_stories();
+        self.project_stories(append_at);
         // Pruning reads every cached item, so it runs once a session after a feed has loaded,
         // and again after a download or a change of the cache limit, not after every refresh.
         if self.feed_load.get() != FeedLoad::Loading
@@ -1311,73 +1312,70 @@ impl ReaderView {
             self.pruned_after_feed.set(true);
         }
     }
-    fn visible_stories(&self) -> Vec<HnItem> {
-        let state = self.state.borrow();
-        let route = self.feed.borrow();
-        self.stories
-            .borrow()
-            .iter()
-            .filter(|item| route.includes(item, &state, self.downloaded_only.get()))
-            .cloned()
-            .collect()
-    }
     fn render_stories(&self) {
+        self.project_stories(None);
+    }
+
+    fn project_stories(&self, append_at: Option<usize>) {
         let state = self.state.borrow();
-        let stories = self.visible_stories();
-        let filterable = !self.feed.borrow().is_library();
-        let unread_count = if state.preferences.hide_read || !filterable {
-            stories.len()
+        let loaded = self.stories.borrow();
+        let route = self.feed.borrow();
+        let filterable = !route.is_library();
+        let downloaded_only = self.downloaded_only.get();
+        let revision = self.revision.get();
+        // A state edit while a page was loading may change membership or unread counts.
+        let previous = self.feed_summary.take();
+        let start = append_at.filter(|&n| previous.loaded == n && previous.revision == revision);
+        let mut summary = if start.is_some() {
+            previous
         } else {
-            stories.iter().filter(|s| !state.is_read(s.id)).count()
+            FeedSummaryState::default()
         };
-        if *self.detail.borrow() == DetailRoute::Welcome {
-            self.update_welcome(&stories, &state);
+        let history = *route == FeedRoute::History;
+        let mut seek_unread = !history
+            && summary
+                .suggested
+                .as_ref()
+                .is_none_or(|s| state.is_read(s.id));
+        let mut visible = Vec::new();
+        for item in &loaded[start.unwrap_or(0)..] {
+            if !route.includes(item, &state, downloaded_only) {
+                continue;
+            }
+            visible.push(item);
+            let unread = !state.is_read(item.id);
+            summary.unread += usize::from(unread);
+            // Library routes can contain muted or deliberately hidden entries.
+            if (summary.suggested.is_none() || (seek_unread && unread))
+                && (filterable || state.passes_content_filters(item))
+            {
+                summary.suggested = Some(item.clone());
+                seek_unread = !history && !unread;
+            }
         }
+        summary.loaded = loaded.len();
+        summary.revision = revision;
+        let unread_count = summary.unread;
+        if *self.detail.borrow() == DetailRoute::Welcome {
+            self.update_welcome(summary.suggested.as_deref(), &state);
+        }
+        self.feed_summary.replace(summary);
         let list = self.get_control::<ListBox>("Stories");
         let visibility_changed = self.rendered_show_dead.replace(state.preferences.show_dead)
             != state.preferences.show_dead;
-        if visibility_changed || *self.rendered_stories.borrow() != stories {
-            let scroll = list.scroll().and_then(|s| s.cast::<ScrollViewer>());
-            let offset = scroll.as_ref().map(|s| s.offset()).unwrap_or_default();
-            let focused = list.is_keyboard_focus_within();
-            *self.rendered_stories.borrow_mut() = stories.clone();
-            list.items().clear();
-            for item in stories {
-                list.items().add(Some(Rc::new(item) as BoxedValue));
-            }
-            if let Some(scroll) = scroll {
-                let weak = self.to_ref().downgrade();
-                let generation = self.feed_generation.get();
-                Dispatcher::ui_thread().post_local(
-                    move || {
-                        if let Some(view) = weak
-                            .upgrade()
-                            .filter(|v| v.feed_generation.get() == generation)
-                        {
-                            scroll.set_offset(offset);
-                            if focused {
-                                view.get_control::<ListBox>("Stories").focus();
-                            }
-                        }
-                    },
-                    DispatcherPriority::LOADED,
-                );
-            }
+        if start.is_some() {
+            self.rendered_stories.add_range(
+                visible
+                    .into_iter()
+                    .map(|item| Some(item.clone() as BoxedValue)),
+            );
         } else {
-            // Keep containers, scroll position and keyboard focus when only local state changes.
-            for card in list
-                .get_visual_descendants()
-                .filter_map(|v| v.cast::<StoryCard>())
-            {
-                if let Some(id) = card.tag().and_then(|v| v.downcast_ref::<u64>().copied()) {
-                    self.update_card_state(&card, id, &state);
-                }
-            }
+            self.sync_story_items(&list, &visible);
+            self.refresh_story_cards(None, visibility_changed);
         }
         let empty = list.items().count() == 0;
         self.get_control::<StackPanel>("FeedEmpty")
             .set_is_visible(empty);
-        let route = self.feed.borrow();
         if empty {
             use EmptyAction::*;
             let (title, message, action) = match self.feed_load.get() {
@@ -1525,21 +1523,73 @@ impl ReaderView {
         AutomationProperties::set_name(&unread, Some(label));
         ToolTip::set_tip(&unread, Some(Rc::new(format!("{label} (U)")) as BoxedValue));
     }
-    fn update_welcome(&self, stories: &[HnItem], state: &ReaderState) {
+    fn sync_story_items(&self, list: &ListBox, stories: &[&Rc<HnItem>]) {
+        // Rows are immutable. Preserve the common prefix and suffix; an append
+        // or filter edit then changes just one notified range in the bound list.
+        let (prefix, removed, added, tail_append) = {
+            let previous = self.rendered_stories.snapshot();
+            let same = |(old, new): (&Option<BoxedValue>, &&Rc<HnItem>)| {
+                old.as_ref()
+                    .and_then(|value| value.downcast_ref::<HnItem>())
+                    .is_some_and(|item| std::ptr::eq(item, new.as_ref()))
+            };
+            let prefix = previous
+                .iter()
+                .zip(stories)
+                .take_while(|&pair| same(pair))
+                .count();
+            let suffix = previous[prefix..]
+                .iter()
+                .rev()
+                .zip(stories[prefix..].iter().rev())
+                .take_while(|&pair| same(pair))
+                .count();
+            (
+                prefix,
+                previous.len() - prefix - suffix,
+                stories.len() - prefix - suffix,
+                prefix == previous.len(),
+            )
+        };
+        if removed != 0 || added != 0 {
+            let scroll = list.scroll().and_then(|s| s.cast::<ScrollViewer>());
+            let offset = scroll.as_ref().map(|s| s.offset()).unwrap_or_default();
+            let focused = list.is_keyboard_focus_within();
+            self.rendered_stories.remove_range(prefix, removed);
+            self.rendered_stories.insert_range(
+                prefix,
+                stories[prefix..prefix + added]
+                    .iter()
+                    .map(|item| Some(Rc::clone(item) as BoxedValue)),
+            );
+            if !tail_append {
+                if let Some(scroll) = scroll {
+                    let weak = self.to_ref().downgrade();
+                    let generation = self.feed_generation.get();
+                    Dispatcher::ui_thread().post_local(
+                        move || {
+                            if let Some(view) = weak
+                                .upgrade()
+                                .filter(|v| v.feed_generation.get() == generation)
+                            {
+                                scroll.set_offset(offset);
+                                let list = view.get_control::<ListBox>("Stories");
+                                if focused && !list.is_keyboard_focus_within() {
+                                    list.focus();
+                                }
+                            }
+                        },
+                        DispatcherPriority::LOADED,
+                    );
+                }
+            }
+        }
+    }
+
+    fn update_welcome(&self, candidate: Option<&HnItem>, state: &ReaderState) {
         let feed = self.feed.borrow();
         self.button("WelcomeSaved")
             .set_is_visible(*feed != FeedRoute::Saved);
-        // History already comes in recency order. Never promote a deliberately hidden
-        // story from the management shelf or a saved collection.
-        let mut available = stories
-            .iter()
-            .filter(|story| state.passes_content_filters(story));
-        let first = available.clone().next();
-        let candidate = if *feed == FeedRoute::History {
-            first
-        } else {
-            available.find(|item| !state.is_read(item.id)).or(first)
-        };
         self.get_control::<Border>("WelcomeStory")
             .set_is_visible(candidate.is_some());
         let open = self.button("WelcomeOpen");
@@ -1582,6 +1632,30 @@ impl ReaderView {
         self.wire_card_swipe(&card, id);
         self.attach_story_menu(&card, item);
         card
+    }
+    fn refresh_story_cards(&self, only: Option<u64>, update_summary: bool) {
+        let list = self.get_control::<ListBox>("Stories");
+        let state = self.state.borrow();
+        for container in list.get_realized_containers() {
+            let Some(value) = list.item_from_container(&container) else {
+                continue;
+            };
+            let Some(item) = value.downcast_ref::<HnItem>() else {
+                continue;
+            };
+            if only.is_some_and(|id| id != item.id) {
+                continue;
+            }
+            if let Some(card) = container
+                .get_visual_descendants()
+                .find_map(|v| v.cast::<StoryCard>())
+            {
+                if update_summary {
+                    card.set_item(item, services::now(), state.preferences.show_dead);
+                }
+                self.update_card_state(&card, item.id, &state);
+            }
+        }
     }
     fn update_card_state(&self, card: &StoryCard, id: u64, state: &ReaderState) {
         let read = state.is_read(id);
@@ -1798,7 +1872,7 @@ impl ReaderView {
             .set_text(Some("Opening the conversation…"));
         self.textbox("ThreadFind").set_text(Some(""));
         self.fetch_thread(id, self.thread_fetch_mode(id));
-        self.render_stories();
+        self.refresh_story_cards(None, false);
         if publish {
             self.publish_location(Some(id));
         }
@@ -2303,7 +2377,11 @@ impl ReaderView {
             }
         }
         self.changed();
-        self.render_stories();
+        if matches!(flag, StoryFlag::Saved) && *self.feed.borrow() != FeedRoute::Saved {
+            self.refresh_story_cards(Some(id), false);
+        } else {
+            self.render_stories();
+        }
         if matches!(
             (&*self.feed.borrow(), flag),
             (FeedRoute::Saved, StoryFlag::Saved) | (FeedRoute::Hidden, StoryFlag::Hidden)
@@ -2963,10 +3041,11 @@ impl ReaderView {
             let stories = self.stories.borrow();
             let state = self.state.borrow();
             let feed = self.feed.borrow();
-            let visible = |item: &&HnItem| feed.includes(item, &state, self.downloaded_only.get());
+            let visible =
+                |item: &&Rc<HnItem>| feed.includes(item, &state, self.downloaded_only.get());
             let current = focused
                 .or(self.selected_row.get())
-                .and_then(|id| stories.iter().position(|s| s.id == id));
+                .and_then(|id| stories.position(id));
             let next = match current {
                 Some(i) if forward => stories[i + 1..].iter().find(visible),
                 Some(i) => stories[..i].iter().rev().find(visible),
@@ -2975,12 +3054,12 @@ impl ReaderView {
             next.map(|item| item.id)
         };
         if let Some(id) = target {
-            if let Some(index) = self
-                .rendered_stories
-                .borrow()
-                .iter()
-                .position(|s| s.id == id)
-            {
+            if let Some(index) = self.rendered_stories.snapshot().iter().position(|value| {
+                value
+                    .as_ref()
+                    .and_then(|v| v.downcast_ref::<HnItem>())
+                    .is_some_and(|item| item.id == id)
+            }) {
                 self.get_control::<ListBox>("Stories")
                     .scroll_into_view(index as i32);
             }
