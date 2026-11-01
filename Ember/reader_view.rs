@@ -874,10 +874,7 @@ impl ReaderView {
         self.label("FeedTitle").set_text(Some(title));
         self.label("FeedSummary").set_text(Some("Updating…"));
         // Refresh a local collection without discarding already loaded pages.
-        let restore = self.restore_browse_window();
-        let local_page_size = if let Some((size, _)) = restore {
-            size
-        } else if offset == 0 {
+        let local_page_size = if offset == 0 {
             self.stories.borrow().len().max(30)
         } else {
             30
@@ -1002,26 +999,6 @@ impl ReaderView {
                         }
                         view.search_story_ids.borrow_mut().extend(story_ids);
                         view.accept_items(items, offset, next, total, source, warning);
-                        if let Some((_, position)) = restore {
-                            let target = view.downgrade();
-                            Dispatcher::ui_thread().post_local(
-                                move || {
-                                    if let Some(v) = target
-                                        .upgrade()
-                                        .filter(|v| v.feed_generation.get() == generation)
-                                    {
-                                        if let Some(scroll) = v
-                                            .get_control::<ListBox>("Stories")
-                                            .scroll()
-                                            .and_then(|s| s.cast::<ScrollViewer>())
-                                        {
-                                            scroll.set_offset(position);
-                                        }
-                                    }
-                                },
-                                DispatcherPriority::LOADED,
-                            );
-                        }
                     }
                     Err(error) => {
                         view.label("FeedSummary")
@@ -1741,7 +1718,7 @@ impl ReaderView {
                         crate::thread_view::restore_anchor(control, origin);
                     }
                     if restore.is_none() || restore == self.selected.get() {
-                        crate::thread_view::focus_reply_scope(control);
+                        crate::thread_view::focus_thread_tool(control, None, "NewReplyFilter");
                     }
                 }
             }
@@ -1755,7 +1732,7 @@ impl ReaderView {
                     }
                     drop(state);
                     self.changed();
-                    self.render_thread();
+                    self.render_thread_focusing(Some(id), "FoldReply");
                 }
             }
             ThreadAction::FocusReading => self.set_focus_reading(true),
@@ -1791,9 +1768,15 @@ impl ReaderView {
             }
             ThreadAction::Sort(sort) => {
                 self.thread_sort.set(sort);
-                self.render_thread();
+                self.render_thread_focusing(None, "ThreadSort");
             }
             ThreadAction::GoToItem(id) => self.open_item_internal(id, true),
+        }
+    }
+    fn render_thread_focusing(&self, item: Option<u64>, name: &'static str) {
+        self.render_thread();
+        if let Some(control) = self.thread_control.borrow().as_ref() {
+            crate::thread_view::focus_thread_tool(control, item, name);
         }
     }
     fn toggle_collapse_all(&self) {
@@ -1810,7 +1793,7 @@ impl ReaderView {
         }
         drop(state);
         self.changed();
-        self.render_thread();
+        self.render_thread_focusing(None, "FoldAll");
     }
     fn toggle_story_flag(&self, id: u64, flag: StoryFlag) {
         if !self.state_ready.get() {

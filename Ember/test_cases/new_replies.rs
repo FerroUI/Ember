@@ -78,3 +78,66 @@ fn return_visit_shows_new_nested_replies_without_changing_folded_branches() {
     assert!(saved.items[&1001].seen_comments.contains(&2002));
     window.close();
 }
+
+#[test]
+fn keyboard_folding_and_sorting_keep_focus_on_the_replacement_control() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    use ferroui_controls::ComboBox;
+    let (shell, window, view) = start(
+        1024.0,
+        820.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    click_in_view(&shell, &window, &first_story(&window));
+    let list = || {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<ListBox>())
+            .find(|list| list.classes().contains("thread-list"))
+            .unwrap()
+    };
+    let tool = |row: i32, name: &str| {
+        list()
+            .container_from_index(row)
+            .unwrap()
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<Control>())
+            .find(|c| c.name().as_deref() == Some(name))
+            .unwrap()
+    };
+    let key = |c: &Control, key| {
+        let mut event = KeyEventArgs::new();
+        event.key = key;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        c.raise_event(&event);
+        for _ in 0..4 {
+            shell.settle();
+        }
+    };
+
+    // Both top-level fixture comments have one child. A global name lookup
+    // would focus Lin's first disclosure when it was Mira's control that changed.
+    let second = tool(3, "FoldReply");
+    second.focus();
+    key(&second, Key::Enter);
+    let expand = tool(3, "FoldReply");
+    assert!(expand.is_focused());
+    assert_eq!(
+        AutomationProperties::get_name(&expand).as_deref(),
+        Some("Expand comment and 1 reply")
+    );
+    key(&expand, Key::Enter);
+    assert!(tool(3, "FoldReply").is_focused());
+    let sort = tool(0, "ThreadSort");
+    sort.focus();
+    key(&sort, Key::Down);
+    let sorted = tool(0, "ThreadSort").cast::<ComboBox>().unwrap();
+    assert!(sorted.is_focused());
+    assert_eq!(sorted.selected_index(), 1);
+    let bulk = tool(0, "FoldAll");
+    bulk.focus();
+    key(&bulk, Key::Enter);
+    assert!(tool(0, "FoldAll").is_focused());
+    assert_eq!(list().items().count(), 3);
+    window.close();
+}

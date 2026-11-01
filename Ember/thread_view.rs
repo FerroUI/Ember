@@ -464,17 +464,42 @@ fn reveal_index(list: &Ref<ListBox>, index: i32, focus_row: bool) {
     }
 }
 
-pub(crate) fn focus_reply_scope(control: &Control) {
-    let weak = control.to_ref().downgrade();
+/// Rebuilds replace both virtual containers and their controls. Look up a disclosure by
+/// comment ID so a recycled row cannot receive focus on behalf of its former item.
+pub(crate) fn focus_thread_tool(control: &Control, item: Option<u64>, name: &'static str) {
+    let Some(list) = conversation_list(control) else {
+        return;
+    };
+    let weak = list.downgrade();
     Dispatcher::ui_thread().post_local(
         move || {
-            if let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) {
-                if let Some(button) = list
+            let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) else {
+                return;
+            };
+            let index = match item {
+                None => 0,
+                Some(id) => {
+                    let Some(index) = list.tag().and_then(|tag| {
+                        tag.downcast_ref::<ThreadAnchors>()?
+                            .indices
+                            .get(&id)
+                            .copied()
+                    }) else {
+                        return;
+                    };
+                    index
+                }
+            };
+            if list.container_from_index(index).is_none() {
+                list.scroll_into_view(index);
+            }
+            if let Some(row) = list.container_from_index(index) {
+                if let Some(tool) = row
                     .get_visual_descendants()
-                    .filter_map(|v| v.cast::<Button>())
-                    .find(|button| button.name().as_deref() == Some("NewReplyFilter"))
+                    .filter_map(|v| v.cast::<Control>())
+                    .find(|tool| tool.name().as_deref() == Some(name))
                 {
-                    button.focus();
+                    tool.focus();
                 }
             }
         },
@@ -807,9 +832,9 @@ fn header(
         } else {
             ("Collapse all replies", "collapse")
         };
-        sort_row
-            .children()
-            .add(icon_action(label, icon, ThreadAction::ToggleAll, actions));
+        let button = icon_action(label, icon, ThreadAction::ToggleAll, actions);
+        button.set_name(Some("FoldAll".to_owned()));
+        sort_row.children().add(button);
     }
     if show_scope
         && !reading.seen.is_empty()
@@ -845,6 +870,7 @@ fn header(
 
 fn sort_control(sort: ThreadSort, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<ComboBox> {
     let sort_picker = ComboBox::new();
+    sort_picker.set_name(Some("ThreadSort".to_owned()));
     sort_picker.set_items_source(Some(ItemsSource::from_values([
         "Ranked".to_owned(),
         "Newest first".to_owned(),
@@ -976,7 +1002,7 @@ fn comment_row(
             }
         );
         let action = ThreadAction::ToggleCollapse(row.id);
-        if row.collapsed {
+        let disclosure = if row.collapsed {
             let caption = if row.child_count == 0 {
                 "Show text"
             } else {
@@ -990,15 +1016,12 @@ fn comment_row(
             };
             AutomationProperties::set_name(&expand, Some(&name));
             ToolTip::set_tip(&expand, Some(Rc::new(name)));
-            commands.children().add(expand);
+            expand
         } else {
-            commands.children().add(icon_action(
-                &format!("Collapse {count}"),
-                "chevron_up",
-                action,
-                actions,
-            ));
-        }
+            icon_action(&format!("Collapse {count}"), "chevron_up", action, actions)
+        };
+        disclosure.set_name(Some("FoldReply".to_owned()));
+        commands.children().add(disclosure);
     }
     commands
         .children()
