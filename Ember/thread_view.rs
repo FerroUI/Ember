@@ -44,6 +44,7 @@ pub enum ThreadAction {
     LoadMore,
     Sort(ThreadSort),
     GoToItem(u64),
+    OpenComment(u64),
 }
 
 #[derive(Clone)]
@@ -76,6 +77,7 @@ struct ThreadAnchors {
     /// Only matches, in display order. Context ancestors remain in the ordinary row index.
     matches: Vec<(i32, u64)>,
     current_match: Rc<Cell<Option<FindMatch>>>,
+    pending_reveal: Cell<Option<(i32, u32, bool)>>,
 }
 
 /// Comment rows already own their item data. Keep only the header/footer payload here,
@@ -187,12 +189,15 @@ pub fn build(
         kind: RowKind::Header,
         document: OnceCell::new(),
     })];
-    let mut branches = Vec::new();
+    // Index only displayed replies. Their order already includes the active sort,
+    // folds and Find/New replies scope; the API's kids array does not.
+    let mut children: BTreeMap<u64, Vec<(usize, u64)>> = BTreeMap::new();
     let mut matches = Vec::new();
     for comment in comments {
-        if comment.depth == 0 {
-            branches.push((rows.len(), comment.id));
-        }
+        children
+            .entry(comment.parent_id)
+            .or_default()
+            .push((rows.len(), comment.id));
         if comment.matches_query {
             matches.push((rows.len() as i32, comment.id));
         }
@@ -252,6 +257,7 @@ pub fn build(
         parents,
         matches,
         current_match: current_match.clone(),
+        pending_reveal: Cell::new(None),
     }) as BoxedValue));
     list.set_items_source(Some(ItemsSource::from_values(rows)));
     AutomationProperties::set_name(&list, Some("Hacker News conversation"));
@@ -304,7 +310,7 @@ pub fn build(
                         &snapshot.root,
                         &reading,
                         &query,
-                        BranchNeighbors::at(row.key, &branches),
+                        ReplyNeighbors::at(row.key, comment.parent_id, snapshot.root.id, &children),
                         &comment_actions,
                     );
                     if comment.matches_query {
@@ -413,7 +419,20 @@ impl ReadingPosition {
 pub(crate) fn viewport_position(control: &Control) -> Option<ReadingPosition> {
     let list = conversation_list(control)?;
     let tag = list.tag()?;
-    let root = tag.downcast_ref::<ThreadAnchors>()?.root;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let root = anchors.root;
+    // A complete snapshot can replace the cache preview before its scheduled
+    // layout. Its logical destination is already known even without containers.
+    if let Some((index, inset, _)) = anchors.pending_reveal.get() {
+        let item = list.items().get_at(usize::try_from(index).ok()?)?;
+        let row = item.downcast_ref::<Rc<ConversationRow>>()?;
+        let id = match &row.kind {
+            RowKind::Header => root,
+            RowKind::Comment(comment) => comment.id,
+            _ => return None,
+        };
+        return Some(ReadingPosition { item: id, inset });
+    }
     let scroll = list.scroll()?.cast::<ScrollViewer>()?;
     let height = scroll.viewport().height;
     list.get_realized_containers()
@@ -478,7 +497,18 @@ pub(crate) fn restore_position(control: &Control, position: ReadingPosition, foc
 }
 
 fn reveal_index(list: &Ref<ListBox>, index: i32, inset: u32, focus_row: bool) {
+    let Some(tag) = list.tag() else { return };
+    let Some(anchors) = tag.downcast_ref::<ThreadAnchors>() else {
+        return;
+    };
+    let request = (index, inset, focus_row);
+    anchors.pending_reveal.set(Some(request));
     let reveal = move |list: &ListBox| {
+        let anchors = tag.downcast_ref::<ThreadAnchors>().unwrap();
+        if anchors.pending_reveal.get() != Some(request) {
+            return;
+        }
+        anchors.pending_reveal.set(None);
         scroll_anchor_into_view(list, index, inset);
         if focus_row {
             if let Some(container) = list.container_from_index(index) {
@@ -701,7 +731,7 @@ fn header(
     body.children().add(title);
 
     let meta = WrapPanel::new();
-    if let Some(author) = story.by.as_ref().filter(|_| !story.deleted) {
+    if let Some(author) = visible_author(story, reading.show_dead) {
         meta.children().add(author_button(author, actions));
     }
     let mut facts = Vec::new();
@@ -959,21 +989,43 @@ fn sort_control(sort: ThreadSort, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Com
 }
 
 #[derive(Clone, Copy, Default)]
-struct BranchNeighbors {
-    previous: Option<u64>,
-    next: Option<u64>,
+struct ReplyNeighbors {
+    previous_branch: Option<u64>,
+    next_branch: Option<u64>,
+    previous_sibling: Option<u64>,
+    next_sibling: Option<u64>,
 }
 
-impl BranchNeighbors {
-    /// Top-level rows follow the active sort and Find filter. Descendants share their
-    /// branch’s neighbors, so jumping forward skips the remainder of a long exchange.
-    fn at(row: usize, branches: &[(usize, u64)]) -> Self {
-        let next = branches.partition_point(|&(index, _)| index <= row);
+impl ReplyNeighbors {
+    fn at(row: usize, parent: u64, root: u64, children: &BTreeMap<u64, Vec<(usize, u64)>>) -> Self {
+        let adjacent = |parent| {
+            let siblings = children.get(&parent).map(Vec::as_slice).unwrap_or_default();
+            let next = siblings.partition_point(|&(index, _)| index <= row);
+            (
+                next.checked_sub(2).map(|index| siblings[index].1),
+                siblings.get(next).map(|&(_, id)| id),
+            )
+        };
+        let (previous_branch, next_branch) = adjacent(root);
+        // Top-level replies already expose these same destinations as branch commands.
+        let (previous_sibling, next_sibling) = if parent == root {
+            (None, None)
+        } else {
+            adjacent(parent)
+        };
         Self {
-            previous: next.checked_sub(2).map(|index| branches[index].1),
-            next: branches.get(next).map(|&(_, id)| id),
+            previous_branch,
+            next_branch,
+            previous_sibling,
+            next_sibling,
         }
     }
+}
+
+fn visible_author(item: &HnItem, show_dead: bool) -> Option<&str> {
+    item.by
+        .as_deref()
+        .filter(|name| !name.is_empty() && !item.deleted && (!item.dead || show_dead))
 }
 
 fn is_new_reply(row: &ThreadRow, previous: &BTreeSet<u64>, show_dead: bool) -> bool {
@@ -991,7 +1043,7 @@ fn comment_row(
     root: &HnItem,
     reading: &ReadingContext,
     query: &str,
-    neighbors: BranchNeighbors,
+    neighbors: ReplyNeighbors,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let searching = !query.is_empty();
@@ -1009,15 +1061,22 @@ fn comment_row(
     let byline = WrapPanel::new();
     byline.set_vertical_alignment(VerticalAlignment::Center);
     if let Some(item) = &row.item {
-        if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
+        if let Some(author) = visible_author(item, reading.show_dead) {
             let button = author_button(author, actions);
             if row.matches_query && author.to_lowercase().contains(query) {
                 button.classes().add("active");
                 AutomationProperties::set_item_status(&button, Some("Author matches search"));
             }
             byline.children().add(button);
-            if root.by.as_ref() == Some(author) {
-                byline.children().add(badge("OP"));
+            if matches!(
+                root.kind,
+                Some(ItemKind::Story | ItemKind::Poll | ItemKind::Job)
+            ) && visible_author(root, reading.show_dead) == Some(author)
+            {
+                let op = badge("OP");
+                AutomationProperties::set_name(&op, Some("Original poster"));
+                ToolTip::set_tip(&op, Some(Rc::new("Original poster".to_owned())));
+                byline.children().add(op);
             }
         }
         // A timestamp doubles as the stable comment link, as on Hacker News.
@@ -1096,7 +1155,7 @@ fn comment_row(
     }
     commands
         .children()
-        .add(comment_menu(row, root.id, neighbors, actions));
+        .add(comment_menu(row, root, neighbors, actions));
     line.children().add(commands);
     body.children().add(line);
 
@@ -1174,16 +1233,17 @@ fn comment_row(
             actions,
         ));
     }
+    let description = match &row.item {
+        None => "Unavailable comment".to_owned(),
+        Some(item) if item.deleted => "Deleted comment".to_owned(),
+        Some(item) if item.dead && !reading.show_dead => "Dead comment".to_owned(),
+        Some(item) => visible_author(item, reading.show_dead)
+            .map(|name| format!("Comment by {name}"))
+            .unwrap_or_else(|| "Comment".to_owned()),
+    };
     AutomationProperties::set_name(
         &outer,
-        Some(&format!(
-            "Comment by {}, level {}",
-            row.item
-                .as_ref()
-                .map(HnItem::author)
-                .unwrap_or("unavailable"),
-            row.depth + 1
-        )),
+        Some(&format!("{description}, level {}", row.depth + 1)),
     );
     let branch = Border::new();
     // Preserve reading width on phones, even when HN threads are dozens of levels deep.
@@ -1210,8 +1270,8 @@ fn comment_row(
 /// Populate on first open so scrolling a long thread need only realize the overflow trigger.
 fn comment_menu(
     row: &ThreadRow,
-    root: u64,
-    neighbors: BranchNeighbors,
+    root: &HnItem,
+    neighbors: ReplyNeighbors,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Button> {
     let more = widgets::icon_button("More comment actions", "more");
@@ -1224,6 +1284,12 @@ fn comment_menu(
         .as_ref()
         .is_some_and(|item| !item.deleted && !item.dead);
     let parent = (row.depth > 0).then_some(row.parent_id);
+    let root_id = root.id;
+    let back_label = match root.kind {
+        Some(ItemKind::Comment) => "Back to opening comment",
+        Some(ItemKind::Poll) => "Back to poll",
+        _ => "Back to story",
+    };
     menu.opening(move |_| {
         let Some(menu) = weak.upgrade() else {
             return;
@@ -1236,6 +1302,13 @@ fn comment_menu(
             "Copy comment link",
             "copy",
             ThreadAction::CopyCommentLink(id),
+            &actions,
+        );
+        menu_action(
+            &menu,
+            "Open comment thread",
+            "chat",
+            ThreadAction::OpenComment(id),
             &actions,
         );
         if can_reply {
@@ -1256,7 +1329,23 @@ fn comment_menu(
                 &actions,
             );
         }
-        if let Some(previous) = neighbors.previous {
+        for (target, label, icon) in [
+            (
+                neighbors.previous_sibling,
+                "Previous reply to this parent",
+                "chevron_up",
+            ),
+            (
+                neighbors.next_sibling,
+                "Next reply to this parent",
+                "chevron_down",
+            ),
+        ] {
+            if let Some(target) = target {
+                menu_action(&menu, label, icon, ThreadAction::GoToItem(target), &actions);
+            }
+        }
+        if let Some(previous) = neighbors.previous_branch {
             menu_action(
                 &menu,
                 "Previous top-level comment",
@@ -1265,7 +1354,7 @@ fn comment_menu(
                 &actions,
             );
         }
-        if let Some(next) = neighbors.next {
+        if let Some(next) = neighbors.next_branch {
             menu_action(
                 &menu,
                 "Next top-level comment",
@@ -1276,9 +1365,9 @@ fn comment_menu(
         }
         menu_action(
             &menu,
-            "Back to story",
+            back_label,
             "back",
-            ThreadAction::GoToItem(root),
+            ThreadAction::GoToItem(root_id),
             &actions,
         );
     });
@@ -2023,6 +2112,7 @@ mod tests {
                 depth: 0,
                 item: Some(HnItem {
                     id: 2001,
+                    by: Some("hidden-author".to_owned()),
                     text: Some("<p>retained source must stay hidden</p>".into()),
                     deleted,
                     dead,
@@ -2046,7 +2136,7 @@ mod tests {
                     find_foreground: None,
                 },
                 "",
-                BranchNeighbors::default(),
+                ReplyNeighbors::default(),
                 &actions,
             );
             let text = control
@@ -2057,6 +2147,10 @@ mod tests {
                 .join("\n");
             assert!(text.contains(placeholder));
             assert!(!text.contains("retained source"));
+            assert!(!text.contains("hidden-author"));
+            assert!(!AutomationProperties::get_name(&control)
+                .unwrap()
+                .contains("hidden-author"));
             assert!(document.get().is_none(), "hidden HTML must not be parsed");
         }
     }

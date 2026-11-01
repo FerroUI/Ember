@@ -81,8 +81,19 @@ enum DetailRoute {
     More,
 }
 
+const INITIAL_THREAD_BUDGET: usize = 120;
+
+#[derive(Clone, Copy)]
+struct ThreadVisit {
+    root: u64,
+    source_row: u64,
+    pending_comment: Option<u64>,
+    budget: usize,
+}
+
 enum HistoryEntry {
     Route(DetailRoute),
+    Thread(ThreadVisit),
     Search(Box<crate::search_panel::Draft>),
 }
 
@@ -167,15 +178,20 @@ pub fn navigate_location(location: &str) {
                     // Traversing a fragment can deliver both popstate and hashchange.
                     return;
                 }
-                let previous = view.history.borrow().iter().rposition(
-                    |entry| matches!(entry, HistoryEntry::Route(saved) if saved == &route),
+                let previous = view.history.borrow().iter().enumerate().rev().find_map(
+                    |(index, entry)| match entry {
+                        HistoryEntry::Thread(visit) if visit.root == id => Some((index, *visit)),
+                        _ => None,
+                    },
                 );
-                if let Some(previous) = previous {
+                if let Some((index, visit)) = previous {
                     view.remember_thread();
-                    view.history.borrow_mut().truncate(previous);
+                    view.history.borrow_mut().truncate(index);
                     view.detail.replace(DetailRoute::Welcome);
+                    view.present_discussion(visit, false);
+                } else {
+                    view.open_item_internal(id, false);
                 }
-                view.open_item_internal(id, false);
             } else if *view.detail.borrow() != DetailRoute::Welcome {
                 view.return_to_feed(false);
             }
@@ -319,7 +335,7 @@ impl ReaderView {
             storage_request: Cell::new(0),
             pruned_after_feed: Cell::new(false),
             library_generation: Cell::new(0),
-            thread_budget: Cell::new(120),
+            thread_budget: Cell::new(INITIAL_THREAD_BUDGET),
             thread_sort: Cell::new(ThreadSort::Ranked),
             find_revision: Cell::new(0),
             applied_find_query: RefCell::new(String::new()),
@@ -1722,11 +1738,24 @@ impl ReaderView {
         self.open_discussion(id, id, publish);
     }
     fn open_discussion(&self, row: u64, id: u64, publish: bool) {
-        self.selected_row.set(Some(row));
-        self.pending_comment.set((row != id).then_some(row));
+        self.present_discussion(
+            ThreadVisit {
+                root: id,
+                source_row: row,
+                pending_comment: (row != id).then_some(row),
+                budget: INITIAL_THREAD_BUDGET,
+            },
+            publish,
+        );
+    }
+    fn present_discussion(&self, visit: ThreadVisit, publish: bool) {
+        let id = visit.root;
+        // Capture the outgoing visit before replacing its cursor or load window.
         self.navigate(DetailRoute::Thread(id));
+        self.selected_row.set(Some(visit.source_row));
+        self.pending_comment.set(visit.pending_comment);
         self.selected.set(Some(id));
-        self.thread_budget.set(120);
+        self.thread_budget.set(visit.budget);
         self.label("DetailEyebrow").set_text(Some("DISCUSSION"));
         self.thread.borrow_mut().take();
         self.thread_control.borrow_mut().take();
@@ -2089,7 +2118,9 @@ impl ReaderView {
                 self.thread_sort.set(sort);
                 self.render_thread_focusing(None, "ThreadSort");
             }
-            ThreadAction::GoToItem(id) => self.open_item_internal(id, true),
+            ThreadAction::GoToItem(id) | ThreadAction::OpenComment(id) => {
+                self.open_item_internal(id, true)
+            }
         }
     }
     fn read_in_context(&self, id: u64) {
@@ -2399,9 +2430,15 @@ impl ReaderView {
         }
         let old = self.detail.replace(route.clone());
         if old != route && old != DetailRoute::Welcome {
-            let entry = match self.search_form.borrow().as_ref() {
-                Some(form) => HistoryEntry::Search(Box::new((form.capture)())),
-                None => HistoryEntry::Route(old),
+            let entry = match (old, self.search_form.borrow().as_ref()) {
+                (DetailRoute::Thread(id), _) => HistoryEntry::Thread(ThreadVisit {
+                    root: id,
+                    source_row: self.selected_row.get().unwrap_or(id),
+                    pending_comment: self.pending_comment.get(),
+                    budget: self.thread_budget.get(),
+                }),
+                (_, Some(form)) => HistoryEntry::Search(Box::new((form.capture)())),
+                (old, None) => HistoryEntry::Route(old),
             };
             self.history.borrow_mut().push(entry);
         }
@@ -2539,6 +2576,10 @@ impl ReaderView {
         // Restoring a route must not put the outgoing page back onto the history stack.
         self.detail.replace(DetailRoute::Welcome);
         let route = match route {
+            Some(HistoryEntry::Thread(visit)) => {
+                self.present_discussion(visit, true);
+                return;
+            }
             Some(HistoryEntry::Search(draft)) => {
                 self.present_search_form(None, None, Some(*draft));
                 return;
