@@ -1499,21 +1499,7 @@ impl ReaderView {
         if self.selected.get() != Some(id) || *self.detail.borrow() != DetailRoute::Thread(id) {
             return;
         }
-        let summary = if thread.root.kind == Some(ember_core::ItemKind::Job) {
-            "Job listing".to_owned()
-        } else {
-            let count = thread.root.descendants.unwrap_or_else(|| {
-                thread
-                    .items
-                    .values()
-                    .filter(|item| {
-                        item.id != id && item.kind == Some(ember_core::ItemKind::Comment)
-                    })
-                    .count() as u64
-            });
-            let noun = if count == 1 { "comment" } else { "comments" };
-            format!("{count} {noun}")
-        };
+        let summary = crate::thread_view::discussion_summary(&thread);
         let headline = crate::thread_view::discussion_title(
             &thread.root,
             self.state.borrow().preferences.show_dead,

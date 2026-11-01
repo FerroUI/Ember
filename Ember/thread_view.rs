@@ -187,7 +187,7 @@ pub fn build(
             document,
         }));
     }
-    if rows.len() == 1 && snapshot.root.kind != Some(ItemKind::Job) {
+    if rows.len() == 1 && !matches!(snapshot.root.kind, Some(ItemKind::Job | ItemKind::Pollopt)) {
         rows.push(Rc::new(ConversationRow {
             key: rows.len(),
             kind: RowKind::Empty,
@@ -486,13 +486,61 @@ fn scroll_anchor_into_view(list: &ListBox, index: i32) {
     }
 }
 
+/// The pinned detail header stays meaningful for standalone comments and poll options too.
+pub(crate) fn discussion_summary(snapshot: &ThreadSnapshot) -> String {
+    let root = &snapshot.root;
+    match root.kind {
+        Some(ItemKind::Job) => return "Job listing".to_owned(),
+        Some(ItemKind::Pollopt) => {
+            return root
+                .score
+                .and_then(|n| u64::try_from(n).ok())
+                .map(vote_count)
+                .unwrap_or_else(|| "Poll result".to_owned());
+        }
+        _ => {}
+    }
+    let count = root.descendants.unwrap_or_else(|| {
+        snapshot
+            .items
+            .values()
+            .filter(|item| item.id != root.id && item.kind == Some(ItemKind::Comment))
+            .count() as u64
+    });
+    let noun = match (root.kind == Some(ItemKind::Comment), count == 1) {
+        (true, true) => "reply",
+        (true, false) => "replies",
+        (false, true) => "comment",
+        (false, false) => "comments",
+    };
+    if root.descendants.is_none() && !snapshot.complete {
+        format!("{count} {noun} loaded")
+    } else {
+        format!("{count} {noun}")
+    }
+}
+
 pub(crate) fn discussion_title(story: &HnItem, show_dead: bool) -> String {
     if story.deleted {
         "[deleted]".to_owned()
     } else if story.dead && !show_dead {
         "[dead]".to_owned()
+    } else if let Some(title) = story
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
+        HtmlDocument::parse(title).plain_text()
     } else {
-        HtmlDocument::parse(story.title_text()).plain_text()
+        match story.kind {
+            Some(ItemKind::Comment) => story
+                .by
+                .as_ref()
+                .map(|author| format!("Comment by {author}"))
+                .unwrap_or_else(|| "Comment".to_owned()),
+            Some(ItemKind::Pollopt) => "Poll option".to_owned(),
+            _ => story.title_text().to_owned(),
+        }
     }
 }
 
@@ -512,7 +560,7 @@ fn header(
     } else {
         match story.kind {
             Some(ItemKind::Comment) => "Hacker News comment",
-            Some(ItemKind::Poll) => "Hacker News poll",
+            Some(ItemKind::Poll | ItemKind::Pollopt) => "Hacker News poll",
             Some(ItemKind::Job) => "Hacker News job",
             _ => "Hacker News",
         }
@@ -544,10 +592,16 @@ fn header(
         facts.push(relative_time(story.time, crate::services::now()));
     }
     if let Some(score) = story.score {
-        facts.push(format!(
-            "{score} {}",
-            if score == 1 { "point" } else { "points" }
-        ));
+        if story.kind == Some(ItemKind::Pollopt) {
+            if let Ok(votes) = u64::try_from(score) {
+                facts.push(vote_count(votes));
+            }
+        } else {
+            facts.push(format!(
+                "{score} {}",
+                if score == 1 { "point" } else { "points" }
+            ));
+        }
     }
     if !facts.is_empty() {
         let metadata = muted(&facts.join(" · "));
@@ -563,6 +617,21 @@ fn header(
             "Read article",
             "open",
             ThreadAction::OpenUrl(url),
+            actions,
+        ));
+    }
+    if let Some(parent) = story.parent {
+        primary.children().add(labelled_action(
+            "View parent",
+            "up",
+            ThreadAction::GoToItem(parent),
+            actions,
+        ));
+    } else if let Some(poll) = story.poll {
+        primary.children().add(labelled_action(
+            "View poll",
+            "up",
+            ThreadAction::GoToItem(poll),
             actions,
         ));
     }
@@ -588,7 +657,10 @@ fn header(
         ThreadAction::OpenUrl(story.discussion_url()),
         actions,
     );
-    if story.kind != Some(ItemKind::Job) && !story.deleted {
+    if !matches!(story.kind, Some(ItemKind::Job | ItemKind::Pollopt))
+        && !story.deleted
+        && !story.dead
+    {
         menu_action(
             &menu,
             "Vote on HN",
@@ -601,15 +673,6 @@ fn header(
             "Reply on HN",
             "reply",
             ThreadAction::Reply(story.id),
-            actions,
-        );
-    }
-    if let Some(parent) = story.parent {
-        menu_action(
-            &menu,
-            "Open parent",
-            "arrow_up",
-            ThreadAction::GoToItem(parent),
             actions,
         );
     }
@@ -656,7 +719,7 @@ fn header(
         body.children()
             .add(poll_options(snapshot, reading, actions));
     }
-    if story.kind == Some(ItemKind::Job) && story.kids.is_empty() {
+    if matches!(story.kind, Some(ItemKind::Job | ItemKind::Pollopt)) && story.kids.is_empty() {
         return body.upcast();
     }
     let separator = Border::new();
@@ -672,7 +735,14 @@ fn header(
     let caption = story
         .descendants
         .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" }))
-        .unwrap_or_else(|| "Conversation".to_owned());
+        .unwrap_or_else(|| {
+            if story.kind == Some(ItemKind::Comment) {
+                "Replies"
+            } else {
+                "Conversation"
+            }
+            .to_owned()
+        });
     let heading = label(&caption, 17.0);
     AutomationProperties::set_heading_level(&heading, 2);
     heading.set_font_weight(FontWeight::SemiBold);
@@ -1403,6 +1473,99 @@ mod tests {
                 ThreadAction::MuteDomain
             ]
         ));
+    }
+
+    #[test]
+    fn direct_comment_and_poll_option_links_identify_their_item_and_open_its_context() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let target = Rc::new(Cell::new(0));
+        let observe = target.clone();
+        let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(move |action| {
+            if let ThreadAction::GoToItem(id) = action {
+                observe.set(id);
+            }
+        });
+        let reading = ReadingContext {
+            hidden: false,
+            seen: BTreeSet::new(),
+            show_dead: false,
+            typography: RenderOptions::default(),
+            find_foreground: None,
+        };
+        for (root, title, name, expected) in [
+            (
+                HnItem {
+                    kind: Some(ItemKind::Comment),
+                    by: Some("maker".to_owned()),
+                    parent: Some(4),
+                    ..Default::default()
+                },
+                "Comment by maker",
+                "View parent",
+                4,
+            ),
+            (
+                HnItem {
+                    kind: Some(ItemKind::Pollopt),
+                    poll: Some(9),
+                    score: Some(1),
+                    ..Default::default()
+                },
+                "Poll option",
+                "View poll",
+                9,
+            ),
+        ] {
+            assert_eq!(discussion_title(&root, false), title);
+            let snapshot = ThreadSnapshot {
+                root,
+                complete: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                discussion_summary(&snapshot),
+                if snapshot.root.kind == Some(ItemKind::Pollopt) {
+                    "1 vote"
+                } else {
+                    "0 replies"
+                }
+            );
+            let content = header(
+                &ThreadContext::from(&snapshot),
+                &reading,
+                ThreadSort::Ranked,
+                None,
+                &actions,
+            );
+            let button = content
+                .get_logical_descendants()
+                .filter_map(|v| v.cast::<Button>())
+                .find(|button| AutomationProperties::get_name(button).as_deref() == Some(name))
+                .unwrap();
+            button.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+            assert_eq!(target.get(), expected);
+            if snapshot.root.kind == Some(ItemKind::Pollopt) {
+                assert!(content
+                    .get_logical_descendants()
+                    .filter_map(|v| v.cast::<TextBlock>())
+                    .any(|text| text.text().as_deref() == Some("1 vote")));
+                let list = build(
+                    &snapshot,
+                    &ReaderState::default(),
+                    "",
+                    ThreadSort::Ranked,
+                    actions.clone(),
+                )
+                .cast::<ListBox>()
+                .unwrap();
+                assert_eq!(
+                    list.items().count(),
+                    1,
+                    "a poll option has no reply invitation"
+                );
+            }
+        }
     }
 
     #[test]
