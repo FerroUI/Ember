@@ -27,6 +27,7 @@ use std::rc::Rc;
 pub enum ThreadAction {
     OpenUrl(String),
     Profile(String),
+    SearchDiscussion(u64),
     ToggleCollapse(u64),
     ToggleAll,
     ShowNewReplies(bool),
@@ -717,6 +718,15 @@ fn header(
         ThreadAction::FocusReading,
         actions,
     );
+    if matches!(story.kind, Some(ItemKind::Story | ItemKind::Poll)) {
+        menu_action(
+            &menu,
+            "Search this discussion",
+            "search",
+            ThreadAction::SearchDiscussion(story.id),
+            actions,
+        );
+    }
     menu_action(
         &menu,
         "Open discussion on HN",
@@ -1535,6 +1545,7 @@ mod tests {
         let snapshot = ThreadSnapshot {
             root: HnItem {
                 id: 42,
+                kind: Some(ItemKind::Story),
                 url: Some("https://example.com/article".into()),
                 ..Default::default()
             },
@@ -1580,6 +1591,7 @@ mod tests {
             ("Reply on HN", 0),
             ("Restore to feed", 1),
             ("Mute example.com", 2),
+            ("Search this discussion", 3),
         ] {
             let entry = entries
                 .iter()
@@ -1598,7 +1610,8 @@ mod tests {
             [
                 ThreadAction::Reply(42),
                 ThreadAction::Hide,
-                ThreadAction::MuteDomain
+                ThreadAction::MuteDomain,
+                ThreadAction::SearchDiscussion(42)
             ]
         ));
     }

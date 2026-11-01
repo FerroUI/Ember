@@ -1441,6 +1441,11 @@ impl ReaderView {
             .map(|v| v.root.clone())
     }
     fn open_item(&self, row: u64) {
+        // A scoped hit can be far beyond the locally loaded part of its thread.
+        if matches!(&*self.feed.borrow(), FeedRoute::Search(query) if query.story_id.is_some()) {
+            self.open_item_internal(row, true);
+            return;
+        }
         let id = self
             .search_story_ids
             .borrow()
@@ -1697,6 +1702,7 @@ impl ReaderView {
         match action {
             ThreadAction::OpenUrl(url) => self.open_url(&url),
             ThreadAction::Profile(user) => self.show_profile(user),
+            ThreadAction::SearchDiscussion(id) => self.open_search_form(None, Some(id)),
             ThreadAction::ShowNewReplies(enabled) => {
                 if enabled {
                     let origin = self
@@ -2241,13 +2247,16 @@ impl ReaderView {
         }
     }
     fn show_search(&self) {
-        self.open_search_form(None);
+        self.open_search_form(None, None);
     }
     fn show_profile_lookup(&self, name: &str) {
-        self.open_search_form(Some(name));
+        self.open_search_form(Some(name), None);
     }
-    fn open_search_form(&self, profile_lookup: Option<&str>) {
-        if profile_lookup.is_none() && *self.detail.borrow() == DetailRoute::Search {
+    fn open_search_form(&self, profile_lookup: Option<&str>, discussion: Option<u64>) {
+        if profile_lookup.is_none()
+            && discussion.is_none()
+            && *self.detail.borrow() == DetailRoute::Search
+        {
             if let Some(query) = self
                 .get_control::<ContentControl>("DetailHost")
                 .get_visual_descendants()
@@ -2261,8 +2270,13 @@ impl ReaderView {
         self.navigate(DetailRoute::Search);
         self.label("DetailEyebrow").set_text(Some("DISCOVER"));
         self.label("DetailTitle").set_text(Some("Search"));
-        let query = match &*self.feed.borrow() {
-            FeedRoute::Search(q) => q.clone(),
+        let query = match (discussion, &*self.feed.borrow()) {
+            (Some(id), _) => SearchQuery {
+                story_id: Some(id),
+                kind: SearchKind::Comments,
+                ..Default::default()
+            },
+            (_, FeedRoute::Search(q)) => q.clone(),
             _ => SearchQuery {
                 query: self.textbox("SearchBox").text().unwrap_or_default(),
                 ..Default::default()

@@ -83,6 +83,36 @@ pub fn build(
         query.author.as_deref().unwrap_or(""),
         "Any author",
     );
+    let discussion = field(
+        &filters,
+        "Discussion",
+        &query.story_id.map(|id| id.to_string()).unwrap_or_default(),
+        "Item ID or Hacker News discussion link",
+    );
+    let previous_kind = Rc::new(std::cell::Cell::new(None));
+    let selector = kind.downgrade();
+    let source = discussion.downgrade();
+    let constrain_kind = move || {
+        let (Some(selector), Some(source)) = (selector.upgrade(), source.upgrade()) else {
+            return;
+        };
+        let scoped = source.text().is_some_and(|value| !value.trim().is_empty());
+        if scoped && previous_kind.get().is_none() {
+            previous_kind.set(Some(selector.selected_index()));
+            selector.set_selected_index(1);
+        } else if !scoped {
+            if let Some(index) = previous_kind.take() {
+                selector.set_selected_index(index);
+            }
+        }
+        selector.set_is_enabled(!scoped);
+    };
+    constrain_kind();
+    discussion.property_changed(move |event| {
+        if event.property() == TextBox::text_property().as_property() {
+            constrain_kind();
+        }
+    });
     let (score, replies) = field_pair(&filters);
     let points = field(
         &score,
@@ -174,7 +204,12 @@ pub fn build(
     author.set_max_length(65);
     let summary = text("", 12.0, true);
     search.children().add(summary.clone());
-    let advanced = [author.clone(), points.clone(), comments.clone()];
+    let advanced = [
+        author.clone(),
+        discussion.clone(),
+        points.clone(),
+        comments.clone(),
+    ];
     let values = advanced.each_ref().map(|field| field.downgrade());
     let weak_time = time.downgrade();
     let clear = reset.downgrade();
@@ -183,7 +218,10 @@ pub fn build(
             return;
         };
         let mut parts = Vec::new();
-        for (field, prefix) in values.iter().zip(["Author", "Points ≥", "Comments ≥"]) {
+        for (field, prefix) in values
+            .iter()
+            .zip(["Author", "Discussion", "Points ≥", "Comments ≥"])
+        {
             let Some(field) = field.upgrade() else {
                 continue;
             };
@@ -219,6 +257,7 @@ pub fn build(
     {
         let fields = [
             author.clone(),
+            discussion.clone(),
             points.clone(),
             comments.clone(),
             from_date.clone(),
@@ -282,6 +321,12 @@ pub fn build(
             },
         );
         q.author = (!value.is_empty()).then(|| value.to_owned());
+        q.story_id = check
+            .check(
+                &discussion,
+                discussion_scope(&discussion.text().unwrap_or_default()),
+            )
+            .flatten();
         q.min_points = check
             .check(&points, optional_number(&points, "Minimum points"))
             .flatten();
@@ -496,6 +541,22 @@ fn bind_submit(scope: &StackPanel, button: &Button, submit: Rc<dyn Fn()>) {
             }
         },
     );
+}
+
+fn discussion_scope(value: &str) -> Result<Option<u64>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let id = match HnDestination::from_link(value) {
+        Some(HnDestination::Discussion(id)) => Some(id),
+        _ if value.bytes().all(|c| c.is_ascii_digit()) => {
+            value.parse::<u64>().ok().filter(|id| *id > 0)
+        }
+        _ => None,
+    };
+    id.map(Some)
+        .ok_or_else(|| "Enter a positive item ID or a Hacker News discussion link.".to_owned())
 }
 
 fn has_advanced_filters(query: &SearchQuery) -> bool {
