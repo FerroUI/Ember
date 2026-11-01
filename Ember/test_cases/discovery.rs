@@ -89,3 +89,36 @@ fn missing_profile_can_reopen_and_correct_the_username_on_a_phone() {
     assert!(action(&view, "All stories").is_effectively_visible());
     window.close();
 }
+
+#[test]
+fn explore_library_counts_update_when_storage_finishes_opening() {
+    let inner = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    state.mark_read(1001, 1);
+    ready(inner.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let store = Rc::new(DelayedStartupStore {
+        inner,
+        started: Cell::new(false),
+        released: Cell::new(false),
+        waker: RefCell::new(None),
+        fail_read: false,
+    });
+    let (shell, window, view) = start(390.0, 844.0, store.clone(), Rc::new(Cell::new(false)));
+    click(&shell, &window, &view.get_control::<Button>("MobileMore"));
+    let history = action(&view, "Reading history");
+    assert!(AutomationProperties::get_item_status(&history)
+        .unwrap_or_default()
+        .is_empty());
+    store.release();
+    for _ in 0..8 {
+        shell.settle();
+    }
+    assert_eq!(
+        AutomationProperties::get_item_status(&history).as_deref(),
+        Some("1 item")
+    );
+    click_in_view(&shell, &window, &history);
+    assert_eq!(title(&view), "Reading history");
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 1);
+    window.close();
+}

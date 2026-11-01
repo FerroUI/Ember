@@ -185,6 +185,7 @@ pub struct ReaderView {
     detail_generation: Cell<u64>,
     feed_load: Cell<FeedLoad>,
     empty_action: Cell<Option<EmptyAction>>,
+    explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     downloaded_only: Cell<bool>,
     thread: RefCell<Option<ThreadSnapshot>>,
     thread_control: RefCell<Option<Ref<Control>>>,
@@ -255,6 +256,7 @@ impl ReaderView {
             detail_generation: Cell::new(0),
             feed_load: Cell::new(FeedLoad::Ready),
             empty_action: Cell::new(None),
+            explore_counts: RefCell::new(Vec::new()),
             downloaded_only: Cell::new(false),
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
@@ -683,6 +685,7 @@ impl ReaderView {
                             crate::theme::apply(&state.preferences);
                             *view.state.borrow_mut() = state;
                             view.state_ready.set(true);
+                            view.update_explore_counts();
                         }
                         Err(error) => view.status(&format!(
                             "Reading state could not be restored: {error}. Saving is paused to protect your existing data. Import a backup in Settings to recover it."
@@ -735,6 +738,7 @@ impl ReaderView {
         if !self.state_ready.get() {
             return;
         }
+        self.update_explore_counts();
         self.revision.set(self.revision.get().wrapping_add(1));
         self.persist();
     }
@@ -1936,6 +1940,7 @@ impl ReaderView {
         self.animate_detail();
     }
     fn configure_detail(&self) {
+        self.explore_counts.borrow_mut().clear();
         let welcome = *self.detail.borrow() == DetailRoute::Welcome;
         self.get_control::<ScrollViewer>("WelcomePane")
             .set_is_visible(welcome);
@@ -2117,7 +2122,10 @@ impl ReaderView {
             profile_lookup,
             Rc::new(move |term| {
                 if let Some(v) = history.upgrade() {
-                    v.state.borrow_mut().recent_searches.retain(|saved| saved != term);
+                    v.state
+                        .borrow_mut()
+                        .recent_searches
+                        .retain(|saved| saved != term);
                     v.changed();
                 }
             }),

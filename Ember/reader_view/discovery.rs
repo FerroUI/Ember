@@ -2,6 +2,12 @@ use super::*;
 use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
 use ferroui_controls::primitives::UniformGrid;
 
+pub(super) struct ExploreCount {
+    route: FeedRoute,
+    button: Ref<Button>,
+    value: Ref<TextBlock>,
+}
+
 fn page() -> Ref<StackPanel> {
     let panel = widgets::stack(10.0);
     panel.set_max_width(680.0);
@@ -47,31 +53,15 @@ impl ReaderView {
         }
         feeds.children().add(links);
         let library = widgets::section(&panel, "Your library");
-        let state = self.state.borrow();
-        let downloads = state
-            .downloaded_threads
-            .keys()
-            .filter(|&&id| state.is_saved(id))
-            .count();
-        let history = state
-            .items
-            .values()
-            .filter(|entry| entry.last_opened_at.is_some())
-            .count();
-        let hidden = state.items.values().filter(|entry| entry.hidden).count();
-        drop(state);
-        for (title, icon, count, route) in [
-            (
-                "Downloaded discussions",
-                "download",
-                downloads,
-                FeedRoute::Saved,
-            ),
-            ("Reading history", "history", history, FeedRoute::History),
-            ("Hidden stories", "eye_off", hidden, FeedRoute::Hidden),
+        let mut counters = Vec::new();
+        for (title, icon, route) in [
+            ("Downloaded discussions", "download", FeedRoute::Saved),
+            ("Reading history", "history", FeedRoute::History),
+            ("Hidden stories", "eye_off", FeedRoute::Hidden),
         ] {
+            let target = route.clone();
             let button = self.discovery_action(title, icon, move |v| {
-                if route == FeedRoute::Saved {
+                if target == FeedRoute::Saved {
                     if *v.feed.borrow() == FeedRoute::Saved {
                         v.back_to_feed(true);
                         if !v.downloaded_only.get() {
@@ -82,7 +72,7 @@ impl ReaderView {
                         v.select_feed(FeedRoute::Saved);
                     }
                 } else {
-                    v.select_feed(route.clone());
+                    v.select_feed(target.clone());
                 }
             });
             let row = Grid::new();
@@ -90,18 +80,22 @@ impl ReaderView {
                 ColumnDefinitions::parse("*,Auto").expect("library columns"),
             );
             row.children().add(widgets::nav_content(icon, title, false));
-            if self.state_ready.get() {
-                let total = widgets::muted(&count.to_string());
-                total.set_vertical_alignment(VerticalAlignment::Center);
-                Grid::set_column(&total, 1);
-                row.children().add(total);
-                AutomationProperties::set_item_status(&button, Some(&format!("{count} items")));
-            }
+            let value = widgets::muted("");
+            value.set_vertical_alignment(VerticalAlignment::Center);
+            Grid::set_column(&value, 1);
+            row.children().add(value.clone());
+            counters.push(ExploreCount {
+                route,
+                button: button.clone(),
+                value,
+            });
             button.set_content(Some(Control::boxed(&row)));
             button.set_horizontal_alignment(HorizontalAlignment::Stretch);
             button.set_horizontal_content_alignment(HorizontalAlignment::Stretch);
             library.children().add(button);
         }
+        self.explore_counts.replace(counters);
+        self.update_explore_counts();
         let tools = widgets::section(&panel, "Reader tools");
         tools.children().add(
             self.discovery_action("Appearance and settings", "settings", |v| v.show_settings()),
@@ -137,6 +131,36 @@ impl ReaderView {
                 .add(self.discovery_action(label, "open", move |v| v.open_url(url)));
         }
         self.show_content(widgets::scroll(panel.upcast()));
+    }
+
+    pub(super) fn update_explore_counts(&self) {
+        let counters = self.explore_counts.borrow();
+        if counters.is_empty() || !self.state_ready.get() {
+            return;
+        }
+        let state = self.state.borrow();
+        for counter in counters.iter() {
+            let count = match counter.route {
+                FeedRoute::Saved => state
+                    .downloaded_threads
+                    .keys()
+                    .filter(|&&id| state.is_saved(id))
+                    .count(),
+                FeedRoute::History => state
+                    .items
+                    .values()
+                    .filter(|entry| entry.last_opened_at.is_some())
+                    .count(),
+                FeedRoute::Hidden => state.items.values().filter(|entry| entry.hidden).count(),
+                _ => continue,
+            };
+            counter.value.set_text(Some(&count.to_string()));
+            let noun = if count == 1 { "item" } else { "items" };
+            AutomationProperties::set_item_status(
+                &counter.button,
+                Some(&format!("{count} {noun}")),
+            );
+        }
     }
 
     pub(super) fn show_profile(&self, name: String) {
