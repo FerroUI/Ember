@@ -157,18 +157,20 @@ fn null_item_is_a_negative_cache_entry_not_transport_failure() {
     block_on(async {
         let (repo, http, _) = repository();
         http.item(1, "null");
-        assert!(repo
-            .load_item(1, 100, FetchMode::CacheFirst)
-            .await
-            .unwrap()
-            .value
-            .is_none());
-        assert!(repo
-            .load_item(1, 101, FetchMode::Offline)
-            .await
-            .unwrap()
-            .value
-            .is_none());
+        assert!(
+            repo.load_item(1, 100, FetchMode::CacheFirst)
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
+        assert!(
+            repo.load_item(1, 101, FetchMode::Offline)
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
         assert_eq!(http.calls.get(), 1);
     });
 }
@@ -372,19 +374,23 @@ fn search_queries_encode_data_and_validate_filters() {
     assert_eq!(pairs["query"], "Rust & C# + λ");
     assert_eq!(pairs["tags"], "story,author_Case_Sensitive");
     assert!(pairs["numericFilters"].contains("points>=100"));
-    assert!(SearchQuery {
-        author: Some("x,(comment)".into()),
-        ..query.clone()
-    }
-    .url()
-    .is_err());
-    assert!(SearchQuery {
-        since: Some(4),
-        until: Some(3),
-        ..query
-    }
-    .url()
-    .is_err());
+    assert!(
+        SearchQuery {
+            author: Some("x,(comment)".into()),
+            ..query.clone()
+        }
+        .url()
+        .is_err()
+    );
+    assert!(
+        SearchQuery {
+            since: Some(4),
+            until: Some(3),
+            ..query
+        }
+        .url()
+        .is_err()
+    );
 }
 
 #[test]
@@ -499,10 +505,11 @@ fn metadata_cache_is_bounded_by_age_without_evicting_feeds_or_local_state() {
             METADATA_CACHE_LIMIT + 7
         );
         for feed in FeedKind::ALL {
-            assert!(repo
-                .load_feed(feed, 0, 1, 1, FetchMode::Offline)
-                .await
-                .is_ok());
+            assert!(
+                repo.load_feed(feed, 0, 1, 1, FetchMode::Offline)
+                    .await
+                    .is_ok()
+            );
         }
         assert!(repo.load_state().await.unwrap().is_saved(700));
 
