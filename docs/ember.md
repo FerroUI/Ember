@@ -52,18 +52,22 @@ with an HN account. Full-text search uses the separate
 
 ## Navigation, touch and keyboard
 
-The shell uses logical pixel breakpoints rather than identifying the device:
+Ember uses the available width and height in logical pixels. A short landscape
+window uses a single reading pane before the regular width breakpoints apply.
 
-| Available width | Layout |
+| Available space | Layout |
 | --- | --- |
-| Below 760 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
-| 760–1119 | A 60-pixel icon rail, a 290-pixel story pane and the remaining width for detail. |
-| 1120 and above | A 172-pixel labeled rail, a 350-pixel story pane and the remaining width for detail. |
+| 600–959 wide and at most 500 high | The five primary tabs move to a 64-pixel strip on the left. The feed or discussion uses the rest of the window. |
+| Below 760 wide at other heights | One visible pane with bottom tabs. More opens the remaining feeds and settings. |
+| 760–1119 wide at other heights | A 60-pixel icon rail, a 290-pixel story pane and the remaining width for detail. |
+| 1120 wide and above | A 172-pixel labeled rail, a 350-pixel story pane and the remaining width for detail. |
 
-At 1120 pixels the header shows the search field. At intermediate widths a search
-icon opens the search form. On phones Search is in the bottom navigation. Primary buttons, navigation targets, comment actions
-and links provide at least 44 logical pixels of height. Action rows wrap on narrow
-screens. Deep comments cap their visual indentation so text retains usable width.
+The labeled rail layout offers search in the header. The compact rail uses a
+search icon, and the single-pane layouts have a Search tab. In a phone
+discussion, the pinned **Discussion options** menu provides focus reading,
+refresh and link copying. Below 380 pixels it also holds the download action so
+more of the headline stays visible. Primary buttons and navigation targets keep
+a 44-pixel touch area. Action rows wrap and deep comments limit their indentation.
 
 | Input | Action |
 | --- | --- |
@@ -71,7 +75,7 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | `Enter` in a search field | Open a pasted Hacker News permalink or run the query with its filters. The username field also accepts @names and profile links. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
 | `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
-| `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from the story menu. |
+| `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from **Discussion options**. |
 | `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
 | `J` / `K` | Open the next or previous visible story. With **Unread** enabled, navigation continues from the story you just read even after its row disappears. |
 | `R` | Refresh the active feed or discussion. |
