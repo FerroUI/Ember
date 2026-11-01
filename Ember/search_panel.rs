@@ -675,6 +675,52 @@ mod tests {
     }
 
     #[test]
+    fn profile_recovery_opens_the_editor_with_the_failed_username_selected() {
+        use ferroui_controls::Window;
+        use sample_testing::Shell;
+        use std::cell::RefCell;
+        let shell = Shell::start(&crate::SAMPLE, 330.0, 520.0, || crate::App::new().upcast());
+        let submitted = Rc::new(RefCell::new(None));
+        let result = submitted.clone();
+        let form = build(
+            &SearchQuery::default(),
+            &[],
+            Some("TypoUser"),
+            Rc::new(|_| {}),
+            Rc::new(|_| panic!("profile lookup submitted a content search")),
+            Rc::new(move |user| {
+                result.replace(Some(user));
+            }),
+        );
+        let window = Window::new();
+        window.set_width(330.0);
+        window.set_height(520.0);
+        window.set_content(Some(Control::boxed(form)));
+        window.show();
+        shell.settle();
+        let username = window
+            .get_visual_descendants()
+            .filter_map(|c| c.cast::<TextBox>())
+            .find(|c| AutomationProperties::get_name(c).as_deref() == Some("Hacker News username"))
+            .unwrap();
+        assert!(username.is_focused());
+        assert_eq!(username.selected_text(), "TypoUser");
+        let bounds = Shell::bounds_of(&window, &username);
+        assert!(
+            bounds.y >= 0.0 && bounds.bottom() <= window.bounds().height,
+            "profile field off screen: {bounds:?}"
+        );
+        username.set_text(Some("Ada"));
+        let mut key = KeyEventArgs::new();
+        key.key = Key::Enter;
+        key.set_routed_event(Some(InputElement::key_down_event()));
+        username.raise_event(&key);
+        shell.settle();
+        assert_eq!(submitted.borrow().as_deref(), Some("Ada"));
+        window.close();
+    }
+
+    #[test]
     fn reopening_a_relative_range_preserves_its_cutoff_until_edited() {
         assert_eq!(
             date_boundary("1970-01-01", Some(3600), false).unwrap(),
