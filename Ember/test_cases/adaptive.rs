@@ -150,3 +150,88 @@ fn an_unavailable_permalink_can_be_retried_from_the_detail_pane() {
     );
     window.close();
 }
+
+#[test]
+fn history_traversal_keeps_find_intact_and_back_does_not_reopen_the_forward_story() {
+    let (shell, window, view) = start(
+        390.0,
+        844.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let title = view.get_control::<TextBlock>("DetailTitle");
+    let navigate = |url| {
+        crate::navigate_location(url);
+        for _ in 0..4 {
+            shell.settle();
+        }
+    };
+    click(&shell, &window, &first_story(&window));
+    navigate("#item/1002");
+    click_in_view(&shell, &window, &view.get_control::<Button>("FindButton"));
+    let find = view.get_control::<TextBox>("ThreadFind");
+    find.set_text(Some("needle"));
+    navigate("#item/1002");
+    assert_eq!(find.text().as_deref(), Some("needle"));
+    assert!(find.is_effectively_visible());
+    navigate("?id=1001");
+    assert_eq!(title.text().as_deref(), Some("Small tools, carefully made"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert!(view
+        .get_control::<Border>("FeedPane")
+        .is_effectively_visible());
+    window.close();
+}
+
+#[test]
+fn library_and_discussion_find_follow_the_pane_receiving_the_shortcut() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::TopLevel;
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(1440.0, 960.0, store, Rc::new(Cell::new(false)));
+    click(&shell, &window, &first_story(&window));
+    click_in_view(&shell, &window, &view.get_control::<Button>("SaveButton"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("NavSaved"));
+    let row = first_story(&window);
+    click_in_view(&shell, &window, &row);
+    let key = |origin: &Control, key, modifiers| {
+        let mut event = KeyEventArgs::new();
+        event.key = key;
+        event.key_modifiers = modifiers;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        origin.raise_event(&event);
+        shell.settle();
+        assert!(event.handled());
+    };
+    key(&row, Key::F, KeyModifiers::CONTROL);
+    assert!(view.get_control::<TextBox>("LibraryFind").is_focused());
+    assert!(!view
+        .get_control::<TextBox>("ThreadFind")
+        .is_effectively_visible());
+    key(
+        &view.get_control::<TextBox>("LibraryFind"),
+        Key::Escape,
+        KeyModifiers::NONE,
+    );
+    key(
+        &view.get_control::<Button>("BackButton"),
+        Key::F,
+        KeyModifiers::META,
+    );
+    assert!(view.get_control::<TextBox>("ThreadFind").is_focused());
+    // Return to the library and use OS Back to dismiss the local search first.
+    click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+    click_in_view(
+        &shell,
+        &window,
+        &view.get_control::<Button>("LibraryFindButton"),
+    );
+    let back = RoutedEventArgs::with_event(TopLevel::back_requested_event());
+    window.raise_event(&back);
+    shell.settle();
+    assert!(back.handled());
+    assert!(view.get_control::<Button>("LibraryFindButton").is_focused());
+    window.close();
+}

@@ -105,7 +105,8 @@ impl ReaderView {
         let keys = widgets::disclosure(&tools, "Keyboard shortcuts", false);
         for (action, shortcut) in [
             ("Search", "Ctrl / ⌘ + K"),
-            ("Find in discussion", "Ctrl / ⌘ + F"),
+            ("Find in this pane", "Ctrl / ⌘ + F"),
+            ("Read match in context", "Ctrl / ⌘ + Enter"),
             ("Next / previous story", "J / K"),
             ("Unread filter in feeds", "U"),
             ("Save story", "S"),

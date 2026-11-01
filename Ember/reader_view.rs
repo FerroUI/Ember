@@ -153,9 +153,22 @@ pub fn navigate_location(location: &str) {
     ACTIVE.with(|v| {
         if let Some(view) = v.borrow().as_ref().and_then(|v| v.upgrade()) {
             if let Some(id) = item_from_location(location) {
+                let route = DetailRoute::Thread(id);
+                if *view.detail.borrow() == route {
+                    // Traversing a fragment can deliver both popstate and hashchange.
+                    return;
+                }
+                let previous = view.history.borrow().iter().rposition(
+                    |entry| matches!(entry, HistoryEntry::Route(saved) if saved == &route),
+                );
+                if let Some(previous) = previous {
+                    view.remember_thread();
+                    view.history.borrow_mut().truncate(previous);
+                    view.detail.replace(DetailRoute::Welcome);
+                }
                 view.open_item_internal(id, false);
-            } else {
-                view.back_to_feed(false);
+            } else if *view.detail.borrow() != DetailRoute::Welcome {
+                view.return_to_feed(false);
             }
         }
     });
@@ -166,6 +179,7 @@ fn item_from_location(location: &str) -> Option<u64> {
             .or_else(|| part.strip_prefix("id="))
             .or_else(|| part.strip_prefix("item/"))
             .or_else(|| part.strip_prefix("/item/"))
+            .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit()))
             .and_then(|id| id.parse::<u64>().ok())
             .filter(|id| *id > 0)
     })
@@ -563,33 +577,47 @@ impl ReaderView {
                 let Some(v) = weak.upgrade() else {
                     return;
                 };
-                let ctrl = e
-                    .key_modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::META);
+                let ctrl = matches!(e.key_modifiers, KeyModifiers::CONTROL | KeyModifiers::META);
+                let source = e.source().and_then(|s| s.cast::<ferroui_base::Visual>());
+                if source.as_ref().is_some_and(|source| {
+                    std::iter::once(source.clone())
+                        .chain(source.get_visual_ancestors())
+                        .filter_map(|v| v.cast::<TextBox>())
+                        .any(|field| field.is_composing_text())
+                }) {
+                    return;
+                }
                 if ctrl && e.key == Key::K {
                     v.show_search();
                     e.set_handled(true);
                     return;
                 }
-                if ctrl && e.key == Key::F && matches!(*v.detail.borrow(), DetailRoute::Thread(_)) {
-                    v.set_find_open(true);
+                let in_library = v.feed.borrow().is_library()
+                    && (*v.detail.borrow() == DetailRoute::Welcome
+                        || source.as_ref().is_some_and(|s| {
+                            v.get_control::<Border>("FeedPane").is_visual_ancestor_of(s)
+                        }));
+                if ctrl && e.key == Key::F {
+                    if in_library {
+                        v.set_library_find_open(true);
+                    } else if matches!(*v.detail.borrow(), DetailRoute::Thread(_)) {
+                        v.set_find_open(true);
+                    } else {
+                        return;
+                    }
                     e.set_handled(true);
                     return;
                 }
-                if *v.detail.borrow() == DetailRoute::Welcome && v.feed.borrow().is_library() {
-                    if ctrl && e.key == Key::F {
-                        v.set_library_find_open(true);
-                        e.set_handled(true);
-                        return;
-                    }
-                    if e.key == Key::Escape && v.get_control::<Grid>("LibraryFindBar").is_visible()
-                    {
-                        v.set_library_find_open(false);
-                        e.set_handled(true);
-                        return;
-                    }
+                if in_library
+                    && e.key == Key::Escape
+                    && e.key_modifiers == KeyModifiers::NONE
+                    && v.get_control::<Grid>("LibraryFindBar").is_visible()
+                {
+                    v.set_library_find_open(false);
+                    e.set_handled(true);
+                    return;
                 }
-                if e.key == Key::Escape {
+                if e.key == Key::Escape && e.key_modifiers == KeyModifiers::NONE {
                     if v.get_control::<Border>("ThreadTools").is_visible() {
                         v.set_find_open(false);
                     } else if *v.detail.borrow() != DetailRoute::Welcome {
@@ -723,6 +751,12 @@ impl ReaderView {
                 if let Some(view) = weak.upgrade() {
                     if *view.detail.borrow() != DetailRoute::Welcome {
                         view.go_back();
+                        event.set_handled(true);
+                    } else if view
+                        .get_control::<Grid>("LibraryFindBar")
+                        .is_effectively_visible()
+                    {
+                        view.set_library_find_open(false);
                         event.set_handled(true);
                     }
                 }
@@ -2463,7 +2497,26 @@ impl ReaderView {
             Some(DetailRoute::Settings) => self.show_settings(),
             Some(DetailRoute::Search) => self.show_search(),
             Some(DetailRoute::More) => self.show_more(),
-            _ => self.back_to_feed(true),
+            _ => self.return_to_feed(true),
+        }
+    }
+    fn return_to_feed(&self, publish: bool) {
+        let row = self.selected_row.get();
+        self.back_to_feed(publish);
+        let Some(row) = row else { return };
+        let list = self.get_control::<ListBox>("Stories");
+        // The list retains its viewport while the phone shows the discussion.
+        // Never scroll to an unrelated row when an Unread filter has removed it.
+        let origin = list
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<StoryCard>())
+            .find(|card| card.tag().and_then(|id| id.downcast_ref::<u64>().copied()) == Some(row));
+        if let Some(card) = origin {
+            card.focus();
+        } else if list.items().count() != 0 {
+            list.focus();
+        } else if self.button("RetryButton").is_effectively_visible() {
+            self.button("RetryButton").focus();
         }
     }
     fn publish_location(&self, id: Option<u64>) {
@@ -2509,13 +2562,9 @@ impl ReaderView {
             && discussion.is_none()
             && *self.detail.borrow() == DetailRoute::Search
         {
-            if let Some(query) = self
-                .get_control::<ContentControl>("DetailHost")
-                .get_visual_descendants()
-                .filter_map(|node| node.cast::<TextBox>())
-                .find(|input| input.name().as_deref() == Some("SearchTerms"))
-            {
-                query.focus();
+            if let Some(form) = self.search_form.borrow().as_ref() {
+                form.terms.focus();
+                form.terms.bring_into_view();
                 return;
             }
         }

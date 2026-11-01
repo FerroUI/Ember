@@ -231,6 +231,29 @@ await run([
         } catch (error) { await failure(page, "desktop"); throw error; }
         finally { await page.close(); }
     }],
+    ["phone and desktop retain Find on repeated navigation and reveal a reply in context", async () => {
+        for (const width of [390, 1280]) {
+            const page = await start(width, 844);
+            try {
+                await page.evaluate("location.hash = 'id=0101'");
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton' && e.hit)");
+                await byName(page, "FindButton");
+                await page.type("tiny core");
+                await waitText(page, "1 matching comment");
+                // Browsers may deliver both events when traversing a hash URL.
+                await page.evaluate("dispatchEvent(new PopStateEvent('popstate'))");
+                await waitText(page, "1 matching comment");
+                await page.press("Enter", ["ctrl"]);
+                await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.includes('Thank you!'))");
+                await byName(page, "BackButton");
+                await page.waitFor("!location.hash && !new URL(location.href).searchParams.has('item')");
+                assert(page.errors.length === 0, page.errors.join("\n"));
+            } catch (error) { await failure(page, `context-${width}`); throw error; }
+            finally { await page.close(); }
+
+        }
+    }],
     ["storage cleanup releases temporary items and preserves verified downloads", async () => {
         const page = await start(1024, 820);
         try {

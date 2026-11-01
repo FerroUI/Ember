@@ -36,6 +36,7 @@ pub(super) struct Draft {
 
 pub(super) struct Form {
     pub control: Ref<Control>,
+    pub terms: Ref<TextBox>,
     pub capture: Box<dyn Fn() -> Draft>,
 }
 
@@ -297,6 +298,7 @@ pub(super) fn build(
             message.set_is_visible(false);
         });
     }
+    let terms = words.clone();
     let mut fields = vec![
         words.clone(),
         author.clone(),
@@ -591,6 +593,7 @@ pub(super) fn build(
     let control = scroll.clone().upcast();
     Form {
         control,
+        terms,
         capture: Box::new(move || Draft {
             baseline: baseline.clone(),
             fields: fields

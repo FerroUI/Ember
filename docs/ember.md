@@ -71,11 +71,12 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 
 | Input | Action |
 | --- | --- |
-| `Ctrl+K` / `Command+K` | Open search. |
+| `Ctrl+K` / `Command+K` | Open Search or return focus to the current search draft. |
 | `Enter` in a search field | Open a pasted Hacker News permalink or run the query with its filters. The username field also accepts @names and profile links. |
 | `Ctrl+F` / `Command+F` in a library feed | Find in Saved, Downloaded, History or Hidden. Press `Escape` to close Find and return to the list. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
 | `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
+| `Ctrl+Enter` / `Command+Enter` in discussion Find | Read the selected reply in the full thread. The matching row also offers **Read in context**, including in the New replies view. |
 | `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from **Discussion options**. |
 | `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
 | `J` / `K` | Open the next or previous visible story. With **Unread** enabled, navigation continues from the story you just read even after its row disappears. |
@@ -222,6 +223,10 @@ are preserved. Find navigation counts matching comments, including author
 matches. Buttons and keyboard navigation announce the active comment’s position.
 Input is debounced by 180 ms, and a bounded set of parsed search documents is
 reused for rendering.
+
+Back from a profile or permalink restores the search form’s typed values, open filters and scroll position. Submitting the same search from its results keeps the pages already loaded. In split view, the Find shortcut searches the library when focus is in the feed and searches the discussion when focus is in that pane.
+
+When you leave a long comment or story, Ember remembers the row and the distance into it. Closing Find, returning to the thread or reopening Ember restores that position. Choosing **Read in context** instead takes you to the selected reply and expands its path while keeping other branches folded.
 
 The default item cache target is 5,000 records, configurable from 100 to 100,000.
 Pruning removes the oldest unpinned item records while preserving saved roots and
