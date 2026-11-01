@@ -389,3 +389,124 @@ fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network(
     assert_eq!(http.requests.get(), requests);
     window.close();
 }
+
+#[test]
+fn returning_to_a_public_feed_restores_pages_and_scroll_despite_a_late_response() {
+    use ferroui_base::Vector;
+    #[derive(Default)]
+    struct DelayedLatest {
+        release: Cell<bool>,
+        waiting: RefCell<Option<Waker>>,
+    }
+    impl HttpClient for DelayedLatest {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            Box::pin(async move {
+                if url.ends_with("topstories.json") {
+                    return Ok(json!((1..=75).collect::<Vec<_>>()).to_string());
+                }
+                if url.ends_with("newstories.json") {
+                    poll_fn(|cx| {
+                        if self.release.get() {
+                            Poll::Ready(())
+                        } else {
+                            self.waiting.replace(Some(cx.waker().clone()));
+                            Poll::Pending
+                        }
+                    })
+                    .await;
+                    return Ok(json!([901, 902]).to_string());
+                }
+                let id: u64 = url
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .trim_end_matches(".json")
+                    .parse()
+                    .unwrap();
+                Ok(json!({"id":id,"type":"story","title":format!("Feed story {id}")}).to_string())
+            })
+        }
+    }
+    let http = Rc::new(DelayedLatest::default());
+    let (shell, window, view) =
+        start_with_http(390.0, 720.0, Rc::new(MemoryStore::default()), http.clone());
+    let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
+    let list = view.get_control::<ListBox>("Stories");
+    tap("LoadMoreButton");
+    assert_eq!(list.items().count(), 60);
+    let scroll = list.scroll().unwrap().cast::<ScrollViewer>().unwrap();
+    scroll.set_offset(Vector::new(0.0, 1480.0));
+    shell.settle();
+    let position = scroll.offset().y;
+    assert!(position > 1000.0);
+    tap("MobileNew");
+    assert!(http.waiting.borrow().is_some());
+    tap("MobileHome");
+    assert_eq!(list.items().count(), 60);
+    assert!((scroll.offset().y - position).abs() < 2.0);
+    http.release.set(true);
+    http.waiting.borrow_mut().take().unwrap().wake();
+    for _ in 0..6 {
+        shell.settle();
+    }
+    assert_eq!(title(&view), "Front page");
+    assert_eq!(list.items().count(), 60);
+    assert!((scroll.offset().y - position).abs() < 2.0);
+    tap("LoadMoreButton");
+    let last = list.items().get_at(74).unwrap();
+    assert_eq!(last.downcast_ref::<ember_core::HnItem>().unwrap().id, 75);
+    assert!(!view
+        .get_control::<Button>("LoadMoreButton")
+        .is_effectively_visible());
+    tap("MobileNew");
+    assert_eq!(list.items().count(), 2);
+    tap("MobileHome");
+    assert_eq!(list.items().count(), 75);
+    tap("MobileHome");
+    assert_eq!(scroll.offset().y, 0.0);
+    window.close();
+}
+
+#[test]
+fn keyboard_story_actions_follow_the_focused_feed_row_in_split_view() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(1440.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
+    let list = view.get_control::<ListBox>("Stories");
+    click_in_view(&shell, &window, &first_story(&window));
+    let second = list.container_from_index(1).unwrap();
+    assert!(second.focus());
+    let key = |row: &Control, key| {
+        let mut event = KeyEventArgs::new();
+        event.key = key;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        row.raise_event(&event);
+        for _ in 0..4 {
+            shell.settle();
+        }
+        assert!(event.handled());
+    };
+    key(&second, Key::S);
+    let state =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert!(state().is_saved(1002));
+    assert!(!state().is_saved(1001));
+    click_in_view(&shell, &window, &view.get_control::<Button>("UndoStory"));
+    assert!(!state().is_saved(1002));
+    let second = list.container_from_index(1).unwrap();
+    assert!(second.focus());
+    key(&second, Key::J);
+    let detail = view.get_control::<TextBlock>("DetailTitle");
+    assert_eq!(
+        detail.text().as_deref(),
+        Some("A visual introduction to GPU text rendering")
+    );
+    let back = view.get_control::<Button>("BackButton");
+    assert!(back.is_focused());
+    key(&back, Key::J);
+    assert_eq!(
+        detail.text().as_deref(),
+        Some("Show HN: I made a tiny database for the browser")
+    );
+    window.close();
+}

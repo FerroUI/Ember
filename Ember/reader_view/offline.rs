@@ -110,6 +110,7 @@ impl ReaderView {
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
                 let result = repo.clean_temporary_cache(&state).await;
                 if let Some(view) = weak.upgrade() {
+                    view.forget_feed_windows();
                     view.set_cache_work(CacheWork::Idle);
                     view.refresh_storage_report();
                     match result {

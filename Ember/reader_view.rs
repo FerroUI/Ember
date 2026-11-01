@@ -62,6 +62,15 @@ impl FeedRoute {
     }
 }
 
+// Only the six public feeds have resumable sessions. Local shelves are rebuilt from
+// current state and search result identities belong to their individual query.
+struct FeedWindow {
+    stories: Vec<HnItem>,
+    next: Option<usize>,
+    summary: String,
+    position: ferroui_base::Vector,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum DetailRoute {
     Welcome,
@@ -200,6 +209,8 @@ pub struct ReaderView {
     history: RefCell<Vec<HistoryEntry>>,
     search_form: RefCell<Option<crate::search_panel::Form>>,
     stories: RefCell<Vec<HnItem>>,
+    feed_windows: RefCell<BTreeMap<FeedKind, FeedWindow>>,
+    accepted_feed_summary: RefCell<Option<String>>,
     rendered_stories: RefCell<Vec<HnItem>>,
     rendered_show_dead: Cell<bool>,
     search_story_ids: RefCell<BTreeMap<u64, u64>>,
@@ -279,6 +290,8 @@ impl ReaderView {
             history: RefCell::new(Vec::new()),
             search_form: RefCell::new(None),
             stories: RefCell::new(Vec::new()),
+            feed_windows: RefCell::default(),
+            accepted_feed_summary: RefCell::default(),
             rendered_stories: RefCell::new(Vec::new()),
             rendered_show_dead: Cell::new(false),
             search_story_ids: RefCell::new(BTreeMap::new()),
@@ -646,18 +659,37 @@ impl ReaderView {
                 {
                     return;
                 }
+                // A split view can keep a different discussion open while keyboard
+                // focus moves down the feed. Resolve the routed row before the detail.
+                let feed_value = source.as_ref().and_then(|source| {
+                    let container = std::iter::once(source.clone())
+                        .chain(source.get_visual_ancestors())
+                        .find_map(|node| node.cast::<ferroui_controls::ListBoxItem>())?;
+                    v.get_control::<ListBox>("Stories")
+                        .item_from_container(&container.upcast::<Control>())
+                });
+                let feed_row = feed_value
+                    .as_ref()
+                    .and_then(|value| value.downcast_ref::<HnItem>());
                 match e.key {
                     Key::F if matches!(*v.detail.borrow(), DetailRoute::Thread(_)) => {
                         v.set_focus_reading(!v.focus_reading.get())
                     }
                     Key::R => v.refresh(),
                     Key::S => {
-                        if let DetailRoute::Thread(id) = *v.detail.borrow() {
-                            v.toggle_story_flag(id, StoryFlag::Saved);
-                        }
+                        let id = feed_row.map(|item| item.id).or_else(|| {
+                            if let DetailRoute::Thread(id) = *v.detail.borrow() {
+                                Some(id)
+                            } else {
+                                None
+                            }
+                        });
+                        let Some(id) = id else { return };
+                        v.toggle_story_flag(id, StoryFlag::Saved);
                     }
-                    Key::J => v.move_selection(true),
-                    Key::K => v.move_selection(false),
+                    Key::J | Key::K => {
+                        v.move_selection(e.key == Key::J, feed_row.map(|item| item.id))
+                    }
                     Key::U
                         if !v.feed.borrow().is_library()
                             && v.get_control::<Border>("FeedPane").is_effectively_visible() =>
@@ -666,14 +698,10 @@ impl ReaderView {
                         v.set_unread_only(enabled);
                     }
                     Key::O => {
-                        if let Some(item) = v
-                            .current_item()
-                            .filter(|_| matches!(*v.detail.borrow(), DetailRoute::Thread(_)))
-                        {
-                            v.open_url(
-                                &item.article_url().unwrap_or_else(|| item.discussion_url()),
-                            );
-                        }
+                        let Some(item) = feed_row.cloned().or_else(|| v.current_item()) else {
+                            return;
+                        };
+                        v.open_url(&item.article_url().unwrap_or_else(|| item.discussion_url()));
                     }
                     _ => return,
                 };
@@ -904,24 +932,87 @@ impl ReaderView {
             self.back_to_feed(true);
             return;
         }
-        if let Some(scroll) = self
-            .get_control::<ListBox>("Stories")
-            .scroll()
-            .and_then(|s| s.cast::<ScrollViewer>())
-        {
+        let scroll = self.story_scroll();
+        if !current_collection {
+            if let FeedRoute::Feed(kind) = *self.feed.borrow() {
+                if let Some(summary) = self.accepted_feed_summary.take() {
+                    self.feed_windows.borrow_mut().insert(
+                        kind,
+                        FeedWindow {
+                            stories: self.stories.take(),
+                            next: self.next.get(),
+                            summary,
+                            position: scroll.as_ref().map(|s| s.offset()).unwrap_or_default(),
+                        },
+                    );
+                }
+            }
+        }
+        if let Some(scroll) = scroll {
             scroll.set_offset(ferroui_base::Vector::default());
         }
         if current_collection && !self.stories.borrow().is_empty() {
             return;
         }
         self.reset_library_find();
-        self.feed.replace(route);
-        self.stories.borrow_mut().clear();
         self.search_story_ids.borrow_mut().clear();
+        self.accepted_feed_summary.take();
+        self.feed.replace(route.clone());
+        if let FeedRoute::Feed(kind) = route {
+            let window = self.feed_windows.borrow_mut().remove(&kind);
+            if let Some(window) = window {
+                // Responses for the outgoing tab, including pagination, must not
+                // replace the resumed window. Load more continues at its own cursor.
+                self.feed_generation
+                    .set(self.feed_generation.get().wrapping_add(1));
+                self.feed_load.set(FeedLoad::Ready);
+                self.stories.replace(window.stories);
+                self.next.set(window.next);
+                self.button("LoadMoreButton").set_is_enabled(true);
+                self.button("LoadMoreButton")
+                    .set_is_visible(window.next.is_some());
+                self.label("FeedTitle").set_text(Some(kind.title()));
+                self.label("FeedSummary").set_text(Some(&window.summary));
+                self.accepted_feed_summary.replace(Some(window.summary));
+                self.back_to_feed(true);
+                self.restore_feed_scroll(window.position);
+                return;
+            }
+        }
+        self.stories.borrow_mut().clear();
         self.next.set(None);
         self.back_to_feed(true);
         self.load_feed(0, FetchMode::CacheFirst);
     }
+
+    fn story_scroll(&self) -> Option<Ref<ScrollViewer>> {
+        self.get_control::<ListBox>("Stories")
+            .scroll()?
+            .cast::<ScrollViewer>()
+    }
+
+    fn restore_feed_scroll(&self, position: ferroui_base::Vector) {
+        let weak = self.to_ref().downgrade();
+        let generation = self.feed_generation.get();
+        Dispatcher::ui_thread().post_local(
+            move || {
+                if let Some(scroll) = weak
+                    .upgrade()
+                    .filter(|v| v.feed_generation.get() == generation)
+                    .and_then(|v| v.story_scroll())
+                {
+                    scroll.set_offset(position);
+                }
+            },
+            DispatcherPriority::LOADED,
+        );
+    }
+
+    fn forget_feed_windows(&self) {
+        self.feed_windows.borrow_mut().clear();
+        self.accepted_feed_summary.take();
+    }
+
     fn refresh(&self) {
         if let DetailRoute::Thread(id) = self.detail.borrow().clone() {
             self.fetch_thread(id, FetchMode::Refresh);
@@ -1161,6 +1252,11 @@ impl ReaderView {
             _ => format!("{count} · {origin}"),
         };
         self.label("FeedSummary").set_text(Some(&summary));
+        if matches!(*route, FeedRoute::Feed(_)) {
+            // Keep the last accepted summary while a subsequent page is still in flight.
+            self.accepted_feed_summary
+                .replace((!self.stories.borrow().is_empty()).then_some(summary));
+        }
         drop(route);
         if let Some(warning) = warning {
             self.status(&warning);
@@ -2325,6 +2421,7 @@ impl ReaderView {
             let result = repo.clear_cache().await;
             let Some(view) = weak.upgrade() else { return; };
             // Even an interrupted clear can remove part of a previously verified thread.
+            view.forget_feed_windows();
             view.state.borrow_mut().downloaded_threads.clear();
             view.set_cache_work(CacheWork::Idle);
             view.changed();
@@ -2795,16 +2892,15 @@ impl ReaderView {
             }),
         );
     }
-    fn move_selection(&self, forward: bool) {
+    fn move_selection(&self, forward: bool, focused: Option<u64>) {
         let target = {
             // Keep the source row as the cursor even when opening it removed it from Unread.
             let stories = self.stories.borrow();
             let state = self.state.borrow();
             let feed = self.feed.borrow();
             let visible = |item: &&HnItem| feed.includes(item, &state, self.downloaded_only.get());
-            let current = self
-                .selected_row
-                .get()
+            let current = focused
+                .or(self.selected_row.get())
                 .and_then(|id| stories.iter().position(|s| s.id == id));
             let next = match current {
                 Some(i) if forward => stories[i + 1..].iter().find(visible),
@@ -2824,6 +2920,9 @@ impl ReaderView {
                     .scroll_into_view(index as i32);
             }
             self.open_item(id);
+            if focused.is_some() {
+                self.button("BackButton").focus();
+            }
         }
     }
     fn set_focus_reading(&self, enabled: bool) {

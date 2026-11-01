@@ -114,10 +114,7 @@ impl ReaderView {
             .collect::<Vec<_>>()
             .join(" ")
             .to_lowercase();
-        let scroll = self
-            .get_control::<ListBox>("Stories")
-            .scroll()
-            .and_then(|s| s.cast::<ScrollViewer>());
+        let scroll = self.story_scroll();
         {
             let mut find = self.library_find.borrow_mut();
             if find.query == query {
@@ -158,7 +155,7 @@ impl ReaderView {
                     self.load_feed(0, FetchMode::CacheFirst);
                 }
                 if same_shelf {
-                    self.restore_library_scroll(previous.position);
+                    self.restore_feed_scroll(previous.position);
                 }
                 return;
             }
@@ -171,28 +168,6 @@ impl ReaderView {
         self.button("LoadMoreButton").set_is_visible(false);
         self.load_feed(0, FetchMode::CacheFirst);
         self.render_stories();
-    }
-
-    fn restore_library_scroll(&self, position: Vector) {
-        let weak = self.to_ref().downgrade();
-        let generation = self.feed_generation.get();
-        Dispatcher::ui_thread().post_local(
-            move || {
-                if let Some(view) = weak
-                    .upgrade()
-                    .filter(|v| v.feed_generation.get() == generation)
-                {
-                    if let Some(scroll) = view
-                        .get_control::<ListBox>("Stories")
-                        .scroll()
-                        .and_then(|s| s.cast::<ScrollViewer>())
-                    {
-                        scroll.set_offset(position);
-                    }
-                }
-            },
-            DispatcherPriority::LOADED,
-        );
     }
 
     pub(super) fn scan_library(

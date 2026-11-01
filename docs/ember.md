@@ -29,7 +29,7 @@ The focus view keeps the discussion in a centered column as the window grows. Th
 
 | Area | Implemented behavior |
 | --- | --- |
-| Feeds | Browse the front page, Latest, Best, Ask HN, Show HN and Jobs. The **Unread** count covers the loaded pages and respects mute and visibility settings. With the filter enabled, **Find more unread** checks up to three more pages and stops at the first that adds a visible unread item. Turn the filter off to see the loaded stories again. In split view, the reading desk suggests an unread story from the current list, or the last opened item in History. |
+| Feeds | Browse the front page, Latest, Best, Ask HN, Show HN and Jobs. Switching between public feeds restores each tab’s loaded pages, pagination cursor and scroll position for this session. Tap the active tab again to scroll to the top. The **Unread** count covers the loaded pages and respects mute and visibility settings. With the filter enabled, **Find more unread** checks up to three more pages and stops at the first that adds a visible unread item. Turn the filter off to see the loaded stories again. In split view, the reading desk suggests an unread story from the current list, or the last opened item in History. |
 | Explore | Open **More** to browse feeds and see counts for downloaded discussions, reading history and hidden stories. Reader tools include Settings and a keyboard shortcut reference. |
 | Search | Search stories, comments, Ask HN, Show HN and polls by relevance or date. Filter by author, discussion, points, comments or a UTC date range. **Search this discussion** in a story or poll menu searches indexed comments beyond the loaded thread. Search results open the exact comment. Under **More filters**, the Discussion field accepts an HN item ID or permalink. Paste a Hacker News item or profile URL into either search field to open it directly. **Edit search** reopens the query from the results header. In **Recent searches**, edit, run or remove one of the last 20 terms. Replaying a term keeps the active filters. |
 | Discussion | Browse ranked, newest or oldest branches. Collapsed branches show their reply count. A comment’s menu copies its permalink or jumps to its parent, neighboring top-level comments and the story. Find highlights matching text and keeps its ancestors visible for context. |
@@ -82,8 +82,8 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 | `J` / `K` | Open the next or previous visible story. With **Unread** enabled, navigation continues from the story you just read even after its row disappears. |
 | `U` in a feed or search results | Toggle the unread filter. |
 | `R` | Refresh the active feed or discussion. |
-| `S` | Toggle the selected story's saved state. |
-| `O` | Open the selected story's article, or its HN page when no article is available. |
+| `S` | Toggle the focused feed row’s saved state, or the open discussion’s bookmark when using the discussion pane. |
+| `O` | Open the focused feed row’s article, or the active article from the discussion pane. Stories without an article open their HN page. |
 | Swipe a story left | Reveal **Save** or **Unsave**. Release after the checkmark appears to apply it. |
 | Swipe a story right | Reveal **Hide** or **Restore**. Drag back before releasing to cancel. |
 | Pull the feed heading down | Refresh after a 72-pixel touch/pen drag. |
