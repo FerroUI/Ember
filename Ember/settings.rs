@@ -814,8 +814,15 @@ mod tests {
         assert_eq!(applied.borrow().font_size, 17.0);
         assert_eq!(applied.borrow().accent, "#2864A7");
 
+        let storage = named("Offline storage limit")
+            .cast::<ferroui_controls::Expander>()
+            .unwrap();
+        storage.set_is_expanded(true);
+        shell.settle();
         let cache = named("Maximum cached items").cast::<TextBox>().unwrap();
         cache.set_text(Some("many"));
+        storage.set_is_expanded(false);
+        shell.settle();
         accent.set_text(Some("#123"));
         apply();
         assert!(accent.is_focused());
