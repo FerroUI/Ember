@@ -51,9 +51,14 @@
             <StackPanel x:Name="FeedHeader" Background="{DynamicResource EmberBackground}" Spacing="1" Margin="0">
               <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="2" Margin="14,5,6,0">
                 <TextBlock x:Name="FeedTitle" Text="Front page" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <Button x:Name="LibraryFindButton" Grid.Column="1" Classes="icon-button" IsVisible="False" ToolTip.Tip="Find in this collection" AutomationProperties.Name="Find in this collection" />
                 <Button x:Name="EditFeedSearch" Grid.Column="1" Classes="icon-button" IsVisible="False" ToolTip.Tip="Edit this search" AutomationProperties.Name="Edit this search" />
                 <ToggleButton x:Name="DownloadedOnly" Grid.Column="2" Classes="feed-filter" Content="Downloaded" IsVisible="False" AutomationProperties.Name="Show downloaded discussions only" />
                 <ToggleButton x:Name="UnreadButton" Grid.Column="2" Classes="feed-filter" Content="Unread" ToolTip.Tip="Show unread only" AutomationProperties.Name="Show unread only" />
+              </Grid>
+              <Grid x:Name="LibraryFindBar" ColumnDefinitions="*,Auto" ColumnSpacing="2" Margin="10,2,4,4" IsVisible="False">
+                <TextBox x:Name="LibraryFind" MaxLength="160" PlaceholderText="Title, author, or domain" AutomationProperties.Name="Find on this device" />
+                <Button x:Name="CloseLibraryFind" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Close collection search" AutomationProperties.Name="Close collection search" />
               </Grid>
               <TextBlock x:Name="FeedSummary" Text="Loading stories…" Classes="muted" FontSize="12" Margin="15,0,10,9" TextTrimming="CharacterEllipsis" />
               <Border Height="1" Background="{DynamicResource EmberBorder}" />

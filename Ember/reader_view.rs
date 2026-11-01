@@ -1,4 +1,5 @@
 mod discovery;
+mod library_find;
 
 use crate::controls::{StoryCard, StorySummary};
 use crate::markup::xaml_class;
@@ -43,6 +44,9 @@ enum FeedRoute {
     Search(SearchQuery),
 }
 impl FeedRoute {
+    fn is_library(&self) -> bool {
+        matches!(self, Self::Saved | Self::History | Self::Hidden)
+    }
     fn includes(&self, item: &HnItem, state: &ReaderState, downloaded_only: bool) -> bool {
         match self {
             Self::Saved => {
@@ -92,6 +96,7 @@ enum EmptyAction {
     EditSearch,
     ShowRead,
     AllSaved,
+    ClearLibraryFind,
     Settings,
 }
 
@@ -104,6 +109,7 @@ impl EmptyAction {
             Self::ShowRead => "Show read stories",
             Self::AllSaved => "View all saved stories",
             Self::Settings => "Reading settings",
+            Self::ClearLibraryFind => "Clear search",
         }
     }
 }
@@ -189,6 +195,7 @@ pub struct ReaderView {
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     downloaded_only: Cell<bool>,
     thread: RefCell<Option<ThreadSnapshot>>,
+    library_find: RefCell<library_find::LibraryFind>,
     thread_control: RefCell<Option<Ref<Control>>>,
     cache_work: Cell<CacheWork>,
     /// Whether the cache was pruned after a feed loaded this session (see `accept_items`).
@@ -262,6 +269,7 @@ impl ReaderView {
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
             cache_work: Cell::new(CacheWork::Idle),
+            library_find: RefCell::default(),
             pruned_after_feed: Cell::new(false),
             library_generation: Cell::new(0),
             thread_budget: Cell::new(120),
@@ -310,6 +318,7 @@ impl ReaderView {
             &self.label("StatusText"),
             AutomationLiveSetting::Polite,
         );
+        self.wire_library_find();
         AutomationProperties::set_live_setting(
             &self.label("FindCount"),
             AutomationLiveSetting::Polite,
@@ -322,6 +331,8 @@ impl ReaderView {
             ("FindButton", "search"),
             ("FocusButton", "focus_reading"),
             ("CloseFind", "dismiss"),
+            ("LibraryFindButton", "search"),
+            ("CloseLibraryFind", "dismiss"),
             ("FindPrevious", "chevron_up"),
             ("FindNext", "chevron_down"),
             ("DismissStatus", "dismiss"),
@@ -391,6 +402,7 @@ impl ReaderView {
             Some(EmptyAction::AllSaved) => v.set_downloaded_only(false),
             Some(EmptyAction::Settings) => v.show_settings(),
             None => {}
+            Some(EmptyAction::ClearLibraryFind) => v.set_library_find_open(false),
         });
         self.on("DownloadedOnly", |v| {
             v.set_downloaded_only(
@@ -527,6 +539,19 @@ impl ReaderView {
                     if v.get_control::<Border>("ThreadTools").is_visible() {
                         v.set_find_open(false);
                     } else if *v.detail.borrow() != DetailRoute::Welcome {
+                if *v.detail.borrow() == DetailRoute::Welcome && v.feed.borrow().is_library() {
+                    if ctrl && e.key == Key::F {
+                        v.set_library_find_open(true);
+                        e.set_handled(true);
+                        return;
+                    }
+                    if e.key == Key::Escape && v.get_control::<Grid>("LibraryFindBar").is_visible()
+                    {
+                        v.set_library_find_open(false);
+                        e.set_handled(true);
+                        return;
+                    }
+                }
                         v.go_back();
                     } else {
                         return;
@@ -808,6 +833,7 @@ impl ReaderView {
         self.search_story_ids.borrow_mut().clear();
         self.next.set(None);
         self.back_to_feed(true);
+        self.reset_library_find();
         self.load_feed(0, FetchMode::CacheFirst);
     }
     fn refresh(&self) {
@@ -842,7 +868,10 @@ impl ReaderView {
         self.label("FeedTitle").set_text(Some(title));
         self.label("FeedSummary").set_text(Some("Updating…"));
         // Refresh a local collection without discarding already loaded pages.
-        let local_page_size = if offset == 0 {
+        let restore = self.restore_browse_window();
+        let local_page_size = if let Some((size, _)) = restore {
+            size
+        } else if offset == 0 {
             self.stories.borrow().len().max(30)
         } else {
             30
@@ -872,6 +901,10 @@ impl ReaderView {
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
                 if offset == 0 && mode != FetchMode::Offline {
                     if let FeedRoute::Feed(kind) = route {
+        if route.is_library() && !self.library_find.borrow().query.is_empty() {
+            self.scan_library(repo, local_ids, offset, local_page_size, generation);
+            return;
+        }
                         if let Ok(cached) = repo
                             .load_feed(kind, 0, 30, services::now(), FetchMode::Offline)
                             .await
@@ -968,6 +1001,26 @@ impl ReaderView {
                         view.label("FeedSummary")
                             .set_text(Some("Update unavailable"));
                         view.feed_load.set(FeedLoad::Unavailable);
+                        if let Some((_, position)) = restore {
+                            let target = view.downgrade();
+                            Dispatcher::ui_thread().post_local(
+                                move || {
+                                    if let Some(v) = target
+                                        .upgrade()
+                                        .filter(|v| v.feed_generation.get() == generation)
+                                    {
+                                        if let Some(scroll) = v
+                                            .get_control::<ListBox>("Stories")
+                                            .scroll()
+                                            .and_then(|s| s.cast::<ScrollViewer>())
+                                        {
+                                            scroll.set_offset(position);
+                                        }
+                                    }
+                                },
+                                DispatcherPriority::LOADED,
+                            );
+                        }
                         view.button("LoadMoreButton")
                             .set_is_visible(view.next.get().is_some());
                         view.status(&format!("Could not refresh: {error}"));
@@ -1124,6 +1177,11 @@ impl ReaderView {
                         "No downloaded discussions",
                         "Open a saved story and use Download to keep its replies on this device.",
                         Some(AllSaved),
+                FeedLoad::Ready if !self.library_find.borrow().query.is_empty() => (
+                    "No matches on this device",
+                    "Try another title, author, or domain. Search uses locally available stories and comments.",
+                    Some(ClearLibraryFind),
+                ),
                     ),
                     FeedRoute::Saved => (
                         "No saved stories",
@@ -1176,6 +1234,8 @@ impl ReaderView {
         let downloads = self.get_control::<ToggleButton>("DownloadedOnly");
         downloads.set_is_checked(Some(self.downloaded_only.get()));
         downloads.set_is_visible(*route == FeedRoute::Saved);
+        self.button("LibraryFindButton")
+            .set_is_visible(route.is_library());
         downloads
             .classes()
             .set("active", self.downloaded_only.get());
