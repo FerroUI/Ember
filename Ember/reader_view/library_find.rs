@@ -7,7 +7,17 @@ pub(super) struct LibraryFind {
     pub(super) query: String,
     revision: u64,
     missing: usize,
-    browse_window: Option<(usize, Vector)>,
+    browse_window: Option<BrowseWindow>,
+}
+
+struct BrowseWindow {
+    stories: Vec<HnItem>,
+    next: Option<usize>,
+    summary: String,
+    position: Vector,
+    revision: u64,
+    downloaded: bool,
+    load: FeedLoad,
 }
 
 impl ReaderView {
@@ -114,17 +124,44 @@ impl ReaderView {
                 return;
             }
             if find.query.is_empty() {
-                let size = self
-                    .next
-                    .get()
-                    .unwrap_or_else(|| self.stories.borrow().len())
-                    .max(30);
-                find.browse_window = Some((
-                    size,
-                    scroll.as_ref().map(|s| s.offset()).unwrap_or_default(),
-                ));
+                find.browse_window = Some(BrowseWindow {
+                    stories: self.stories.take(),
+                    next: self.next.get(),
+                    summary: self.label("FeedSummary").text().unwrap_or_default(),
+                    position: scroll.as_ref().map(|s| s.offset()).unwrap_or_default(),
+                    revision: self.revision.get(),
+                    downloaded: self.downloaded_only.get(),
+                    load: self.feed_load.get(),
+                });
             }
             find.query = query;
+        }
+        if self.library_find.borrow().query.is_empty() {
+            let previous = self.library_find.borrow_mut().browse_window.take();
+            if let Some(previous) = previous {
+                // Invalidate any older scan before restoring the original paged list.
+                self.feed_generation
+                    .set(self.feed_generation.get().wrapping_add(1));
+                let same_shelf = previous.downloaded == self.downloaded_only.get();
+                let ready = previous.load == FeedLoad::Ready
+                    && same_shelf
+                    && previous.revision == self.revision.get();
+                self.stories.replace(previous.stories);
+                self.next.set(previous.next);
+                self.feed_load.set(previous.load);
+                self.label("FeedSummary").set_text(Some(&previous.summary));
+                self.button("LoadMoreButton")
+                    .set_is_visible(previous.next.is_some());
+                self.button("LoadMoreButton").set_is_enabled(true);
+                self.render_stories();
+                if !ready {
+                    self.load_feed(0, FetchMode::CacheFirst);
+                }
+                if same_shelf {
+                    self.restore_library_scroll(previous.position);
+                }
+                return;
+            }
         }
         if let Some(scroll) = scroll {
             scroll.set_offset(Vector::default());
@@ -136,13 +173,26 @@ impl ReaderView {
         self.render_stories();
     }
 
-    pub(super) fn restore_browse_window(&self) -> Option<(usize, Vector)> {
-        let mut find = self.library_find.borrow_mut();
-        if find.query.is_empty() {
-            find.browse_window.take()
-        } else {
-            None
-        }
+    fn restore_library_scroll(&self, position: Vector) {
+        let weak = self.to_ref().downgrade();
+        let generation = self.feed_generation.get();
+        Dispatcher::ui_thread().post_local(
+            move || {
+                if let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| v.feed_generation.get() == generation)
+                {
+                    if let Some(scroll) = view
+                        .get_control::<ListBox>("Stories")
+                        .scroll()
+                        .and_then(|s| s.cast::<ScrollViewer>())
+                    {
+                        scroll.set_offset(position);
+                    }
+                }
+            },
+            DispatcherPriority::LOADED,
+        );
     }
 
     pub(super) fn scan_library(

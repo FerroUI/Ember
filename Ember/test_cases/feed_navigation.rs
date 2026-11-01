@@ -178,7 +178,7 @@ fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network(
     }
     state.toggle_saved(4999, 0); // A foreign bookmark restored without its payload.
     ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
-    let (shell, window, view) = start_with_http(390.0, 720.0, store, http.clone());
+    let (shell, window, view) = start_with_http(390.0, 720.0, store.clone(), http.clone());
     let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
     let stories = view.get_control::<ListBox>("Stories");
     tap("MobileSaved");
@@ -202,6 +202,12 @@ fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network(
         }
         assert!(enter.handled());
     };
+    // A cache TTL can expire while Find is open. Closing it should restore the
+    // already loaded browse window without refetching its pages.
+    let raw = ready(store.get("cache:item:5089")).unwrap().unwrap();
+    let mut old: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    old["fetched_at"] = json!(1);
+    ready(store.put("cache:item:5089", &old.to_string())).unwrap();
     let requests = http.requests.get();
     query("ATLAS  lin   journal.example");
     assert_eq!(stories.items().count(), 30);
@@ -219,6 +225,13 @@ fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network(
             .as_deref(),
         Some("1 match · 1 unavailable on this device")
     );
+    if let Some(dir) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&std::path::Path::new(&dir).join("phone-library-find.ppm"))
+            .unwrap();
+    }
     query("no such title");
     assert_eq!(
         view.get_control::<TextBlock>("EmptyTitle")

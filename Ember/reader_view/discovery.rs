@@ -63,8 +63,10 @@ impl ReaderView {
             let button = self.discovery_action(title, icon, move |v| {
                 if target == FeedRoute::Saved {
                     if *v.feed.borrow() == FeedRoute::Saved {
+                        let was_searching = !v.library_find.borrow().query.is_empty();
+                        v.reset_library_find();
                         v.back_to_feed(true);
-                        if !v.downloaded_only.get() {
+                        if was_searching || !v.downloaded_only.get() {
                             v.set_downloaded_only(true);
                         }
                     } else {
