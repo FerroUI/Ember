@@ -579,6 +579,52 @@ fn cache_write_failure_allows_reading_but_never_claims_offline_success() {
 }
 
 #[test]
+fn download_progress_reports_discovery_and_verifies_a_stale_copy_without_network() {
+    block_on(async {
+        let (repo, http, _) = repository();
+        http.item(1, r#"{"id":1,"kids":[2]}"#);
+        http.item(2, r#"{"id":2,"kids":[3]}"#);
+        http.item(3, r#"{"id":3}"#);
+        assert!(repo.download_thread(1, 10, 1).await.unwrap().complete);
+        let requests = http.calls.get();
+        let events = RefCell::new(Vec::new());
+        let snapshot = repo
+            .download_thread_with_progress(1, 10, 90_000, FetchMode::Offline, |progress| {
+                events.borrow_mut().push(progress)
+            })
+            .await
+            .unwrap();
+        assert!(snapshot.complete);
+        assert_eq!(http.calls.get(), requests);
+        assert_eq!(
+            *events.borrow(),
+            [
+                DownloadProgress::Collecting {
+                    loaded: 1,
+                    pending: 1
+                },
+                DownloadProgress::Collecting {
+                    loaded: 2,
+                    pending: 1
+                },
+                DownloadProgress::Collecting {
+                    loaded: 3,
+                    pending: 0
+                },
+                DownloadProgress::Verifying {
+                    checked: 0,
+                    total: 3
+                },
+                DownloadProgress::Verifying {
+                    checked: 3,
+                    total: 3
+                },
+            ]
+        );
+    });
+}
+
+#[test]
 fn stale_payload_with_the_right_id_cannot_certify_a_failed_refresh() {
     block_on(async {
         let store = Rc::new(UnwritableStore(MemoryStore::default()));
@@ -758,11 +804,13 @@ fn temporary_cleanup_keeps_shared_downloads_bookmarks_and_feed_lists() {
         assert_eq!((result.records, result.items), (3, 1));
         assert!(result.bytes > 0);
         for id in 1..=7 {
-            assert!(store
-                .get(&format!("cache:item:{id}"))
-                .await
-                .unwrap()
-                .is_some());
+            assert!(
+                store
+                    .get(&format!("cache:item:{id}"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
         }
         assert!(store.get("cache:item:8").await.unwrap().is_none());
         assert!(store.get("cache:feed:topstories").await.unwrap().is_some());

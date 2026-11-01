@@ -101,6 +101,13 @@ pub enum FetchMode {
     Offline,
 }
 
+/// Counts include the root story, comments and poll options.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DownloadProgress {
+    Collecting { loaded: usize, pending: usize },
+    Verifying { checked: usize, total: usize },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataSource {
     Network,
@@ -517,6 +524,18 @@ impl Repository {
         now: u64,
         mode: FetchMode,
     ) -> Result<ThreadSnapshot, ReaderError> {
+        self.load_thread_reporting(id, budget, now, mode, |_, _| {})
+            .await
+    }
+
+    async fn load_thread_reporting(
+        &self,
+        id: ItemId,
+        budget: usize,
+        now: u64,
+        mode: FetchMode,
+        report: impl Fn(usize, usize),
+    ) -> Result<ThreadSnapshot, ReaderError> {
         let loaded = self.load_item(id, now, mode).await?;
         let root = loaded
             .value
@@ -539,6 +558,7 @@ impl Repository {
             .filter(|id| seen.insert(*id))
             .collect();
         let mut requested = 1;
+        report(snapshot.items.len(), pending.len());
         while !pending.is_empty() && requested < budget {
             let count = pending
                 .len()
@@ -561,6 +581,7 @@ impl Repository {
                 }
                 snapshot.items.insert(item.id, item);
             }
+            report(snapshot.items.len(), pending.len());
         }
         snapshot.pending_ids = pending.into();
         snapshot.complete = snapshot.missing_ids.is_empty() && snapshot.pending_ids.is_empty();
@@ -575,10 +596,28 @@ impl Repository {
         budget: usize,
         now: u64,
     ) -> Result<ThreadSnapshot, ReaderError> {
+        self.download_thread_with_progress(id, budget, now, FetchMode::CacheFirst, |_| {})
+            .await
+    }
+
+    /// Use Offline to check an existing copy without contacting the provider.
+    /// Dropping this future stops scheduling requests and verification reads.
+    pub async fn download_thread_with_progress(
+        &self,
+        id: ItemId,
+        budget: usize,
+        now: u64,
+        mode: FetchMode,
+        report: impl Fn(DownloadProgress),
+    ) -> Result<ThreadSnapshot, ReaderError> {
         let mut snapshot = self
-            .load_thread(id, budget, now, FetchMode::CacheFirst)
+            .load_thread_reporting(id, budget, now, mode, |loaded, pending| {
+                report(DownloadProgress::Collecting { loaded, pending });
+            })
             .await?;
-        for (&id, expected) in &snapshot.items {
+        let total = snapshot.items.len();
+        report(DownloadProgress::Verifying { checked: 0, total });
+        for (index, (&id, expected)) in snapshot.items.iter().enumerate() {
             let cached = self
                 .cached::<Option<HnItem>>(&format!("cache:item:{id}"))
                 .await;
@@ -590,6 +629,10 @@ impl Repository {
                 snapshot.warning = Some(
                     "Some content could not be saved. Free storage and retry the download.".into(),
                 );
+            }
+            let checked = index + 1;
+            if checked % 32 == 0 || checked == total {
+                report(DownloadProgress::Verifying { checked, total });
             }
         }
         snapshot.complete = snapshot.missing_ids.is_empty() && snapshot.pending_ids.is_empty();
