@@ -238,23 +238,32 @@ fn library_and_discussion_find_follow_the_pane_receiving_the_shortcut() {
 
 #[test]
 fn a_phone_permalink_defers_the_front_page_until_it_is_visible() {
-    struct Tracked(FixtureHttp, Cell<usize>);
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+
+    struct Tracked {
+        fixture: FixtureHttp,
+        feed_requests: Cell<usize>,
+        root_requests: Cell<usize>,
+    }
     impl HttpClient for Tracked {
         fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
             if url.ends_with("/topstories.json") {
-                self.1.set(self.1.get() + 1);
+                self.feed_requests.set(self.feed_requests.get() + 1);
+            } else if url.ends_with("/item/1001.json") {
+                self.root_requests.set(self.root_requests.get() + 1);
             }
-            self.0.get(url)
+            self.fixture.get(url)
         }
     }
     for expand in [false, true] {
         crate::set_initial_location("?item=1001".to_owned());
-        let http = Rc::new(Tracked(
-            FixtureHttp {
+        let http = Rc::new(Tracked {
+            fixture: FixtureHttp {
                 offline: Rc::new(Cell::new(false)),
             },
-            Cell::new(0),
-        ));
+            feed_requests: Cell::new(0),
+            root_requests: Cell::new(0),
+        });
         let (shell, window, view) =
             start_with_http(390.0, 844.0, Rc::new(MemoryStore::default()), http.clone());
         assert_eq!(
@@ -264,9 +273,30 @@ fn a_phone_permalink_defers_the_front_page_until_it_is_visible() {
             Some("Small tools, carefully made")
         );
         assert_eq!(
-            http.1.get(),
+            http.feed_requests.get(),
             0,
             "hidden feed must not compete with a permalink"
+        );
+        let refresh = || {
+            let mut event = KeyEventArgs::new();
+            event.key = Key::R;
+            event.set_routed_event(Some(InputElement::key_down_event()));
+            view.raise_event(&event);
+            assert!(event.handled());
+            for _ in 0..5 {
+                shell.settle();
+            }
+        };
+        let before = http.root_requests.get();
+        refresh();
+        assert!(
+            http.root_requests.get() > before,
+            "R must refresh the discussion"
+        );
+        assert_eq!(
+            http.feed_requests.get(),
+            0,
+            "R must leave the hidden feed deferred"
         );
         if expand {
             window.set_width(1280.0);
@@ -276,8 +306,18 @@ fn a_phone_permalink_defers_the_front_page_until_it_is_visible() {
         for _ in 0..6 {
             shell.settle();
         }
-        assert_eq!(http.1.get(), 1);
+        assert_eq!(http.feed_requests.get(), 1);
         assert!(view.get_control::<ListBox>("Stories").items().count() > 0);
+        if expand {
+            let before = http.root_requests.get();
+            refresh();
+            assert!(http.root_requests.get() > before);
+            assert_eq!(
+                http.feed_requests.get(),
+                2,
+                "split-view R also refreshes the visible feed"
+            );
+        }
         window.close();
     }
 }

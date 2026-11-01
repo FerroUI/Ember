@@ -1061,6 +1061,9 @@ impl ReaderView {
     fn refresh(&self) {
         if let DetailRoute::Thread(id) = self.detail.borrow().clone() {
             self.fetch_thread(id, FetchMode::Refresh);
+            if !self.get_control::<Border>("FeedPane").is_effectively_visible() {
+                return;
+            }
         }
         self.load_feed(0, FetchMode::Refresh);
     }

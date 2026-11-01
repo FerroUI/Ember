@@ -18,6 +18,23 @@ On the comparison host, the median of 25 optimized repository saves to an in-mem
 
 The native control-tree workload with 4,096 rich replies measured four successive Find projections at 1,003.6 ms before and 31.1 ms after, using the unoptimized test profile and seven samples. The search text cache belongs to the current immutable discussion and retains at most 4 MiB of normalized body text. Queries still search bodies beyond that budget. Fresh data gets a fresh index. On the x86-64 test host, the virtualized row metadata occupied 40 bytes per row compared with 280 bytes for the previous owned row, before counting any separately allocated strings. These figures describe the row representation and do not measure process RSS.
 
+## Release measurements
+
+The following measurements compare the packaged browser releases at `ec9eb5e` and `76362e6` in Chromium 138 on Linux with SwiftShader. The HN responses came from a fixture. The reader, WebAssembly, storage, input routing and layout ran normally.
+
+| Interaction | Before | After | Measurement |
+| --- | ---: | ---: | --- |
+| Open a phone discussion permalink, cold | 5.72 s | 5.27 s | Median time to the first frame exposing the title, five alternating pairs |
+| Reload that permalink with the offline shell active | 541 ms | 588 ms | Same profiles and measurement, ranges 501–618 ms and 520–660 ms |
+| Load 30 through 300 stories | 883 ms | 524 ms | Median sum of nine page loads, five alternating pairs |
+| Submit four Find queries across 4,096 rich replies | 357 ms | 55 ms | Median of five warm batches per build, every expected count verified |
+| Scroll a feed of 180 loaded stories | 33.4 ms | 16.7 ms | Median p95 gap between animation frames in five wheel-input runs |
+| Read and verify 1,001 IndexedDB records | 196.6 ms | 47.8 ms | Browser storage bridge only, nine alternating samples per build |
+
+The cold Wasm request started at 133 ms, down from 338 ms. The raw module grew from 38,064,294 to 38,089,528 bytes. Both builds reserved 30,408,704 bytes of linear memory throughout the feed benchmark. On the discussion fixture the first uncached Find took 203 ms before and 168 ms after in a single observation. Its normalized-text index accounts for the larger improvement on subsequent queries.
+
+The feed wheel runs reached the same rows on both releases, and an immediate baseline repeat still measured a p95 frame gap of about 33 ms. The discussion reached 16.8 ms on the candidate, but baseline repeats also reached 16.7 ms. These measurements cover main-thread callbacks on a software renderer. Physical device presentation latency and power use remain unmeasured.
+
 ## Reproduce
 
 Set `CHROME` to a Chromium executable and `SITE` to the path of an extracted release browser site. Put the same benchmark driver on the measurement machine for both releases. The startup, feed and discussion drivers exercise the compiled reader with deterministic provider data. They create temporary browser profiles and print individual samples.
@@ -26,6 +43,7 @@ Set `CHROME` to a Chromium executable and `SITE` to the path of an extracted rel
 node Ember.Browser/tests/startup-perf.mjs "$SITE" 5
 node Ember.Browser/tests/feed-perf.mjs "$SITE" 5
 node Ember.Browser/tests/discussion-perf.mjs "$SITE"
+node Ember.Browser/tests/scroll-perf.mjs "$SITE" 5
 node Ember.Browser/tests/storage-perf.mjs
 node Ember.Browser/tests/shell-update.mjs "$SITE"
 ```
