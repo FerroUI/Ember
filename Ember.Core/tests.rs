@@ -731,3 +731,33 @@ fn hn_permalinks_accept_only_unambiguous_public_destinations() {
         assert_eq!(HnDestination::from_link(link), None, "{link}");
     }
 }
+
+#[test]
+fn temporary_cleanup_keeps_shared_downloads_bookmarks_and_feed_lists() {
+    block_on(async {
+        let (repo, _, store) = repository();
+        for id in 1..=8 {
+            store.put(&format!("cache:item:{id}"), "{}").await.unwrap();
+        }
+        for key in ["cache:user:ada", "cache:search:query", "cache:feed:topstories", "other:record"] {
+            store.put(key, "{}").await.unwrap();
+        }
+        let mut durable = ReaderState::default();
+        durable.toggle_saved(1, 9);
+        durable.downloaded_threads.insert(2, vec![3, 4]);
+        repo.save_state(&durable).await.unwrap();
+        let mut current = ReaderState::default();
+        current.toggle_saved(5, 10);
+        current.downloaded_threads.insert(6, vec![4, 7]);
+        let result = repo.clean_temporary_cache(&current).await.unwrap();
+        assert_eq!((result.records, result.items), (3, 1));
+        assert!(result.bytes > 0);
+        for id in 1..=7 { assert!(store.get(&format!("cache:item:{id}")).await.unwrap().is_some()); }
+        assert!(store.get("cache:item:8").await.unwrap().is_none());
+        assert!(store.get("cache:feed:topstories").await.unwrap().is_some());
+        assert!(store.get("other:record").await.unwrap().is_some());
+        assert!(repo.load_state().await.unwrap().is_saved(1));
+        assert_eq!(current.downloaded_ids(), vec![6]);
+        assert_eq!(repo.clean_temporary_cache(&current).await.unwrap().records, 0);
+    });
+}

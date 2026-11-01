@@ -680,11 +680,7 @@ impl Repository {
     /// state, feed lists and saved/downloaded content survive. Returns removals.
     pub async fn prune_cache(&self, state: &ReaderState) -> Result<usize, ReaderError> {
         let records = self.store.scan_prefix("cache:item:").await?;
-        let mut pinned: BTreeSet<_> = state.saved_ids().into_iter().collect();
-        for (&root, ids) in &state.downloaded_threads {
-            pinned.insert(root);
-            pinned.extend(ids.iter().copied());
-        }
+        let pinned = state.pinned_items();
         let mut candidates = Vec::new();
         for (key, json) in &records {
             let id = key.trim_start_matches("cache:item:").parse::<ItemId>().ok();
@@ -736,6 +732,28 @@ impl Repository {
                 .count(),
         })
     }
+    /// Release browsing cache while retaining feed lists, bookmarks and every verified
+    /// download. Protect both the active library and any state still durable on disk.
+    pub async fn clean_temporary_cache(&self, state: &ReaderState) -> Result<CacheStats, ReaderError> {
+        let mut pinned = state.pinned_items();
+        pinned.extend(self.load_state().await?.pinned_items());
+        let mut removed = CacheStats::default();
+        for (key, payload) in self.store.scan_prefix("cache:").await? {
+            let item = key.strip_prefix("cache:item:");
+            let temporary = match item {
+                Some(id) => !id.parse::<ItemId>().is_ok_and(|id| pinned.contains(&id)),
+                None => key.starts_with("cache:user:") || key.starts_with("cache:search:"),
+            };
+            if temporary {
+                self.store.remove(&key).await?;
+                removed.records += 1;
+                removed.items += usize::from(item.is_some());
+                removed.bytes += key.len() + payload.len();
+            }
+        }
+        Ok(removed)
+    }
+
     /// Deletes public cached payloads only. Preferences, bookmarks, history and
     /// collapse state remain intact; callers may explicitly clear state separately.
     pub async fn clear_cache(&self) -> Result<(), ReaderError> {
