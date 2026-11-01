@@ -83,8 +83,8 @@ impl HttpClient for FixtureHttp {
                 return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2002]}).to_string());
             }
             if url.contains("/api/v1/search") {
-                if url.contains("query=profile-context") {
-                    return Ok(json!({"hits":[{"objectID":"2002","story_id":1001,"story_title":"Small tools, carefully made","comment_text":"Exactly","author":"ada","_tags":["comment"]}],"page":0,"nbPages":1,"nbHits":1}).to_string());
+                if url.contains("query=predictable") {
+                    return Ok(json!({"hits":[{"objectID":"2002","story_id":1001,"story_title":"Small tools, carefully made","comment_text":"A small, predictable surface can still have a very deep model underneath.","author":"ada","_tags":["comment"]}],"page":0,"nbPages":1,"nbHits":1}).to_string());
                 }
                 return Ok(json!({"hits":[{"objectID":"1001","title":"Small tools, carefully made","author":"ada","points":326,"num_comments":4,"url":"https://example.com/tools","created_at_i":1792600000u64}],"page":0,"nbPages":1,"nbHits":1}).to_string());
             }

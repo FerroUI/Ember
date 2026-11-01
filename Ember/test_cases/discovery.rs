@@ -19,7 +19,7 @@ fn opening_author_activity_uses_the_permalink_even_when_the_feed_is_a_comment_se
         Rc::new(Cell::new(false)),
     );
     view.get_control::<TextBox>("SearchBox")
-        .set_text(Some("profile-context"));
+        .set_text(Some("predictable"));
     click(&shell, &window, &view.get_control::<Button>("SearchButton"));
     assert_eq!(title(&view), "Search results");
     click(&shell, &window, &first_story(&window));
