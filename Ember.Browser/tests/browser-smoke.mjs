@@ -185,10 +185,19 @@ await run([
             await page.waitFor("location.search.includes('item=101')");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             assert(!(await page.evaluate("globalThis.__emberUnsafeHtml === true")), "HN content executed script");
+            await page.resize(2080, 960);
+            await page.waitFor(`(() => {
+                const view = JSON.parse(ember.emberState());
+                const back = view.elements.find(e => e.name === "BackButton" && e.hit);
+                const focus = view.elements.find(e => e.name === "FocusButton" && e.hit);
+                return view.width === 2080 && back && focus && focus.x + focus.width - back.x <= 860;
+            })()`);
             await byName(page, "FocusButton");
             assert(!(await state(page)).elements.some(e => e.name === "NavTop"), "The feed rail remains visible in focus reading");
             await byAutomation(page, "Exit focus reading");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop')");
+            await page.resize(1440, 960);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 1440");
             await byName(page, "FindButton");
             await byAutomation(page, "Find in thread");
             await page.type("design notes");

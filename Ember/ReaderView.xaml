@@ -77,7 +77,7 @@
         <Border x:Name="DetailPane" Grid.Column="2" Background="{DynamicResource EmberSurface}">
           <Grid x:Name="ReaderColumn" RowDefinitions="Auto,Auto,*">
             <Border x:Name="DetailHeader" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource EmberBorder}" Padding="4,2">
-              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="1">
+              <Grid MaxWidth="860" ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="1">
                 <Button x:Name="BackButton" Classes="icon-button" AutomationProperties.Name="Back" ToolTip.Tip="Back (Escape)" />
                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="3,0">
                   <TextBlock x:Name="DetailEyebrow" Text="READER" Classes="eyebrow" />
@@ -91,7 +91,7 @@
               </Grid>
             </Border>
             <Border x:Name="ThreadTools" Grid.Row="1" Padding="8,3" IsVisible="False">
-              <Grid ColumnDefinitions="*,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="2">
+              <Grid MaxWidth="860" ColumnDefinitions="*,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="2">
                 <TextBox x:Name="ThreadFind" PlaceholderText="Find in discussion" AutomationProperties.Name="Find in thread" />
                 <Button x:Name="FindPrevious" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Previous match (Shift+Enter)" AutomationProperties.Name="Previous matching comment" IsEnabled="False" />
                 <Button x:Name="FindNext" Grid.Column="2" Classes="icon-button" ToolTip.Tip="Next match (Enter)" AutomationProperties.Name="Next matching comment" IsEnabled="False" />
