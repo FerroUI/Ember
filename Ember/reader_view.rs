@@ -2020,7 +2020,13 @@ impl ReaderView {
         }
     }
     fn show_search(&self) {
-        if *self.detail.borrow() == DetailRoute::Search {
+        self.open_search_form(None);
+    }
+    fn show_profile_lookup(&self, name: &str) {
+        self.open_search_form(Some(name));
+    }
+    fn open_search_form(&self, profile_lookup: Option<&str>) {
+        if profile_lookup.is_none() && *self.detail.borrow() == DetailRoute::Search {
             if let Some(query) = self
                 .get_control::<ContentControl>("DetailHost")
                 .get_visual_descendants()
@@ -2043,9 +2049,17 @@ impl ReaderView {
         };
         let weak = self.to_ref().downgrade();
         let profile = self.to_ref().downgrade();
+        let history = self.to_ref().downgrade();
         self.show_content(crate::search_panel::build(
             &query,
             &self.state.borrow().recent_searches,
+            profile_lookup,
+            Rc::new(move |term| {
+                if let Some(v) = history.upgrade() {
+                    v.state.borrow_mut().recent_searches.retain(|saved| saved != term);
+                    v.changed();
+                }
+            }),
             Rc::new(move |query| {
                 if let Some(v) = weak.upgrade() {
                     v.run_search(query);

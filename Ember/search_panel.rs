@@ -25,6 +25,8 @@ fn field(parent: &StackPanel, label: &str, value: &str, placeholder: &str) -> Re
 pub fn build(
     query: &SearchQuery,
     recent_searches: &[String],
+    profile_lookup: Option<&str>,
+    forget_search: Rc<dyn Fn(&str)>,
     on_search: Rc<dyn Fn(SearchQuery)>,
     on_profile: Rc<dyn Fn(String)>,
 ) -> Ref<Control> {
@@ -40,12 +42,9 @@ pub fn build(
         "Stories, comments, or a phrase",
     );
     words.set_name(Some("SearchTerms".to_owned()));
-    let weak_words = words.downgrade();
-    words.loaded(move |_, _| {
-        if let Some(input) = weak_words.upgrade() {
-            input.focus();
-        }
-    });
+    if profile_lookup.is_none() {
+        focus_on_load(&words, false);
+    }
     let (scope, order) = field_pair(&search);
     let kind = combo(
         &scope,
@@ -308,10 +307,20 @@ pub fn build(
     if !recent_searches.is_empty() {
         let recent = disclosure(&root, "Recent searches", false);
         recent.children().add(text("Select a term to edit it, or use its search button to run it with the current filters.", 12.0, true));
-        for term in recent_searches.iter().take(20) {
+        let rows = crate::widgets::stack(2.0);
+        recent.children().add(rows.clone());
+        let empty = text("No recent searches.", 13.0, true);
+        empty.set_is_visible(false);
+        recent.children().add(empty.clone());
+        let mut listed = std::collections::BTreeSet::new();
+        for term in recent_searches
+            .iter()
+            .take(20)
+            .filter(|s| listed.insert(s.as_str()))
+        {
             let row = Grid::new();
             row.set_column_definitions(
-                ColumnDefinitions::parse("*,Auto").expect("recent search columns"),
+                ColumnDefinitions::parse("*,Auto,Auto").expect("recent search columns"),
             );
             row.set_column_spacing(4.0);
             let edit = button(term);
@@ -344,17 +353,55 @@ pub fn build(
             });
             Grid::set_column(&go, 1);
             row.children().add(go);
-            recent.children().add(row);
+            let forget = icon_button(&format!("Remove {term} from recent searches"), "dismiss");
+            let input = recent_input.clone();
+            let target = row.downgrade();
+            let list = rows.downgrade();
+            let empty = empty.clone();
+            let value = term.clone();
+            let remove = forget_search.clone();
+            forget.click(move |_, _| {
+                let (Some(list), Some(row)) = (list.upgrade(), target.upgrade()) else {
+                    return;
+                };
+                let children = list.children();
+                let row = row.upcast::<Control>();
+                let Some(index) = children.index_of(&row) else {
+                    return;
+                };
+                remove(&value);
+                children.remove(row);
+                let remaining = children.count();
+                empty.set_is_visible(remaining == 0);
+                let next = if remaining == 0 {
+                    input.upgrade().map(|field| field.upcast::<Control>())
+                } else {
+                    children
+                        .get(index.min(remaining - 1))
+                        .cast::<Grid>()
+                        .map(|row| row.children().get(0))
+                };
+                if let Some(next) = next {
+                    next.focus();
+                    next.bring_into_view();
+                }
+            });
+            Grid::set_column(&forget, 2);
+            row.children().add(forget);
+            rows.children().add(row);
         }
     }
-    let people = disclosure(&root, "Find a person", false);
+    let people = disclosure(&root, "Find a person", profile_lookup.is_some());
     let username = field(
         &people,
         "Hacker News username",
-        "",
+        profile_lookup.unwrap_or(""),
         "Case-sensitive username",
     );
     username.set_max_length(64);
+    if profile_lookup.is_some() {
+        focus_on_load(&username, true);
+    }
     let message = text("", 13.0, false);
     message.set_is_visible(false);
     AutomationProperties::set_live_setting(&message, AutomationLiveSetting::Polite);
@@ -381,6 +428,19 @@ pub fn build(
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
     scroll.upcast()
+}
+
+fn focus_on_load(field: &TextBox, reveal: bool) {
+    let input = field.to_ref().downgrade();
+    field.loaded(move |_, _| {
+        if let Some(input) = input.upgrade() {
+            input.focus();
+            if reveal {
+                input.select_all();
+                input.bring_into_view();
+            }
+        }
+    });
 }
 
 /// Restrict Enter to text fields in this form. Both forms share the same top level.
@@ -482,9 +542,13 @@ mod tests {
         let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
         let last = Rc::new(RefCell::new(None));
         let result = last.clone();
+        let forgotten = Rc::new(RefCell::new(Vec::new()));
+        let forgotten_terms = forgotten.clone();
         let search = build(
             &SearchQuery::default(),
-            &["adaptive layout".to_owned()],
+            &["adaptive layout".to_owned(), "older query".to_owned()],
+            None,
+            Rc::new(move |term| forgotten_terms.borrow_mut().push(term.to_owned())),
             Rc::new(move |q| {
                 result.replace(Some(q));
             }),
@@ -601,6 +665,12 @@ mod tests {
             .expect("quick replay submits the recent term");
         assert_eq!(q.query, "adaptive layout");
         assert_eq!(q.sort, SearchSort::Recent);
+        click(&named("Remove adaptive layout from recent searches"));
+        assert!(named("older query").is_focused());
+        click(&named("Remove older query from recent searches"));
+        assert_eq!(&*forgotten.borrow(), &["adaptive layout", "older query"]);
+        assert!(input.is_focused());
+        assert_eq!(input.text().as_deref(), Some("adaptive layout"));
         window.close();
     }
 
