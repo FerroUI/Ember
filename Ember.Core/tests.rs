@@ -656,3 +656,52 @@ fn sqlite_store_persists_across_connections_and_scans_literal_prefixes() {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     });
 }
+
+#[test]
+fn mute_domains_accept_article_links_and_match_host_boundaries() {
+    let mut rules = MuteRules::default();
+    for (input, expected) in [
+        ("https://WWW.Example.COM:443/news?q=1", "example.com"),
+        ("docs.example.com:8080", "docs.example.com"),
+        ("Example.com./", "example.com"),
+        ("https://[::1]:8080/read", "[::1]"),
+        ("https://münchen.de/", "xn--mnchen-3ya.de"),
+    ] {
+        assert_eq!(
+            MuteRules::domain_from_input(input).as_deref(),
+            Some(expected)
+        );
+    }
+    for bad in [
+        "",
+        ":8080",
+        "https:/news",
+        "ftp://example.org",
+        "https:////example.org",
+        "https://person@example.org/news",
+        "bad domain",
+        "-bad.org",
+        "foo..bar",
+        "*.org",
+    ] {
+        assert!(
+            MuteRules::domain_from_input(bad).is_none(),
+            "accepted {bad}"
+        );
+    }
+    rules
+        .domains
+        .insert(MuteRules::domain_from_input("https://www.example.com/post").unwrap());
+    for (url, muted) in [
+        ("https://news.example.com./x", true),
+        ("https://notexample.com/x", false),
+    ] {
+        assert_eq!(
+            rules.matches(&HnItem {
+                url: Some(url.into()),
+                ..Default::default()
+            }),
+            muted
+        );
+    }
+}

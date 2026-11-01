@@ -4,7 +4,7 @@ use crate::widgets::{
     action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
     FormValidation,
 };
-use ember_core::{MuteRules, Preferences, ReaderState, ThemeMode};
+use ember_core::{validate_username, MuteRules, Preferences, ReaderState, ThemeMode};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs};
 use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
 use ferroui_base::media::{Color, SolidColorBrush};
@@ -216,39 +216,7 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         }
     });
 
-    let filters = disclosure(&root, "Muted domains, authors & keywords", false);
-    filters.children().add(text("Separate entries with commas or new lines. Muting a domain includes its subdomains. Usernames are case-sensitive.", 13.0, true));
-    let domains = field(
-        &filters,
-        "Muted domains",
-        &join(&state.mutes.domains),
-        "example.com",
-        true,
-    );
-    let users = field(
-        &filters,
-        "Muted authors",
-        &join(&state.mutes.users),
-        "username",
-        true,
-    );
-    let keywords = field(
-        &filters,
-        "Muted title keywords",
-        &join(&state.mutes.keywords),
-        "Words or phrases",
-        true,
-    );
-    let save_filters = button("Save filters");
-    filters.children().add(save_filters.clone());
-    let callback = on_action.clone();
-    save_filters.click(move |_, _| {
-        callback(SettingsAction::Mutes(MuteRules {
-            domains: split(&domains.text().unwrap_or_default()),
-            users: split(&users.text().unwrap_or_default()),
-            keywords: split(&keywords.text().unwrap_or_default()),
-        }))
-    });
+    mute_settings(&root, &state.mutes, &on_action);
 
     let data = section(&root, "Reading data");
     data.children().add(text(
@@ -656,6 +624,137 @@ fn reading_value(input: &NumberBox, label: &str) -> Result<f64, String> {
     }
 }
 
+fn mute_settings(parent: &StackPanel, rules: &MuteRules, on_action: &Rc<dyn Fn(SettingsAction)>) {
+    let panel = disclosure(parent, "Muted domains, authors & keywords", false);
+    let summary = text(&mute_summary(rules), 12.0, true);
+    AutomationProperties::set_live_setting(&summary, AutomationLiveSetting::Polite);
+    panel.children().add(summary.clone());
+    let kind = combo(
+        &panel,
+        "Edit mute rules",
+        &["Domains", "Authors", "Title keywords"],
+        0,
+    );
+    let editors = [
+        (
+            "Muted domains",
+            "example.com or an article URL",
+            "A domain also mutes its subdomains.",
+            &rules.domains,
+        ),
+        (
+            "Muted authors",
+            "Hacker News usernames",
+            "Usernames are case-sensitive. A leading @ is optional.",
+            &rules.users,
+        ),
+        (
+            "Muted title keywords",
+            "Words or phrases",
+            "Keywords match anywhere in a story title, regardless of case.",
+            &rules.keywords,
+        ),
+    ];
+    let groups = editors.map(|(label, placeholder, hint, values)| {
+        let group = stack(4.0);
+        // Keep larger rule sets imported from an existing library fully editable.
+        let original = join(values);
+        let editor = crate::widgets::field(
+            &group,
+            label,
+            &original,
+            placeholder,
+            FIELD_LENGTH.max(original.len() as i32),
+            true,
+        );
+        group.children().add(text(hint, 12.0, true));
+        panel.children().add(group.clone());
+        (group, editor)
+    });
+    let hosts = groups.each_ref().map(|(group, _)| group.downgrade());
+    let selected = kind.downgrade();
+    let switch = move || {
+        if let Some(kind) = selected.upgrade() {
+            for (i, host) in hosts.iter().enumerate() {
+                if let Some(host) = host.upgrade() {
+                    host.set_is_visible(kind.selected_index() == i as i32);
+                }
+            }
+        }
+    };
+    switch();
+    kind.selection_changed(move |_, _| switch());
+    panel.children().add(text(
+        "Separate entries with commas or new lines.",
+        12.0,
+        true,
+    ));
+    let message = feedback(&panel);
+    let save = button("Save filters");
+    panel.children().add(save.clone());
+    let [domains, users, keywords] = groups.map(|(_, field)| field);
+    let callback = on_action.clone();
+    save.click(move |_, _| {
+        let mut check = FormValidation::default();
+        let domain_rules = check.check(
+            &domains,
+            split(&domains.text().unwrap_or_default())
+                .into_iter()
+                .map(|entry| {
+                    MuteRules::domain_from_input(&entry)
+                        .ok_or_else(|| format!("Enter a hostname or a web link for “{entry}”."))
+                })
+                .collect::<Result<BTreeSet<_>, _>>(),
+        );
+        let user_rules = check.check(
+            &users,
+            split(&users.text().unwrap_or_default())
+                .into_iter()
+                .map(|entry| {
+                    let author = entry.strip_prefix('@').unwrap_or(&entry);
+                    validate_username(author)
+                        .map_err(|_| format!("“{entry}” is not a Hacker News username."))?;
+                    Ok::<_, String>(author.to_owned())
+                })
+                .collect::<Result<BTreeSet<_>, _>>(),
+        );
+        if domain_rules.is_none() {
+            kind.set_selected_index(0);
+        } else if user_rules.is_none() {
+            kind.set_selected_index(1);
+        }
+        if !check.finish(&message) {
+            return;
+        }
+        let rules = MuteRules {
+            domains: domain_rules.unwrap_or_default(),
+            users: user_rules.unwrap_or_default(),
+            keywords: split(&keywords.text().unwrap_or_default()),
+        };
+        domains.set_text(Some(&join(&rules.domains)));
+        users.set_text(Some(&join(&rules.users)));
+        keywords.set_text(Some(&join(&rules.keywords)));
+        summary.set_text(Some(&mute_summary(&rules)));
+        callback(SettingsAction::Mutes(rules));
+    });
+}
+
+fn mute_summary(rules: &MuteRules) -> String {
+    if rules.domains.is_empty() && rules.users.is_empty() && rules.keywords.is_empty() {
+        return "No mute rules saved.".into();
+    }
+    [
+        (rules.domains.len(), "domain"),
+        (rules.users.len(), "author"),
+        (rules.keywords.len(), "keyword"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, name)| format!("{count} {name}{}", if count == 1 { "" } else { "s" }))
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 fn join(values: &BTreeSet<String>) -> String {
     values.iter().cloned().collect::<Vec<_>>().join("\n")
 }
@@ -743,6 +842,68 @@ mod tests {
         ));
         assert!(!named("Remove history").is_effectively_visible());
         window.close();
+    }
+
+    #[test]
+    fn mute_editors_keep_drafts_reveal_errors_and_save_canonical_rules() {
+        let shell = Shell::start(&crate::SAMPLE, 360.0, 645.0, || crate::App::new().upcast());
+        let host = stack(4.0);
+        let saved = Rc::new(RefCell::new(None));
+        let result = saved.clone();
+        let callback: Rc<dyn Fn(SettingsAction)> = Rc::new(move |a| {
+            if let SettingsAction::Mutes(rules) = a {
+                result.replace(Some(rules));
+            }
+        });
+        mute_settings(&host, &MuteRules::default(), &callback);
+        let w = Window::new();
+        w.set_content(Some(Control::boxed(host)));
+        w.show();
+        shell.settle();
+        let named = |name: &str| {
+            w.get_visual_descendants()
+                .filter_map(|v| v.cast::<Control>())
+                .find(|c| AutomationProperties::get_name(c).as_deref() == Some(name))
+                .unwrap()
+        };
+        named("Muted domains, authors & keywords")
+            .cast::<ferroui_controls::Expander>()
+            .unwrap()
+            .set_is_expanded(true);
+        shell.settle();
+        let kind = named("Edit mute rules").cast::<ComboBox>().unwrap();
+        let domains = named("Muted domains").cast::<TextBox>().unwrap();
+        let users = named("Muted authors").cast::<TextBox>().unwrap();
+        let keywords = named("Muted title keywords").cast::<TextBox>().unwrap();
+        let click_save = || {
+            shell.click(0, Shell::bounds_of(&w, &named("Save filters")).center());
+            shell.settle();
+        };
+        domains.set_text(Some("https://person@example.org"));
+        kind.set_selected_index(1);
+        users.set_text(Some("@Lin, wrong name"));
+        kind.set_selected_index(2);
+        shell.settle();
+        assert!(!domains.is_effectively_visible() && !users.is_effectively_visible());
+        keywords.set_text(Some("game, ai"));
+        click_save();
+        assert_eq!(kind.selected_index(), 0);
+        assert!(domains.is_focused());
+        assert!(saved.borrow().is_none());
+        domains.set_text(Some("https://www.example.org/post, example.org:443"));
+        click_save();
+        assert_eq!(kind.selected_index(), 1);
+        assert!(users.is_focused());
+        users.set_text(Some("@Lin"));
+        click_save();
+        let rules = saved.borrow();
+        let rules = rules.as_ref().unwrap();
+        assert_eq!(join(&rules.domains), "example.org");
+        assert_eq!(join(&rules.users), "Lin");
+        assert_eq!(join(&rules.keywords), "ai\ngame");
+        assert_eq!(domains.text().as_deref(), Some("example.org"));
+        assert_eq!(mute_summary(rules), "1 domain · 1 author · 2 keywords");
+        w.close();
     }
 
     #[test]

@@ -334,12 +334,56 @@ pub struct MuteRules {
 }
 
 impl MuteRules {
+    /// Extract the hostname used by feed matching. Pasted article links may have
+    /// paths and ports; plain entries must be hostnames, optionally with a port.
+    pub fn domain_from_input(value: &str) -> Option<String> {
+        let value = value.trim();
+        if value.is_empty() || value.chars().any(char::is_control) || value.contains('\\') {
+            return None;
+        }
+        let parsed = if let Some((_, rest)) = value.split_once("://") {
+            if rest.is_empty() || rest.starts_with('/') {
+                return None;
+            }
+            Url::parse(value).ok()?
+        } else {
+            let host = value.trim_end_matches('/');
+            if host.contains(['/', '?', '#', '@']) || host.ends_with(':') {
+                return None;
+            }
+            Url::parse(&format!("https://{host}")).ok()?
+        };
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return None;
+        }
+        let host = parsed.host_str()?.trim_end_matches('.');
+        if let Some(url::Host::Domain(_)) = parsed.host() {
+            if host.len() > 253
+                || host.split('.').any(|part| {
+                    part.is_empty()
+                        || part.len() > 63
+                        || part.starts_with('-')
+                        || part.ends_with('-')
+                        || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            {
+                return None;
+            }
+        }
+        Some(host.trim_start_matches("www.").to_owned())
+    }
+
     pub fn matches(&self, item: &HnItem) -> bool {
         let domain = item.domain().to_ascii_lowercase();
+        let domain = domain.trim_end_matches('.');
         let title = item.title_text().to_lowercase();
         self.users.contains(item.author())
             || self.domains.iter().any(|value| {
-                let value = value.trim().trim_start_matches("www.").to_ascii_lowercase();
+                let value = value.trim().to_ascii_lowercase();
+                let value = value.trim_end_matches('.').trim_start_matches("www.");
                 !value.is_empty() && (domain == value || domain.ends_with(&format!(".{value}")))
             })
             || self.keywords.iter().any(|value| {
