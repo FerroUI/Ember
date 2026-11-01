@@ -12,9 +12,11 @@ pub use document::{Block, HtmlDocument, Inline, Link};
 pub use parser::{safe_link, ParseOptions};
 
 #[cfg(feature = "render")]
+mod find;
+#[cfg(feature = "render")]
 mod renderer;
 #[cfg(feature = "render")]
-pub use renderer::{render, RenderOptions};
+pub use renderer::{render, render_with_find, FindHighlight, RenderOptions};
 
 #[cfg(test)]
 mod tests;

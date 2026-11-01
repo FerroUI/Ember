@@ -264,6 +264,94 @@ mod render {
     }
 
     #[test]
+    fn find_paints_decoded_text_across_native_runs_links_and_code() {
+        use ferroui_base::media::Brushes;
+        use ferroui_controls::documents::{Italic, Run};
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let observed = calls.clone();
+        let doc = HtmlDocument::parse("<p>before <b>Bold</b> &amp; <a href='https://example.com/'><i>link</i></a><code>()</code> after</p><pre>example Bold &amp; link() code</pre>");
+        let bg: Rc<dyn ferroui_base::media::IBrush> = Brushes::yellow();
+        let control = crate::render_with_find(
+            &doc,
+            &crate::RenderOptions::default(),
+            crate::FindHighlight {
+                query: "bOlD & liNk()",
+                foreground: Brushes::black(),
+                background: bg.clone(),
+            },
+            Rc::new(move |url| observed.borrow_mut().push(url.to_owned())),
+        );
+        let runs: Vec<_> = control
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Run>())
+            .collect();
+        let painted: Vec<_> = runs
+            .iter()
+            .filter(|r| r.background().is_some_and(|b| Rc::ptr_eq(&b, &bg)))
+            .collect();
+        assert_eq!(
+            painted.iter().filter_map(|r| r.text()).collect::<String>(),
+            "Bold & link()Bold & link()"
+        );
+        assert_eq!(
+            runs.iter().filter_map(|r| r.text()).collect::<String>(),
+            "before Bold & link() afterexample Bold & link() code"
+        );
+        let link = control
+            .get_logical_descendants()
+            .find_map(|node| node.cast::<HyperlinkButton>())
+            .unwrap();
+        assert!(link
+            .get_logical_descendants()
+            .any(|node| node.is::<Italic>()));
+        assert!(link.navigate_uri().is_none());
+        link.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+        assert_eq!(*calls.borrow(), vec!["https://example.com/"]);
+    }
+
+    #[test]
+    fn repetitive_search_terms_bound_styling_without_truncating_the_document() {
+        use ferroui_base::media::Brushes;
+        use ferroui_controls::documents::Run;
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let line = "a ".repeat(200);
+        let doc = HtmlDocument {
+            blocks: vec![Block::Paragraph(vec![Inline::Text(line.clone())]); 2],
+            truncated: false,
+        };
+        let bg: Rc<dyn ferroui_base::media::IBrush> = Brushes::yellow();
+        let control = crate::render_with_find(
+            &doc,
+            &crate::RenderOptions::default(),
+            crate::FindHighlight {
+                query: "a",
+                foreground: Brushes::black(),
+                background: bg.clone(),
+            },
+            Rc::new(|_| {}),
+        );
+        let runs: Vec<_> = control
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Run>())
+            .collect();
+        assert_eq!(
+            runs.iter()
+                .filter(|r| r.background().is_some_and(|b| Rc::ptr_eq(&b, &bg)))
+                .count(),
+            128
+        );
+        assert_eq!(
+            runs.iter().filter_map(|r| r.text()).collect::<String>(),
+            line.repeat(2)
+        );
+    }
+
+    #[test]
     fn manually_constructed_model_cannot_bypass_url_check() {
         let clock = Rc::new(TestGlobalClock::default());
         let _app = UnitTestApplication::start(sample_testing::services(clock));

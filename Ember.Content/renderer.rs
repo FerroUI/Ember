@@ -1,3 +1,4 @@
+use crate::find::FindRanges;
 use crate::{Block, HtmlDocument, Inline};
 use ferroui_base::input::InputElementImpl;
 use ferroui_base::interactivity::InteractiveImpl;
@@ -67,7 +68,59 @@ pub fn render(
     options: &RenderOptions,
     activate_link: Rc<dyn Fn(&str)>,
 ) -> Ref<Control> {
-    let root = render_blocks(&document.blocks, options, &activate_link);
+    render_document(document, options, activate_link, None)
+}
+
+/// Native text colors for the matched characters. Both brushes are supplied by
+/// the reader so highlighted code and links remain legible in custom themes.
+pub struct FindHighlight<'a> {
+    pub query: &'a str,
+    pub foreground: Rc<dyn IBrush>,
+    pub background: Rc<dyn IBrush>,
+}
+
+/// Render a single document with literal, case-insensitive find results. Only
+/// the first 128 occurrences are decorated; all text and links remain present.
+pub fn render_with_find(
+    document: &HtmlDocument,
+    options: &RenderOptions,
+    highlight: FindHighlight<'_>,
+    activate_link: Rc<dyn Fn(&str)>,
+) -> Ref<Control> {
+    render_document(document, options, activate_link, Some(highlight))
+}
+
+struct FindPass<'a> {
+    highlight: Option<FindHighlight<'a>>,
+    needle: String,
+    remaining: usize,
+}
+
+impl FindPass<'_> {
+    fn active(&self) -> bool {
+        self.remaining > 0 && !self.needle.is_empty()
+    }
+
+    fn ranges(&mut self, text: &str) -> FindRanges {
+        FindRanges::new(text, &self.needle, &mut self.remaining)
+    }
+}
+
+fn render_document(
+    document: &HtmlDocument,
+    options: &RenderOptions,
+    activate_link: Rc<dyn Fn(&str)>,
+    highlight: Option<FindHighlight<'_>>,
+) -> Ref<Control> {
+    let mut find = FindPass {
+        needle: highlight
+            .as_ref()
+            .map(|h| h.query.trim().to_lowercase())
+            .unwrap_or_default(),
+        highlight,
+        remaining: 128,
+    };
+    let root = render_blocks(&document.blocks, options, &activate_link, &mut find);
     root.classes().add("ember-html");
     if document.truncated {
         let notice = text_block(options);
@@ -85,6 +138,7 @@ fn render_blocks(
     blocks: &[Block],
     options: &RenderOptions,
     activate_link: &Rc<dyn Fn(&str)>,
+    find: &mut FindPass<'_>,
 ) -> Ref<StackPanel> {
     let panel = StackPanel::new();
     panel.set_spacing(finite(options.paragraph_spacing, 12.0).clamp(0.0, 64.0));
@@ -93,7 +147,7 @@ fn render_blocks(
             Block::Paragraph(inlines) => {
                 panel
                     .children()
-                    .add(paragraph(inlines, options, activate_link));
+                    .add(paragraph(inlines, options, activate_link, find));
             }
             Block::Heading { level, content } => {
                 let scale = match level {
@@ -106,7 +160,7 @@ fn render_blocks(
                 heading_options.font_size =
                     finite(options.font_size, 16.0).clamp(10.0, 48.0) * scale;
                 heading_options.line_height = heading_options.font_size * 1.3;
-                let heading = paragraph(content, &heading_options, activate_link);
+                let heading = paragraph(content, &heading_options, activate_link, find);
                 heading.set_font_weight(FontWeight::SemiBold);
                 AutomationProperties::set_heading_level(&heading, i32::from((*level).clamp(1, 6)));
                 heading.classes().add("ember-html-heading");
@@ -123,7 +177,7 @@ fn render_blocks(
                         .or_else(|| Some(Brushes::gray())),
                 );
                 border.set_padding(Thickness::new(14.0, 4.0, 0.0, 4.0));
-                border.set_child(render_blocks(children, options, activate_link));
+                border.set_child(render_blocks(children, options, activate_link, find));
                 panel.children().add(border);
             }
             Block::List {
@@ -147,7 +201,7 @@ fn render_blocks(
                     }));
                     marker.set_min_width(22.0);
                     marker.set_margin(Thickness::new(0.0, 0.0, 8.0, 0.0));
-                    let content = render_blocks(item, options, activate_link);
+                    let content = render_blocks(item, options, activate_link, find);
                     Grid::set_column(&content, 1);
                     row.children().add(marker);
                     row.children().add(content);
@@ -157,7 +211,14 @@ fn render_blocks(
             }
             Block::Code(code) => {
                 let text = text_block(options);
-                text.set_text(Some(code));
+                let mut hits = find.ranges(code);
+                if hits.has_hits() {
+                    let runs = InlineCollection::new();
+                    add_text(code, &runs, &mut hits, find.highlight.as_ref(), None);
+                    text.set_inlines(Some(runs));
+                } else {
+                    text.set_text(Some(code));
+                }
                 text.set_text_wrapping(TextWrapping::NoWrap);
                 text.set_font_family(options.code_font_family.clone());
                 text.set_font_size((finite(options.font_size, 16.0) * 0.9).clamp(10.0, 36.0));
@@ -201,6 +262,7 @@ fn paragraph(
     inlines: &[Inline],
     options: &RenderOptions,
     activate_link: &Rc<dyn Fn(&str)>,
+    find: &mut FindPass<'_>,
 ) -> Ref<SelectableTextBlock> {
     let text = text_block(options);
     if contains_link(inlines) {
@@ -212,7 +274,19 @@ fn paragraph(
         text.set_line_spacing(extra_spacing);
     }
     let collection = InlineCollection::new();
-    add_inlines(inlines, &collection, options, Some(activate_link));
+    let mut hits = if find.active() {
+        find.ranges(&Inline::plain_text(inlines))
+    } else {
+        FindRanges::default()
+    };
+    add_inlines(
+        inlines,
+        &collection,
+        options,
+        Some(activate_link),
+        &mut hits,
+        find.highlight.as_ref(),
+    );
     text.set_inlines(Some(collection));
     text
 }
@@ -251,48 +325,75 @@ fn add_inlines(
     output: &InlineCollection,
     options: &RenderOptions,
     activate_link: Option<&Rc<dyn Fn(&str)>>,
+    hits: &mut FindRanges,
+    paint: Option<&FindHighlight<'_>>,
 ) {
     for inline in inlines {
         match inline {
-            Inline::Text(text) => output.add(Run::with_text(Some(text))),
-            Inline::LineBreak => output.add(LineBreak::new()),
+            Inline::Text(text) => add_text(text, output, hits, paint, None),
+            Inline::LineBreak => {
+                hits.segments("\n", |_, _| {});
+                output.add(LineBreak::new());
+            }
             Inline::Strong(children) => {
                 let span = Bold::new();
-                add_inlines(children, &span.inlines(), options, activate_link);
+                add_inlines(
+                    children,
+                    &span.inlines(),
+                    options,
+                    activate_link,
+                    hits,
+                    paint,
+                );
                 output.add(span);
             }
             Inline::Emphasis(children) => {
                 let span = Italic::new();
-                add_inlines(children, &span.inlines(), options, activate_link);
+                add_inlines(
+                    children,
+                    &span.inlines(),
+                    options,
+                    activate_link,
+                    hits,
+                    paint,
+                );
                 output.add(span);
             }
             Inline::Underline(children) => {
                 let span = Underline::new();
-                add_inlines(children, &span.inlines(), options, activate_link);
+                add_inlines(
+                    children,
+                    &span.inlines(),
+                    options,
+                    activate_link,
+                    hits,
+                    paint,
+                );
                 output.add(span);
             }
             Inline::Strike(children) => {
                 let span = Span::new();
                 span.set_text_decorations(Some(TextDecorations::strikethrough()));
-                add_inlines(children, &span.inlines(), options, activate_link);
+                add_inlines(
+                    children,
+                    &span.inlines(),
+                    options,
+                    activate_link,
+                    hits,
+                    paint,
+                );
                 output.add(span);
             }
-            Inline::Code(code) => {
-                let run = Run::with_text(Some(code));
-                run.set_font_family(options.code_font_family.clone());
-                run.set_font_size((finite(options.font_size, 16.0) * 0.9).clamp(10.0, 36.0));
-                run.set_background(options.code_background.clone());
-                output.add(run);
-            }
+            Inline::Code(code) => add_text(code, output, hits, paint, Some(options)),
             Inline::Link { url, content } => {
                 // A caption keeps its native bold, italic and monospace runs, but
                 // never nests another interactive control inside its hyperlink.
                 let Some(activate) = activate_link else {
-                    add_inlines(content, output, options, None);
+                    add_inlines(content, output, options, None, hits, paint);
                     continue;
                 };
                 let Some(destination) = crate::safe_link(url) else {
-                    add_inlines(content, output, options, activate_link);
+                    add_inlines(content, output, options, activate_link, hits, paint);
                     continue;
                 };
                 let link = InlineLink::new();
@@ -308,14 +409,15 @@ fn add_inlines(
                 }
                 let label = Inline::plain_text(content);
                 let caption = &link.caption;
-                if content
-                    .iter()
-                    .all(|inline| matches!(inline, Inline::Text(_)))
+                if !hits.has_hits()
+                    && content
+                        .iter()
+                        .all(|inline| matches!(inline, Inline::Text(_)))
                 {
                     caption.set_text(Some(&label));
                 } else {
                     let formatted = InlineCollection::new();
-                    add_inlines(content, &formatted, options, None);
+                    add_inlines(content, &formatted, options, None, hits, paint);
                     caption.set_inlines(Some(formatted));
                 }
                 caption.set_text_wrapping(TextWrapping::Wrap);
@@ -339,6 +441,28 @@ fn add_inlines(
             }
         }
     }
+}
+
+fn add_text(
+    text: &str,
+    output: &InlineCollection,
+    hits: &mut FindRanges,
+    paint: Option<&FindHighlight<'_>>,
+    code: Option<&RenderOptions>,
+) {
+    hits.segments(text, |part, marked| {
+        let run = Run::with_text(Some(part));
+        if let Some(options) = code {
+            run.set_font_family(options.code_font_family.clone());
+            run.set_font_size((finite(options.font_size, 16.0) * 0.9).clamp(10.0, 36.0));
+            run.set_background(options.code_background.clone());
+        }
+        if let Some(style) = paint.filter(|_| marked) {
+            run.set_background(Some(style.background.clone()));
+            run.set_foreground(Some(style.foreground.clone()));
+        }
+        output.add(run);
+    });
 }
 
 /// An embedded control otherwise uses its bottom edge as a text baseline. Publish the
