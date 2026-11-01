@@ -42,6 +42,23 @@ enum FeedRoute {
     Hidden,
     Search(SearchQuery),
 }
+impl FeedRoute {
+    fn includes(&self, item: &HnItem, state: &ReaderState, downloaded_only: bool) -> bool {
+        match self {
+            Self::Saved => {
+                state.is_saved(item.id)
+                    && (!downloaded_only || state.downloaded_threads.contains_key(&item.id))
+            }
+            Self::History => state
+                .items
+                .get(&item.id)
+                .is_some_and(|s| s.last_opened_at.is_some()),
+            Self::Hidden => state.items.get(&item.id).is_some_and(|s| s.hidden),
+            _ => state.is_visible(item),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum DetailRoute {
     Welcome,
@@ -545,8 +562,8 @@ impl ReaderView {
                             v.toggle_story_flag(id, StoryFlag::Saved);
                         }
                     }
-                    Key::J => v.move_selection(1),
-                    Key::K => v.move_selection(-1),
+                    Key::J => v.move_selection(true),
+                    Key::K => v.move_selection(false),
                     Key::O => {
                         if let Some(item) = v
                             .current_item()
@@ -1021,19 +1038,7 @@ impl ReaderView {
         self.stories
             .borrow()
             .iter()
-            .filter(|item| match &*route {
-                FeedRoute::Saved => {
-                    state.is_saved(item.id)
-                        && (!self.downloaded_only.get()
-                            || state.downloaded_threads.contains_key(&item.id))
-                }
-                FeedRoute::History => state
-                    .items
-                    .get(&item.id)
-                    .is_some_and(|s| s.last_opened_at.is_some()),
-                FeedRoute::Hidden => state.items.get(&item.id).is_some_and(|local| local.hidden),
-                _ => state.is_visible(item),
-            })
+            .filter(|item| route.includes(item, &state, self.downloaded_only.get()))
             .cloned()
             .collect()
     }
@@ -2302,23 +2307,36 @@ impl ReaderView {
             }),
         );
     }
-    fn move_selection(&self, delta: i32) {
-        let stories = self.visible_stories();
-        if stories.is_empty() {
-            return;
+    fn move_selection(&self, forward: bool) {
+        let target = {
+            // Keep the source row as the cursor even when opening it removed it from Unread.
+            let stories = self.stories.borrow();
+            let state = self.state.borrow();
+            let feed = self.feed.borrow();
+            let visible = |item: &&HnItem| feed.includes(item, &state, self.downloaded_only.get());
+            let current = self
+                .selected_row
+                .get()
+                .and_then(|id| stories.iter().position(|s| s.id == id));
+            let next = match current {
+                Some(i) if forward => stories[i + 1..].iter().find(visible),
+                Some(i) => stories[..i].iter().rev().find(visible),
+                None => stories.iter().find(visible),
+            };
+            next.map(|item| item.id)
+        };
+        if let Some(id) = target {
+            if let Some(index) = self
+                .rendered_stories
+                .borrow()
+                .iter()
+                .position(|s| s.id == id)
+            {
+                self.get_control::<ListBox>("Stories")
+                    .scroll_into_view(index as i32);
+            }
+            self.open_item(id);
         }
-        let current = self
-            .selected_row
-            .get()
-            .and_then(|id| stories.iter().position(|v| v.id == id))
-            .map(|v| v as i32)
-            .unwrap_or(-1);
-        let index = (current + delta).clamp(0, stories.len() as i32 - 1);
-        let id = stories[index as usize].id;
-        drop(stories);
-        self.open_item(id);
-        self.get_control::<ListBox>("Stories")
-            .scroll_into_view(index);
     }
     fn set_focus_reading(&self, enabled: bool) {
         if !matches!(*self.detail.borrow(), DetailRoute::Thread(_))

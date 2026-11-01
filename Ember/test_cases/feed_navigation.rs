@@ -111,3 +111,45 @@ fn split_reading_desk_opens_next_unread_and_omits_hidden_stories() {
     );
     window.close();
 }
+
+#[test]
+fn keyboard_navigation_keeps_its_place_after_opening_an_unread_story() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    let store = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    state.preferences.hide_read = true;
+    for id in 1005..=1012 {
+        state.mark_read(id, id);
+    }
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1440.0, 940.0, store, Rc::new(Cell::new(false)));
+    let third = window
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<crate::controls::StoryCard>())
+        .find(|card| card.tag().and_then(|id| id.downcast_ref::<u64>().copied()) == Some(1003))
+        .unwrap();
+    click_in_view(&shell, &window, &third);
+    let key = |key| {
+        let mut event = KeyEventArgs::new();
+        event.key = key;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        view.raise_event(&event);
+        shell.settle();
+        assert!(event.handled());
+        view.get_control::<TextBlock>("DetailTitle").text().unwrap()
+    };
+    assert_eq!(
+        key(Key::K),
+        "Ask HN: What changed the way you think about programming?"
+    );
+    assert_eq!(
+        key(Key::J),
+        "Show HN: I made a tiny database for the browser"
+    );
+    // There are still unread stories before this one, but J must stop at the end.
+    assert_eq!(
+        key(Key::J),
+        "Show HN: I made a tiny database for the browser"
+    );
+    window.close();
+}
