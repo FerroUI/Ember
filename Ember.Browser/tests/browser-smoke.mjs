@@ -58,14 +58,16 @@ const byName = (page, name) => click(page, element => element.name === name, nam
 const byText = (page, text) => click(page, element => element.text === text, text);
 const byAutomation = (page, name) => click(page, element => element.automationName === name, name);
 
-async function touchDrag(page, x, y, endX, endY) {
+async function touchDrag(page, x, y, endX, endY, beforeRelease) {
     await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
     const point = (x, y) => ({ x, y, id: 1, radiusX: 6, radiusY: 6, force: 1 });
+    const move = (x, y) => page.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(x, y)] });
     await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point(x, y)] });
     for (let step = 1; step <= 10; ++step) {
-        await page.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(x + (endX - x) * step / 10, y + (endY - y) * step / 10)] });
+        await move(x + (endX - x) * step / 10, y + (endY - y) * step / 10);
         await sleep(20);
     }
+    if (beforeRelease) await beforeRelease(move);
     await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await sleep(300);
 }
@@ -310,6 +312,15 @@ await run([
             assert(headline, "The first story has no touch target");
             const fingerX = Math.min(screen.width - 35, headline.x + headline.width - 15);
             const fingerY = headline.y + headline.height / 2;
+            await touchDrag(page, fingerX, fingerY, fingerX - 170, fingerY, async move => {
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SwipeAction' && e.text === 'Save')");
+                await page.screenshot(path.join(captures, "phone-swipe-preview.png"));
+                // Retreat across the threshold before releasing the same touch.
+                await move(fingerX - 32, fingerY);
+                await sleep(60);
+            });
+            assert(!(await state(page)).elements.some(e => e.automationName?.startsWith(title) && e.helpText === "Saved. Open discussion."), "Retracting the swipe still saved the story");
+            assert(!(await state(page)).elements.some(e => e.name === "SwipeAction"), "Swipe feedback stayed visible after release");
             await touchDrag(page, fingerX - 180, fingerY, fingerX, fingerY);
             await waitText(page, "Story hidden.");
             assert(!(await state(page)).elements.some(element => element.text === title), "Hidden headline remained in the feed");
