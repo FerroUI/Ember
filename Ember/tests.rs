@@ -1020,3 +1020,6 @@ mod feed_navigation;
 
 #[path = "test_cases/discovery.rs"]
 mod discovery;
+
+#[path = "test_cases/adaptive.rs"]
+mod adaptive;

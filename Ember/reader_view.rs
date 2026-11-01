@@ -125,6 +125,7 @@ enum UndoStoryEdit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceLayout {
     Phone,
+    ShortLandscape,
     CompactRail,
     LabeledRail,
     Reading,
@@ -419,10 +420,7 @@ impl ReaderView {
             );
         });
         let weak = self.to_ref().downgrade();
-        self.size_changed(move |_, event| {
-            if event.new_size().width == event.previous_size().width {
-                return;
-            }
+        self.size_changed(move |_, _| {
             let Some(view) = weak.upgrade() else {
                 return;
             };
@@ -2373,6 +2371,8 @@ impl ReaderView {
         };
         let mode = if self.focus_reading.get() {
             WorkspaceLayout::Reading
+        } else if (600.0..960.0).contains(&width) && (0.0..=500.0).contains(&self.bounds().height) {
+            WorkspaceLayout::ShortLandscape
         } else if width < 760.0 {
             WorkspaceLayout::Phone
         } else if width < 1120.0 {
@@ -2380,7 +2380,8 @@ impl ReaderView {
         } else {
             WorkspaceLayout::LabeledRail
         };
-        let phone = mode == WorkspaceLayout::Phone;
+        let landscape = mode == WorkspaceLayout::ShortLandscape;
+        let phone = mode == WorkspaceLayout::Phone || landscape;
         let reading = mode == WorkspaceLayout::Reading;
         let split = !phone && !reading;
         let detail = *self.detail.borrow() != DetailRoute::Welcome;
@@ -2405,8 +2406,28 @@ impl ReaderView {
         if self.layout_mode.replace(Some(mode)) == Some(mode) {
             return;
         }
+        // Move the same five tab controls to the leading edge on short landscape screens.
+        // A single control tree preserves focus, tooltips and accessibility across rotation.
+        let shell = self.get_control::<Grid>("ReaderShell");
+        shell.set_column_definitions(
+            ColumnDefinitions::parse(if landscape { "64,*" } else { "0,*" })
+                .expect("reader shell columns"),
+        );
+        let tabs = self.get_control::<Border>("BottomNavigation");
+        Grid::set_column(&tabs, if landscape { 0 } else { 1 });
+        Grid::set_row(&tabs, if landscape { 0 } else { 3 });
+        Grid::set_row_span(&tabs, if landscape { 4 } else { 1 });
+        tabs.set_border_thickness(if landscape {
+            Thickness::new(0.0, 0.0, 1.0, 0.0)
+        } else {
+            Thickness::new(0.0, 1.0, 0.0, 0.0)
+        });
+        self.get_control::<ferroui_controls::primitives::UniformGrid>("PrimaryTabs")
+            .set_columns(if landscape { 1 } else { 5 });
         let columns = match mode {
-            WorkspaceLayout::Phone | WorkspaceLayout::Reading => "0,*,0",
+            WorkspaceLayout::Phone | WorkspaceLayout::ShortLandscape | WorkspaceLayout::Reading => {
+                "0,*,0"
+            }
             WorkspaceLayout::CompactRail => "60,290,*",
             WorkspaceLayout::LabeledRail => "172,350,*",
         };

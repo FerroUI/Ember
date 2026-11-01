@@ -2,8 +2,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Ember.ReaderView" Background="{DynamicResource EmberBackground}" Foreground="{DynamicResource EmberText}">
   <InputPaneAwareDecorator Behavior="Resize">
-    <Grid RowDefinitions="Auto,*,Auto,Auto">
-      <Border x:Name="Masthead" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,0,1" Background="{DynamicResource EmberSurface}" Padding="12,3">
+    <Grid x:Name="ReaderShell" ColumnDefinitions="0,*" RowDefinitions="Auto,*,Auto,Auto">
+      <Border x:Name="Masthead" Grid.Column="1" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,0,1" Background="{DynamicResource EmberSurface}" Padding="12,3">
         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
           <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <Border Width="28" Height="28" Background="#D95B32" CornerRadius="7">
@@ -26,7 +26,7 @@
           </StackPanel>
         </Grid>
       </Border>
-      <Grid x:Name="Workspace" Grid.Row="1" ColumnDefinitions="172,350,*">
+      <Grid x:Name="Workspace" Grid.Row="1" Grid.Column="1" ColumnDefinitions="172,350,*">
         <Border x:Name="NavigationRail" Background="{DynamicResource EmberRail}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,1,0" Padding="6,8">
           <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="2">
@@ -117,21 +117,23 @@
           </Grid>
         </Border>
       </Grid>
-      <Border Grid.Row="2" x:Name="StatusBar" Background="{DynamicResource EmberTint}" Padding="12,0,3,0" IsVisible="False">
+      <Border Grid.Row="2" Grid.Column="1" x:Name="StatusBar" Background="{DynamicResource EmberTint}" Padding="12,0,3,0" IsVisible="False">
         <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
           <TextBlock x:Name="StatusText" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
           <Button x:Name="UndoStory" Grid.Column="1" Classes="quiet" IsVisible="False" Content="Undo" AutomationProperties.Name="Undo story change" />
           <Button x:Name="DismissStatus" Grid.Column="2" Classes="icon-button" AutomationProperties.Name="Dismiss notification" ToolTip.Tip="Dismiss notification" />
         </Grid>
       </Border>
-      <Border Grid.Row="3" x:Name="BottomNavigation" Background="{DynamicResource EmberSurface}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,1,0,0" Padding="2" IsVisible="False">
-        <UniformGrid Columns="5">
-          <Button x:Name="MobileHome" Classes="nav" AutomationProperties.Name="Front page" />
-          <Button x:Name="MobileNew" Classes="nav" AutomationProperties.Name="Latest stories" />
-          <Button x:Name="MobileSearch" Classes="nav" AutomationProperties.Name="Search" />
-          <Button x:Name="MobileSaved" Classes="nav" AutomationProperties.Name="Saved stories" />
-          <Button x:Name="MobileMore" Classes="nav" AutomationProperties.Name="More navigation" />
-        </UniformGrid>
+      <Border Grid.Row="3" Grid.Column="1" x:Name="BottomNavigation" Background="{DynamicResource EmberSurface}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,1,0,0" Padding="2" IsVisible="False">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <UniformGrid x:Name="PrimaryTabs" Columns="5">
+            <Button x:Name="MobileHome" Classes="nav" AutomationProperties.Name="Front page" />
+            <Button x:Name="MobileNew" Classes="nav" AutomationProperties.Name="Latest stories" />
+            <Button x:Name="MobileSearch" Classes="nav" AutomationProperties.Name="Search" />
+            <Button x:Name="MobileSaved" Classes="nav" AutomationProperties.Name="Saved stories" />
+            <Button x:Name="MobileMore" Classes="nav" AutomationProperties.Name="More navigation" />
+          </UniformGrid>
+        </ScrollViewer>
       </Border>
     </Grid>
   </InputPaneAwareDecorator>
