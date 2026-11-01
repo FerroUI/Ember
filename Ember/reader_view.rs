@@ -238,6 +238,7 @@ pub struct ReaderView {
     feed_generation: Cell<u64>,
     detail_generation: Cell<u64>,
     feed_load: Cell<FeedLoad>,
+    initial_feed_pending: Cell<bool>,
     empty_action: Cell<Option<EmptyAction>>,
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     profile_mute: RefCell<Option<Ref<ToggleButton>>>,
@@ -320,6 +321,7 @@ impl ReaderView {
             feed_generation: Cell::new(0),
             detail_generation: Cell::new(0),
             feed_load: Cell::new(FeedLoad::Ready),
+            initial_feed_pending: Cell::new(false),
             empty_action: Cell::new(None),
             explore_counts: RefCell::new(Vec::new()),
             profile_mute: RefCell::new(None),
@@ -832,7 +834,7 @@ impl ReaderView {
                 if !view.state_ready.get() {
                     match result {
                         Ok(state) => {
-                            crate::theme::apply(&state.preferences);
+                            crate::theme::apply(&state.preferences, None);
                             *view.state.borrow_mut() = state;
                             view.state_ready.set(true);
                             view.update_explore_counts();
@@ -846,11 +848,16 @@ impl ReaderView {
                         )),
                     }
                 }
-                view.load_feed(0, FetchMode::CacheFirst);
-                if let Some(location) = services::take_initial_location() {
-                    if let Some(id) = item_from_location(&location) {
-                        view.open_item_internal(id, false);
-                    }
+                if let Some(id) = services::take_initial_location()
+                    .as_deref()
+                    .and_then(item_from_location)
+                {
+                    // Give a permalink the network slots first. Single-pane readers
+                    // need the feed only when they go Back or expand the window.
+                    view.initial_feed_pending.set(true);
+                    view.open_item_internal(id, false);
+                } else {
+                    view.load_feed(0, FetchMode::CacheFirst);
                 }
             }
         }));
@@ -1055,6 +1062,7 @@ impl ReaderView {
         self.load_feed_pages(offset, mode, 1);
     }
     fn load_feed_pages(&self, offset: usize, mode: FetchMode, pages_left: usize) {
+        self.initial_feed_pending.set(false);
         let Some(repo) = self.repo() else {
             return;
         };
@@ -2035,6 +2043,7 @@ impl ReaderView {
             .and_then(|c| crate::thread_view::viewport_position(c));
         let mut state = self.state.borrow_mut();
         let local = state.items.entry(id).or_default();
+        let seen_before = local.seen_comments.len();
         local.seen_comments.extend(thread.items.keys().copied());
         let position = self
             .new_replies_origin
@@ -2042,8 +2051,16 @@ impl ReaderView {
             .or(self.find_origin.get())
             .or(anchor)
             .filter(|&position| position != ReadingPosition::start(id));
-        local.scroll_anchor = position.map(|p| p.item);
-        local.scroll_inset = position.map_or(0, |p| p.inset);
+        let anchor = position.map(|p| p.item);
+        let inset = position.map_or(0, |p| p.inset);
+        if local.seen_comments.len() == seen_before
+            && local.scroll_anchor == anchor
+            && local.scroll_inset == inset
+        {
+            return;
+        }
+        local.scroll_anchor = anchor;
+        local.scroll_inset = inset;
         drop(state);
         self.changed();
     }
@@ -2779,11 +2796,21 @@ impl ReaderView {
         match action {
             SettingsAction::Preferences(mut preferences) => {
                 preferences.normalize();
-                crate::theme::apply(&preferences);
-                self.state.borrow_mut().preferences = preferences;
+                let previous = std::mem::replace(
+                    &mut self.state.borrow_mut().preferences,
+                    preferences.clone(),
+                );
+                crate::theme::apply(&preferences, Some(&previous));
                 self.changed();
-                self.render_stories();
-                self.prune_cache();
+                if previous.compact != preferences.compact
+                    || previous.hide_read != preferences.hide_read
+                    || previous.show_dead != preferences.show_dead
+                {
+                    self.render_stories();
+                }
+                if previous.cache_max_items != preferences.cache_max_items {
+                    self.prune_cache();
+                }
                 self.status("Preferences applied.");
             }
             SettingsAction::Mutes(mutes) => {
@@ -2856,7 +2883,7 @@ impl ReaderView {
             // The in-flight transfer may already have changed part of the local copy.
             state.downloaded_threads.remove(&id);
         }
-        crate::theme::apply(&state.preferences);
+        crate::theme::apply(&state.preferences, None);
         *self.state.borrow_mut() = state;
         self.state_ready.set(true);
         self.changed();
@@ -2998,8 +3025,24 @@ impl ReaderView {
             .set_is_visible(split);
         self.get_control::<Border>("BottomNavigation")
             .set_is_visible(phone);
+        let feed_visible = split || (phone && !detail);
         self.get_control::<Border>("FeedPane")
-            .set_is_visible(split || (phone && !detail));
+            .set_is_visible(feed_visible);
+        if feed_visible && self.initial_feed_pending.get() {
+            let weak = self.to_ref().downgrade();
+            Dispatcher::ui_thread().post_local(
+                move || {
+                    if let Some(view) = weak.upgrade() {
+                        if view.initial_feed_pending.get()
+                            && view.get_control::<Border>("FeedPane").is_visible()
+                        {
+                            view.load_feed(0, FetchMode::CacheFirst);
+                        }
+                    }
+                },
+                DispatcherPriority::BACKGROUND,
+            );
+        }
         self.get_control::<Border>("DetailPane")
             .set_is_visible(split || detail);
         self.get_control::<Border>("Masthead")

@@ -235,3 +235,49 @@ fn library_and_discussion_find_follow_the_pane_receiving_the_shortcut() {
     assert!(view.get_control::<Button>("LibraryFindButton").is_focused());
     window.close();
 }
+
+#[test]
+fn a_phone_permalink_defers_the_front_page_until_it_is_visible() {
+    struct Tracked(FixtureHttp, Cell<usize>);
+    impl HttpClient for Tracked {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            if url.ends_with("/topstories.json") {
+                self.1.set(self.1.get() + 1);
+            }
+            self.0.get(url)
+        }
+    }
+    for expand in [false, true] {
+        crate::set_initial_location("?item=1001".to_owned());
+        let http = Rc::new(Tracked(
+            FixtureHttp {
+                offline: Rc::new(Cell::new(false)),
+            },
+            Cell::new(0),
+        ));
+        let (shell, window, view) =
+            start_with_http(390.0, 844.0, Rc::new(MemoryStore::default()), http.clone());
+        assert_eq!(
+            view.get_control::<TextBlock>("DetailTitle")
+                .text()
+                .as_deref(),
+            Some("Small tools, carefully made")
+        );
+        assert_eq!(
+            http.1.get(),
+            0,
+            "hidden feed must not compete with a permalink"
+        );
+        if expand {
+            window.set_width(1280.0);
+        } else {
+            click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+        }
+        for _ in 0..6 {
+            shell.settle();
+        }
+        assert_eq!(http.1.get(), 1);
+        assert!(view.get_control::<ListBox>("Stories").items().count() > 0);
+        window.close();
+    }
+}

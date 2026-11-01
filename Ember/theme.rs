@@ -50,57 +50,73 @@ pub(crate) fn set_accent(theme: &WinUITheme, hex: &str) {
         theme.resources().set(key, Some(Rc::new(color)));
     }
 }
-pub(crate) fn apply(preferences: &Preferences) {
+pub(crate) fn apply(preferences: &Preferences, previous: Option<&Preferences>) {
     if let Some(application) = Application::current() {
-        // Overrides live in the ordinary dictionary; the built-in Light/Dark
-        // dictionaries remain intact and become visible again on a mode change.
-        for key in CUSTOM_KEYS {
-            application.resources().remove(&ResourceKey::from(key));
+        let palette_changed = previous.is_none_or(|old| {
+            old.theme != preferences.theme
+                || (preferences.theme == ThemeMode::Custom
+                    && (old.custom_background != preferences.custom_background
+                        || old.accent != preferences.accent))
+        });
+        if palette_changed {
+            apply_palette(&application, preferences);
         }
-        let custom = (preferences.theme == ThemeMode::Custom).then(|| {
+        if previous.is_none_or(|old| old.font_size != preferences.font_size) {
+            application
+                .resources()
+                .set("EmberReadingFontSize", Some(Rc::new(preferences.font_size)));
+        }
+        let height = preferences.font_size * preferences.line_height;
+        if previous.is_none_or(|old| old.font_size * old.line_height != height) {
+            application
+                .resources()
+                .set("EmberReadingLineHeight", Some(Rc::new(height)));
+        }
+    }
+    if let Some(theme) = crate::App::theme() {
+        if previous.is_none_or(|old| old.accent != preferences.accent) {
+            set_accent(&theme, &preferences.accent);
+        }
+        if previous.is_none_or(|old| old.compact != preferences.compact) {
+            theme.set_density_style(if preferences.compact {
+                DensityStyle::Compact
+            } else {
+                DensityStyle::Normal
+            });
+        }
+    }
+}
+
+fn apply_palette(application: &Application, preferences: &Preferences) {
+    let variant = match preferences.theme {
+        ThemeMode::System => None,
+        ThemeMode::Light => Some(ThemeVariant::light()),
+        ThemeMode::Dark => Some(ThemeVariant::dark()),
+        ThemeMode::Custom => {
             let background = preferences
                 .custom_background
                 .as_deref()
                 .and_then(|s| Color::parse(s).ok())
                 .unwrap_or(Color::from_rgb(24, 27, 31));
             let accent = Color::parse(&preferences.accent).unwrap_or(Color::from_rgb(255, 107, 53));
-            custom_palette(background, accent)
-        });
-        application.set_requested_theme_variant(match preferences.theme {
-            ThemeMode::System => None,
-            ThemeMode::Light => Some(ThemeVariant::light()),
-            ThemeMode::Dark => Some(ThemeVariant::dark()),
-            ThemeMode::Custom => Some(if custom.as_ref().is_some_and(|p| p.dark) {
-                ThemeVariant::dark()
-            } else {
-                ThemeVariant::light()
-            }),
-        });
-        if let Some(palette) = custom {
+            let palette = custom_palette(background, accent);
             for (key, color) in CUSTOM_KEYS.into_iter().zip(palette.colors) {
                 application
                     .resources()
                     .set(key, Some(Rc::new(SolidColorBrush::with_color(color))));
             }
+            application.set_requested_theme_variant(Some(if palette.dark {
+                ThemeVariant::dark()
+            } else {
+                ThemeVariant::light()
+            }));
+            return;
         }
-        // Available to markup and future reading controls without scaling the
-        // navigation chrome. Rich HN content already consumes these preferences.
-        application
-            .resources()
-            .set("EmberReadingFontSize", Some(Rc::new(preferences.font_size)));
-        application.resources().set(
-            "EmberReadingLineHeight",
-            Some(Rc::new(preferences.font_size * preferences.line_height)),
-        );
+    };
+    for key in CUSTOM_KEYS {
+        application.resources().remove(&ResourceKey::from(key));
     }
-    if let Some(theme) = crate::App::theme() {
-        set_accent(&theme, &preferences.accent);
-        theme.set_density_style(if preferences.compact {
-            DensityStyle::Compact
-        } else {
-            DensityStyle::Normal
-        });
-    }
+    application.set_requested_theme_variant(variant);
 }
 
 const CUSTOM_KEYS: [&str; 10] = [
