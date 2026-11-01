@@ -140,132 +140,211 @@ impl ReaderView {
     }
 
     pub(super) fn show_profile(&self, name: String) {
+        self.fetch_profile(name, FetchMode::CacheFirst);
+    }
+
+    fn fetch_profile(&self, name: String, mode: FetchMode) {
         self.navigate(DetailRoute::Profile(name.clone()));
         self.label("DetailEyebrow").set_text(Some("PROFILE"));
         self.label("DetailTitle").set_text(Some(&name));
-        let loading = widgets::muted("Loading profile…");
-        loading.set_margin(Thickness::uniform(18.0));
+        let loading = page();
+        loading.children().add(widgets::muted("Loading profile…"));
         self.show_content(loading.upcast());
         let Some(repo) = self.repo() else {
+            self.profile_unavailable(&name, "The reading database is unavailable.");
             return;
         };
         let generation = self.detail_generation.get();
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-                let result = repo
-                    .load_user(&name, services::now(), FetchMode::CacheFirst)
-                    .await;
-                if let Some(v) = weak.upgrade() {
-                    if v.detail_generation.get() != generation {
+                let result = repo.load_user(&name, services::now(), mode).await;
+                let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| v.detail_generation.get() == generation)
+                else {
+                    return;
+                };
+                let user = match result {
+                    Ok(loaded) => {
+                        if let Some(warning) = loaded.warning.as_deref() {
+                            view.status(warning);
+                        }
+                        let Some(user) = loaded.value else {
+                            view.profile_unavailable(&name, "This user has no public profile.");
+                            return;
+                        };
+                        user
+                    }
+                    Err(error) => {
+                        view.profile_unavailable(&name, &error.to_string());
                         return;
                     }
-                    match result {
-                        Ok(loaded) => {
-                            if let Some(warning) = loaded.warning.as_deref() {
-                                v.status(warning);
-                            }
-                            if let Some(user) = loaded.value {
-                                let panel = widgets::stack(10.0);
-                                panel.set_margin(Thickness::uniform(18.0));
-                                panel.set_max_width(660.0);
-                                panel
-                                    .children()
-                                    .add(widgets::heading(&user.id).upcast::<Control>());
-                                let mut facts = Vec::new();
-                                if let Some(karma) = user.karma {
-                                    facts.push(format!("{karma} karma"));
-                                }
-                                if user.created.is_some() {
-                                    facts.push(format!(
-                                        "Joined {}",
-                                        ember_core::relative_time(user.created, services::now())
-                                    ));
-                                }
-                                let count = user.submitted.len();
-                                facts.push(format!(
-                                    "{count} {}",
-                                    if count == 1 {
-                                        "submission"
-                                    } else {
-                                        "submissions"
-                                    }
-                                ));
-                                panel.children().add(widgets::muted(&facts.join(" · ")));
-                                let link = v.to_ref().downgrade();
-                                let options = crate::thread_view::render_options(&v.state.borrow());
-                                panel.children().add(ember_content::render(
-                                    &ember_content::HtmlDocument::parse(
-                                        user.about.as_deref().unwrap_or("No public biography."),
-                                    ),
-                                    &options,
-                                    Rc::new(move |url| {
-                                        if let Some(v) = link.upgrade() {
-                                            v.open_url(url);
-                                        }
-                                    }),
-                                ));
-                                for (label, icon, kind) in [
-                                    ("Stories", "home", SearchKind::Stories),
-                                    ("Comments", "chat", SearchKind::Comments),
-                                ] {
-                                    let username = user.id.clone();
-                                    let target = v.to_ref().downgrade();
-                                    panel.children().add(
-                                        widgets::action(label, icon, move || {
-                                            if let Some(v) = target.upgrade() {
-                                                v.run_search(SearchQuery {
-                                                    author: Some(username.clone()),
-                                                    kind,
-                                                    ..Default::default()
-                                                });
-                                            }
-                                        })
-                                        .upcast::<Control>(),
-                                    );
-                                }
-                                let link = v.to_ref().downgrade();
-                                let url = ember_core::user_url(&user.id);
-                                panel.children().add(
-                                    widgets::action("Profile on Hacker News", "open", move || {
-                                        if let Some(v) = link.upgrade() {
-                                            v.open_url(&url);
-                                        }
-                                    })
-                                    .upcast::<Control>(),
-                                );
-                                v.show_content(widgets::scroll(panel.upcast::<Control>()));
-                            } else {
-                                let message = widgets::muted("This user has no public profile.");
-                                message.set_margin(Thickness::uniform(18.0));
-                                v.show_content(message.upcast());
-                            }
-                        }
-                        Err(error) => {
-                            v.status(&format!("Profile unavailable: {error}"));
-                            let panel = widgets::stack(8.0);
-                            panel.set_margin(Thickness::uniform(18.0));
-                            panel
-                                .children()
-                                .add(widgets::heading("Couldn’t load profile"));
-                            panel.children().add(widgets::muted(
-                                "Check the username or your connection, then try again.",
-                            ));
-                            let target = v.to_ref().downgrade();
-                            let retry = widgets::action("Try again", "refresh", move || {
-                                if let Some(view) = target.upgrade() {
-                                    view.show_profile(name.clone());
-                                }
-                            });
-                            retry.set_horizontal_alignment(
-                                ferroui_base::layout::HorizontalAlignment::Left,
-                            );
-                            panel.children().add(retry);
-                            v.show_content(panel.upcast());
-                        }
-                    }
+                };
+                let activity = view.render_profile(&user);
+                if user.submitted.is_empty() {
+                    return;
+                }
+                drop(view);
+                // The public user record can contain many thousands of submission IDs.
+                // Render the bio immediately and fetch just the visible preview, in HN order.
+                let ids = &user.submitted[..user.submitted.len().min(5)];
+                let batch = repo.load_items(ids, services::now(), mode).await;
+                if let Some(view) = weak
+                    .upgrade()
+                    .filter(|v| v.detail_generation.get() == generation)
+                {
+                    view.render_profile_activity(&activity, &user.id, batch);
                 }
             }),
         );
+    }
+
+    fn profile_unavailable(&self, name: &str, reason: &str) {
+        let panel = page();
+        panel
+            .children()
+            .add(widgets::heading("Profile unavailable"));
+        panel.children().add(widgets::label(reason, 15.0, true));
+        let actions = ferroui_controls::WrapPanel::new();
+        let lookup = name.to_owned();
+        actions
+            .children()
+            .add(self.discovery_action("Edit username", "search", move |v| {
+                v.show_profile_lookup(&lookup)
+            }));
+        let retry = name.to_owned();
+        actions
+            .children()
+            .add(self.discovery_action("Try again", "refresh", move |v| {
+                v.fetch_profile(retry.clone(), FetchMode::Refresh)
+            }));
+        panel.children().add(actions);
+        self.show_content(widgets::scroll(panel.upcast()));
+    }
+
+    fn render_profile(&self, user: &ember_core::HnUser) -> Ref<StackPanel> {
+        let panel = page();
+        let bio = widgets::section(&panel, &user.id);
+        let mut facts = Vec::new();
+        if let Some(karma) = user.karma {
+            facts.push(format!("{karma} karma"));
+        }
+        if user.created.is_some() {
+            facts.push(format!(
+                "Joined {}",
+                ember_core::relative_time(user.created, services::now())
+            ));
+        }
+        let count = user.submitted.len();
+        facts.push(format!(
+            "{count} {}",
+            if count == 1 {
+                "submission"
+            } else {
+                "submissions"
+            }
+        ));
+        bio.children().add(widgets::muted(&facts.join("  ·  ")));
+        if let Some(about) = user
+            .about
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let link = self.to_ref().downgrade();
+            bio.children().add(ember_content::render(
+                &ember_content::HtmlDocument::parse(about),
+                &crate::thread_view::render_options(&self.state.borrow()),
+                Rc::new(move |url| {
+                    if let Some(v) = link.upgrade() {
+                        v.open_url(url);
+                    }
+                }),
+            ));
+        }
+        let actions = ferroui_controls::WrapPanel::new();
+        let url = ember_core::user_url(&user.id);
+        let link = url.clone();
+        actions.children().add(
+            self.discovery_action("Profile on Hacker News", "open", move |v| v.open_url(&link)),
+        );
+        let copy = widgets::icon_button("Copy profile link", "copy");
+        let weak = self.to_ref().downgrade();
+        copy.click(move |_, _| {
+            if let Some(v) = weak.upgrade() {
+                v.copy_text(&url, "Profile link copied.");
+            }
+        });
+        actions.children().add(copy);
+        bio.children().add(actions);
+
+        let activity = widgets::section(&panel, "Recent activity");
+        let list = widgets::stack(0.0);
+        list.children().add(widgets::muted(if count == 0 {
+            "No public submissions yet."
+        } else {
+            "Loading recent submissions…"
+        }));
+        activity.children().add(list.clone());
+        if count > 0 {
+            let routes = ferroui_controls::WrapPanel::new();
+            for (label, icon, kind) in [
+                ("All stories", "home", SearchKind::Stories),
+                ("All comments", "chat", SearchKind::Comments),
+            ] {
+                let author = user.id.clone();
+                routes
+                    .children()
+                    .add(self.discovery_action(label, icon, move |v| {
+                        v.run_search(SearchQuery {
+                            author: Some(author.clone()),
+                            kind,
+                            sort: ember_core::SearchSort::Recent,
+                            ..Default::default()
+                        });
+                    }));
+            }
+            activity.children().add(routes);
+        }
+        self.show_content(widgets::scroll(panel.upcast()));
+        list
+    }
+
+    fn render_profile_activity(&self, list: &StackPanel, user: &str, batch: ember_core::ItemBatch) {
+        list.children().clear();
+        let state = self.state.borrow();
+        let show_dead = state.preferences.show_dead;
+        for item in batch.items.iter().filter(|item| {
+            item.by.as_deref() == Some(user)
+                && !item.deleted
+                && (!item.dead || show_dead)
+                && !state.items.get(&item.id).is_some_and(|local| local.hidden)
+        }) {
+            let card = StoryCard::new();
+            card.classes().add("compact");
+            card.set_item(item, services::now(), show_dead);
+            let weak = self.to_ref().downgrade();
+            let id = item.id;
+            card.click(move |_, _| {
+                if let Some(view) = weak.upgrade() {
+                    view.open_item_internal(id, true);
+                }
+            });
+            list.children().add(card);
+        }
+        if batch.warning.is_some() && !batch.missing_ids.is_empty() {
+            list.children().add(widgets::muted(
+                "Some recent submissions could not be loaded.",
+            ));
+            let author = user.to_owned();
+            list.children().add(
+                self.discovery_action("Retry activity", "refresh", move |v| {
+                    v.fetch_profile(author.clone(), FetchMode::Refresh)
+                }),
+            );
+        } else if list.children().count() == 0 {
+            list.children()
+                .add(widgets::muted("No recent submissions to show."));
+        }
     }
 }
