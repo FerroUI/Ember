@@ -117,7 +117,7 @@ fn narrow_toolbar_downloads_and_enters_focus_from_the_sticky_discussion_options(
     assert!(download.is_effectively_visible());
     assert_eq!(
         AutomationProperties::get_name(&download).as_deref(),
-        Some("Available offline. Download again")
+        Some("Manage downloaded discussion")
     );
     window.close();
 }

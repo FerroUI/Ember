@@ -39,6 +39,8 @@ pub enum SettingsAction {
     Mutes(MuteRules),
     Export(Rc<dyn Fn(&str)>),
     Import(ReaderState),
+    MeasureStorage(Rc<dyn Fn(&str)>),
+    CleanTemporary,
     ClearCache,
     ClearHistory,
 }
@@ -377,6 +379,41 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
     cleanup.set_is_visible(false);
     root.children().add(cleanup.clone());
     let maintenance = disclosure(&cleanup, "Clear local data", false);
+    let usage = text("Measure cached data on this device.", 13.0, true);
+    AutomationProperties::set_live_setting(&usage, AutomationLiveSetting::Polite);
+    maintenance.children().add(usage.clone());
+    let measure = button("Check storage use");
+    let weak_button = measure.downgrade();
+    let weak_usage = usage.downgrade();
+    let action = on_action.clone();
+    measure.click(move |_, _| {
+        let (Some(button), Some(label)) = (weak_button.upgrade(), weak_usage.upgrade()) else {
+            return;
+        };
+        button.set_is_enabled(false);
+        label.set_text(Some("Measuring cached data…"));
+        let report_button = button.downgrade();
+        let report_label = label.downgrade();
+        action(SettingsAction::MeasureStorage(Rc::new(move |result| {
+            if let Some(button) = report_button.upgrade() {
+                button.set_is_enabled(true);
+            }
+            if let Some(label) = report_label.upgrade() {
+                label.set_text(Some(result));
+            }
+        })));
+    });
+    maintenance.children().add(measure);
+    reviewed_action(
+        &maintenance,
+        &review,
+        ("Clean temporary cache", "refresh"),
+        "Clean temporary data",
+        || {
+            Ok(("Remove temporary story data, cached searches, and profiles? Bookmarks, feed lists, and downloaded discussions are kept.".into(), SettingsAction::CleanTemporary))
+        },
+        &on_action,
+    );
     reviewed_action(
         &maintenance,
         &review,

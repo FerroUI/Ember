@@ -11,12 +11,12 @@ fn retrying_an_unavailable_download_revokes_the_check_and_preserves_the_bookmark
         click(&shell, &window, &download);
         assert_eq!(
             AutomationProperties::get_name(&download).as_deref(),
-            Some("Available offline. Download again")
+            Some("Manage downloaded discussion")
         );
 
         ready(store.remove(&format!("cache:item:{missing}"))).unwrap();
         offline.set(true);
-        click(&shell, &window, &download);
+        download_action(&shell, &window, &download, "Check offline copy");
         assert_eq!(
             AutomationProperties::get_name(&download).as_deref(),
             Some("Download thread")
@@ -27,4 +27,76 @@ fn retrying_an_unavailable_download_revokes_the_check_and_preserves_the_bookmark
         assert!(!saved.downloaded_threads.contains_key(&1001));
         window.close();
     }
+}
+
+fn download_action(shell: &Shell, window: &Window, button: &Button, label: &str) {
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::{MenuFlyout, MenuItem};
+    click_in_view(shell, window, button);
+    let menu = button.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+    assert!(menu.is_open());
+    let items = menu.items();
+    let item = (0..items.count())
+        .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+        .filter_map(|c| c.cast::<MenuItem>())
+        .find(|i| {
+            i.header()
+                .and_then(|h| h.downcast_ref::<String>().cloned())
+                .as_deref()
+                == Some(label)
+        })
+        .unwrap();
+    item.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+    menu.hide();
+    for _ in 0..5 {
+        shell.settle();
+    }
+}
+
+#[test]
+fn unbookmarked_downloads_remain_readable_and_can_be_released_individually() {
+    let store = Rc::new(MemoryStore::default());
+    let http = Rc::new(CountingHttp {
+        fixture: FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        },
+        requests: Cell::new(0),
+    });
+    let (shell, window, view) = start_with_http(390.0, 800.0, store.clone(), http.clone());
+    let act = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
+    let persisted =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    click_in_view(&shell, &window, &first_story(&window));
+    act("DownloadButton");
+    act("SaveButton");
+    assert!(!persisted().is_saved(1001));
+    assert!(persisted().downloaded_threads.contains_key(&1001));
+    act("MobileSaved");
+    act("DownloadedOnly");
+    assert_eq!(title(&view), "Downloads");
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 1);
+    http.fixture.offline.set(true);
+    http.requests.set(0);
+    click_in_view(&shell, &window, &first_story(&window));
+    let download = view.get_control::<Button>("DownloadButton");
+    download_action(&shell, &window, &download, "Check offline copy");
+    assert!(
+        !persisted().is_saved(1001),
+        "checking a verified copy cannot re-bookmark it"
+    );
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
+    download_action(&shell, &window, &download, "Stop keeping offline");
+    assert!(!persisted().downloaded_threads.contains_key(&1001));
+    assert_eq!(
+        AutomationProperties::get_name(&download).as_deref(),
+        Some("Download thread")
+    );
+    assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 0);
+    assert_eq!(http.requests.get(), 0);
+    window.close();
 }

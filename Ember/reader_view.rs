@@ -1,5 +1,6 @@
 mod discovery;
 mod library_find;
+mod offline;
 
 use crate::controls::{StoryCard, StorySummary};
 use crate::markup::xaml_class;
@@ -49,10 +50,8 @@ impl FeedRoute {
     }
     fn includes(&self, item: &HnItem, state: &ReaderState, downloaded_only: bool) -> bool {
         match self {
-            Self::Saved => {
-                state.is_saved(item.id)
-                    && (!downloaded_only || state.downloaded_threads.contains_key(&item.id))
-            }
+            Self::Saved if downloaded_only => state.downloaded_threads.contains_key(&item.id),
+            Self::Saved => state.is_saved(item.id),
             Self::History => state
                 .items
                 .get(&item.id)
@@ -77,6 +76,7 @@ enum DetailRoute {
 enum CacheWork {
     Idle,
     Pruning,
+    Cleaning,
     Downloading(u64),
     Clearing,
 }
@@ -422,7 +422,12 @@ impl ReaderView {
                 v.toggle_story_flag(id, StoryFlag::Saved);
             }
         });
-        self.on("DownloadButton", |v| v.download());
+        self.on("DownloadButton", |v| {
+            // A verified copy has a native action menu. Unverified discussions download directly.
+            if v.button("DownloadButton").flyout().is_none() {
+                v.download();
+            }
+        });
         self.on("UndoStory", |v| v.undo_story_edit());
         self.on("DismissStatus", |v| {
             v.undo_story.set(None);
@@ -866,6 +871,7 @@ impl ReaderView {
         let route = self.feed.borrow().clone();
         let title = match &route {
             FeedRoute::Feed(f) => f.title(),
+            FeedRoute::Saved if self.downloaded_only.get() => "Downloads",
             FeedRoute::Saved => "Saved for later",
             FeedRoute::History => "Reading history",
             FeedRoute::Hidden => "Hidden stories",
@@ -881,14 +887,8 @@ impl ReaderView {
         };
         let downloaded_shelf = self.downloaded_shelf();
         let local_ids = match &route {
-            FeedRoute::Saved => {
-                let state = self.state.borrow();
-                let mut ids = state.saved_ids();
-                if downloaded_shelf {
-                    ids.retain(|id| state.downloaded_threads.contains_key(id));
-                }
-                ids
-            }
+            FeedRoute::Saved if downloaded_shelf => self.state.borrow().downloaded_ids(),
+            FeedRoute::Saved => self.state.borrow().saved_ids(),
             FeedRoute::History => self.state.borrow().history_ids(),
             FeedRoute::Hidden => self
                 .state
@@ -1168,7 +1168,7 @@ impl ReaderView {
                 FeedLoad::Ready => match &*route {
                     FeedRoute::Saved if self.downloaded_only.get() => (
                         "No downloaded discussions",
-                        "Open a saved story and use Download to keep its replies on this device.",
+                        "Open a discussion and choose Download to keep a copy on this device.",
                         Some(AllSaved),
                     ),
                     FeedRoute::Saved => (
@@ -1317,8 +1317,10 @@ impl ReaderView {
         } else {
             ""
         }));
-        card.classes()
-            .set("hidden", state.items.get(&id).is_some_and(|entry| entry.hidden));
+        card.classes().set(
+            "hidden",
+            state.items.get(&id).is_some_and(|entry| entry.hidden),
+        );
         card.classes().set("read", read);
         card.classes().set("saved", saved);
         card.classes().set("compact", state.preferences.compact);
@@ -1401,6 +1403,13 @@ impl ReaderView {
                     label,
                     icon,
                     Box::new(move |v| v.toggle_story_flag(id, flag)),
+                );
+            }
+            if state.downloaded_threads.contains_key(&id) {
+                add(
+                    "Stop keeping offline",
+                    "download",
+                    Box::new(move |v| v.release_download(id)),
                 );
             }
             add(
@@ -1926,6 +1935,11 @@ impl ReaderView {
             v.set_focus_reading(true)
         });
         let menu_download = action("Download thread", "download", Self::download);
+        let menu_release = action("Stop keeping offline", "download", |v| {
+            if let Some(id) = v.selected.get() {
+                v.release_download(id);
+            }
+        });
         action("Refresh discussion", "refresh", |v| {
             if let Some(id) = v.selected.get() {
                 v.fetch_thread(id, FetchMode::Refresh);
@@ -1940,9 +1954,15 @@ impl ReaderView {
                 let command = view.button("DownloadButton");
                 menu_download.set_is_visible(!command.is_visible());
                 menu_download.set_is_enabled(command.is_enabled());
-                menu_download.set_header(
-                    AutomationProperties::get_name(&command).map(|s| Rc::new(s) as BoxedValue),
-                );
+                let verified = command.flyout().is_some();
+                let label = if verified {
+                    "Check offline copy"
+                } else {
+                    "Download thread"
+                };
+                menu_download.set_header(Some(Rc::new(label.to_owned())));
+                menu_release.set_is_visible(verified && !command.is_visible());
+                menu_release.set_is_enabled(command.is_enabled());
             }
         });
         self.button("ToolbarMore").set_flyout(menu);
@@ -1989,14 +2009,27 @@ impl ReaderView {
                 "download"
             }))));
         }
+        let menu_id = button
+            .tag()
+            .and_then(|tag| tag.downcast_ref::<u64>().copied());
+        if let Some(id) = selected.filter(|_| downloaded) {
+            if menu_id != Some(id) {
+                button.set_flyout(self.offline_actions(id));
+                button.set_tag(Some(Rc::new(id)));
+            }
+        } else if menu_id.is_some() {
+            button.clear_value(Button::flyout_property());
+            button.set_tag(None);
+        }
         let work = self.cache_work.get();
         button.set_is_enabled(work == CacheWork::Idle);
         let name = match work {
             CacheWork::Pruning => "Managing offline storage",
             CacheWork::Clearing => "Clearing offline storage",
+            CacheWork::Cleaning => "Cleaning temporary cache",
             CacheWork::Downloading(id) if Some(id) == selected => "Downloading this discussion",
             CacheWork::Downloading(_) => "Downloading another discussion",
-            CacheWork::Idle if downloaded => "Available offline. Download again",
+            CacheWork::Idle if downloaded => "Manage downloaded discussion",
             CacheWork::Idle => "Download thread",
         };
         AutomationProperties::set_name(&button, Some(name));
@@ -2025,8 +2058,10 @@ impl ReaderView {
             if generation != view.library_generation.get() { return; }
             let library_changed = if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
                 let mut state = view.state.borrow_mut();
-                state.downloaded_threads.insert(id, thread.items.keys().copied().collect());
-                state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
+                let first_download = state.downloaded_threads.insert(id, thread.items.keys().copied().collect()).is_none();
+                if first_download {
+                    state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
+                }
                 true
             } else {
                 view.state.borrow_mut().downloaded_threads.remove(&id).is_some()
@@ -2390,6 +2425,8 @@ impl ReaderView {
                 self.status("Reading history cleared. Saved stories are retained.");
             }
             SettingsAction::ClearCache => self.clear_cache(),
+            SettingsAction::CleanTemporary => self.clean_temporary_cache(),
+            SettingsAction::MeasureStorage(report) => self.measure_storage(report),
         }
     }
     fn import_backup(&self, mut state: ReaderState) {

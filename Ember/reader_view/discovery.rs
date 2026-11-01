@@ -143,11 +143,7 @@ impl ReaderView {
         let state = self.state.borrow();
         for counter in counters.iter() {
             let count = match counter.route {
-                FeedRoute::Saved => state
-                    .downloaded_threads
-                    .keys()
-                    .filter(|&&id| state.is_saved(id))
-                    .count(),
+                FeedRoute::Saved => state.downloaded_threads.len(),
                 FeedRoute::History => state
                     .items
                     .values()
