@@ -1795,31 +1795,44 @@ impl ReaderView {
             view.set_cache_work(CacheWork::Idle);
             // A backup can replace the library while the network operation is outstanding.
             if generation != view.library_generation.get() { return; }
-            let thread = match result {
-                Ok(thread) => thread,
-                Err(error) => { view.status(&format!("Download could not complete: {error}")); return; }
-            };
-            if thread.complete {
+            let library_changed = if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
                 let mut state = view.state.borrow_mut();
                 state.downloaded_threads.insert(id, thread.items.keys().copied().collect());
                 state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
-                drop(state);
+                true
+            } else {
+                view.state.borrow_mut().downloaded_threads.remove(&id).is_some()
+            };
+            if library_changed {
                 view.changed();
+                view.update_thread_commands();
                 if *view.feed.borrow() == FeedRoute::Saved {
                     view.load_feed(0, FetchMode::CacheFirst);
                 }
-                view.status("Discussion downloaded. It is available offline in Saved stories.");
-            } else {
-                view.status(&format!("Partial download: {} items stored, {} missing or pending. Retry Download to continue.",
-                    thread.items.len(), thread.missing_ids.len() + thread.pending_ids.len()));
             }
-            if view.selected.get() == Some(id) && matches!(*view.detail.borrow(), DetailRoute::Thread(_)) {
-                view.accept_thread(thread);
+            match result {
+                Ok(thread) => {
+                    let message = if thread.complete {
+                        "Discussion downloaded. It is available offline in Saved stories.".to_owned()
+                    } else {
+                        format!("Download incomplete. {} items missing or pending. Retry Download to continue.",
+                            thread.missing_ids.len() + thread.pending_ids.len())
+                    };
+                    if view.selected.get() == Some(id) && matches!(*view.detail.borrow(), DetailRoute::Thread(_)) {
+                        view.accept_thread(thread);
+                    }
+                    view.status(&message);
+                }
+                Err(error) => view.status(&format!("Download could not complete: {error}")),
             }
             view.prune_cache();
         }));
     }
     fn clear_cache(&self) {
+        if !self.state_ready.get() {
+            self.status("Restore your reading data before clearing offline storage.");
+            return;
+        }
         if self.cache_work.get() != CacheWork::Idle {
             self.status("Offline storage is busy. Try clearing it again when the current operation finishes.");
             return;
@@ -2086,26 +2099,7 @@ impl ReaderView {
                 }
                 Err(error) => self.status(&error.to_string()),
             },
-            SettingsAction::Import(mut state) => {
-                self.library_generation
-                    .set(self.library_generation.get().wrapping_add(1));
-                // Backups contain metadata. Only this device's completed downloads have verified payloads.
-                state.downloaded_threads =
-                    std::mem::take(&mut self.state.borrow_mut().downloaded_threads);
-                crate::theme::apply(&state.preferences);
-                *self.state.borrow_mut() = state;
-                self.state_ready.set(true);
-                self.changed();
-                self.render_stories();
-                if matches!(
-                    *self.feed.borrow(),
-                    FeedRoute::Saved | FeedRoute::Hidden | FeedRoute::History
-                ) {
-                    self.load_feed(0, FetchMode::CacheFirst);
-                }
-                self.show_settings();
-                self.status("Reading library imported.");
-            }
+            SettingsAction::Import(state) => self.import_backup(state),
             SettingsAction::ClearHistory => {
                 self.state.borrow_mut().recent_searches.clear();
                 for entry in self.state.borrow_mut().items.values_mut() {
@@ -2120,6 +2114,58 @@ impl ReaderView {
             }
             SettingsAction::ClearCache => self.clear_cache(),
         }
+    }
+    fn import_backup(&self, mut state: ReaderState) {
+        let generation = self.library_generation.get().wrapping_add(1);
+        self.library_generation.set(generation);
+        // A backup can come from a different device and never contains cached payloads.
+        state.downloaded_threads.clear();
+        if self.state_ready.get() {
+            self.finish_import(state);
+            return;
+        }
+        let Some(repo) = self.repo() else {
+            self.status("Cannot import the backup until the reading database opens.");
+            return;
+        };
+        let weak = self.to_ref().downgrade();
+        drop(
+            Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                // Fetch the local manifest before overwriting persistent state, even if the
+                // startup callback hasn't run. A corrupt state can still be recovered by import.
+                if let Ok(local) = repo.load_state().await {
+                    state.downloaded_threads = local.downloaded_threads;
+                }
+                if let Some(view) = weak.upgrade() {
+                    if view.library_generation.get() == generation {
+                        view.finish_import(state);
+                    }
+                }
+            }),
+        );
+    }
+    fn finish_import(&self, mut state: ReaderState) {
+        if self.state_ready.get() {
+            state.downloaded_threads =
+                std::mem::take(&mut self.state.borrow_mut().downloaded_threads);
+        }
+        if let CacheWork::Downloading(id) = self.cache_work.get() {
+            // The in-flight transfer may already have changed part of the local copy.
+            state.downloaded_threads.remove(&id);
+        }
+        crate::theme::apply(&state.preferences);
+        *self.state.borrow_mut() = state;
+        self.state_ready.set(true);
+        self.changed();
+        self.render_stories();
+        if matches!(
+            *self.feed.borrow(),
+            FeedRoute::Saved | FeedRoute::Hidden | FeedRoute::History
+        ) {
+            self.load_feed(0, FetchMode::CacheFirst);
+        }
+        self.show_settings();
+        self.status("Reading library imported.");
     }
     fn show_more(&self) {
         self.navigate(DetailRoute::More);

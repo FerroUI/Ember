@@ -267,6 +267,12 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
         let inner = Rc::new(MemoryStore::default());
         let mut original = ReaderState::default();
         original.toggle_saved(1002, 1);
+        original.downloaded_threads.insert(1002, vec![1002]);
+        ready(inner.put(
+            "cache:item:1002",
+            r#"{"fetched_at":1,"value":{"id":1002,"type":"story"}}"#,
+        ))
+        .unwrap();
         ready(inner.put("reader:state", &original.export_json().unwrap())).unwrap();
         let store = Rc::new(DelayedStartupStore {
             inner: inner.clone(),
@@ -292,6 +298,7 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
             .expect("real Settings backup input");
         let mut imported = ReaderState::default();
         imported.toggle_saved(1001, 2);
+        imported.downloaded_threads.insert(1001, vec![1001, 2001]);
         input.set_text(Some(&imported.export_json().unwrap()));
         for _ in 0..4 {
             shell.settle();
@@ -376,6 +383,7 @@ fn backup_import_survives_a_delayed_startup_snapshot_or_error() {
         let persisted = ReaderState::import_json(&persisted).unwrap();
         assert_eq!(persisted.saved_ids(), vec![1001]);
         assert!(persisted.is_read(1001));
+        assert_eq!(persisted.downloaded_threads, original.downloaded_threads);
         window.close();
     }
 }
@@ -997,3 +1005,6 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
         window.close();
     }
 }
+
+#[path = "test_cases/offline_recovery.rs"]
+mod offline_recovery;
