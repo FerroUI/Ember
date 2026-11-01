@@ -271,6 +271,7 @@ fn render_blocks(
                 border.set_padding(Thickness::uniform(12.0));
                 border.set_background(options.code_background.clone());
                 if let Some(header) = toolbar {
+                    border.set_padding(Thickness::new(10.0, 0.0, 8.0, 9.0));
                     let text = text.downgrade();
                     let viewport = scroll.downgrade();
                     let wrap = Rc::new(move |enabled| {

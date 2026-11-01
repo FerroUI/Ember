@@ -33,6 +33,8 @@ pub enum ThreadAction {
     ShowNewReplies(bool),
     Share,
     CopyCommentLink(u64),
+    CopyCode(String),
+    OpenContentLink(String),
     FocusReading,
     Hide,
     MuteDomain,
@@ -1409,12 +1411,15 @@ fn rich_document(
     highlight: Option<FindHighlight<'_>>,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
-    let actions = actions.clone();
-    let open: Rc<dyn Fn(&str)> = Rc::new(move |url| actions(ThreadAction::OpenUrl(url.to_owned())));
-    match highlight {
-        Some(highlight) => ember_content::render_with_find(document, options, highlight, open),
-        None => ember_content::render(document, options, open),
-    }
+    let open = actions.clone();
+    let copy = actions.clone();
+    crate::rich_content::render(
+        document,
+        options,
+        highlight,
+        Rc::new(move |url| open(ThreadAction::OpenContentLink(url.to_owned()))),
+        Rc::new(move |source| copy(ThreadAction::CopyCode(source.to_owned()))),
+    )
 }
 
 /// Shared typography, palette and touch metrics for comments, story bodies and biographies.

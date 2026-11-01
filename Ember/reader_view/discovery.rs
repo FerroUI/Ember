@@ -278,12 +278,19 @@ impl ReaderView {
             .filter(|value| !value.trim().is_empty())
         {
             let link = self.to_ref().downgrade();
-            bio.children().add(ember_content::render(
+            let copy = self.to_ref().downgrade();
+            bio.children().add(crate::rich_content::render(
                 &ember_content::HtmlDocument::parse(about),
                 &crate::thread_view::render_options(&self.state.borrow()),
+                None,
                 Rc::new(move |url| {
                     if let Some(v) = link.upgrade() {
-                        v.open_url(url);
+                        v.open_content_link(url);
+                    }
+                }),
+                Rc::new(move |source| {
+                    if let Some(v) = copy.upgrade() {
+                        v.copy_text(source, "Code copied.");
                     }
                 }),
             ));

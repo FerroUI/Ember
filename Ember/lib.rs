@@ -6,6 +6,7 @@ mod icons;
 pub mod markup;
 mod reader_view;
 mod register_types;
+mod rich_content;
 mod search_panel;
 mod services;
 mod settings;

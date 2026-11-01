@@ -1742,6 +1742,8 @@ impl ReaderView {
                 }
             }
             ThreadAction::FocusReading => self.set_focus_reading(true),
+            ThreadAction::CopyCode(source) => self.copy_text(&source, "Code copied."),
+            ThreadAction::OpenContentLink(url) => self.open_content_link(&url),
             ThreadAction::CopyCommentLink(id) => {
                 self.copy_text(&ember_core::item_url(id), "Comment link copied.");
             }
@@ -2238,6 +2240,12 @@ impl ReaderView {
                 query,
                 ..Default::default()
             });
+        }
+    }
+    fn open_content_link(&self, url: &str) {
+        match ember_core::HnDestination::from_link(url) {
+            Some(destination) => self.open_hn_destination(destination),
+            None => self.open_url(url),
         }
     }
     fn open_hn_destination(&self, destination: ember_core::HnDestination) {
