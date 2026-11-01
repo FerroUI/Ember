@@ -36,7 +36,7 @@ The focus view keeps the discussion in a centered column as the window grows. Th
 | Long threads and polls | The footer counts loaded comments, pending items and unavailable items. Load the next batch or retry missing items directly. Polls retain HN option order and show vote shares once all counts are available and at least one vote has been cast. |
 | Profiles | Read the biography and preview up to five recent submissions in HN order. Open an item directly or choose **All stories** or **All comments** to search by that author. **Mute in feeds** hides that author from feeds and search results until you turn it off, here or in Settings. **Copy profile link** copies the HN profile URL. If lookup fails, **Edit username** selects the name for correction. |
 | Local library | Browse saved stories, reading history and hidden stories. Use **Find in this collection** to search the selected list on this device. In Settings, choose **Domains**, **Authors** or **Title keywords** to edit mute rules. Switching rule types keeps the draft. **Save filters** applies all three. **Discard filter edits** restores all three to their last saved values. Paste an article URL to mute its domain and subdomains, or enter an author with an optional leading @. |
-| Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to list and open saved discussions from the local cache. Select it again to see all bookmarks. |
+| Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to open the device’s verified offline discussions. Removing a bookmark leaves its download available. Select the checked download icon to verify or release that copy. |
 | Sharing and accounts | Copy the discussion link or open HN to sign in, vote, reply or submit. A comment permalink opens that comment and provides access to its parent. A poll option permalink links back to its poll. |
 | Appearance | Choose system, light, dark or custom appearance. Pick a named accent or preview a hex color and custom background. **Text presets** previews four combinations of type size and line spacing. Fine-tune either value, or use **Reset theme & type** to preview the default colors, type size and spacing. Choose **Apply preferences** to save. |
 | Data controls | Export or restore local reading state as versioned JSON. Review a backup replacement or clear operation before committing it. |
@@ -191,15 +191,20 @@ credentials and accepts only the two configured HTTPS API providers.
 
 ### Saved and downloaded content
 
-Saving a story pins its cached root item. It does not implicitly fetch all its
-comments. **Download discussion** traverses the thread and poll options, then
-verifies the resulting item records in durable storage. Only a complete result
-is added to the downloaded manifest and Saved stories. Missing items, failed
-cache writes or an exhausted budget produce an explicit partial/error result
-and can be retried. The **Downloaded** filter lists the subset of current bookmarks
-with a completed local download. Opening one of these discussions and loading
-more of its cached replies works without a network request. Use **Refresh** to
-request the latest discussion explicitly.
+Saving a story keeps its cached headline and root item. **Download thread** also
+fetches the replies and poll options and verifies that their contents reached
+durable storage. The first successful download bookmarks the discussion. Partial
+downloads report missing items, failed writes, or an exhausted budget and offer
+a retry.
+
+The **Downloads** shelf includes every verified local discussion, including those
+whose bookmark you later removed. Open it from Explore or the **Downloaded**
+control in Saved. Reading and paging through the shelf uses the local cache.
+The checked download icon offers **Check offline copy** and **Stop keeping offline**.
+These also appear under **Discussion options** when there is too little width for
+the icon. Releasing a download keeps its bookmark, if present. Its unpinned
+pages become eligible for cleanup. Other verified downloads that use the same
+replies retain them.
 
 **Find in this collection** searches cached headlines, comment previews, authors and source domains. All words in the query must match, in any order and without regard to case. Find scans beyond the pages already on screen and keeps the collection’s ordering. **Load more** continues the scan when more results may be available. The summary counts entries whose local copy is missing. The scan makes no network requests. Clearing the query or closing Find restores the previously loaded list and scroll position.
 
@@ -226,12 +231,19 @@ feed lists and local reading state are retained outside that budget. These are
 record-count targets, not a total byte quota. Browser site-data clearing,
 storage eviction and disk exhaustion still affect persistence.
 
-In Settings, expand **Clear local data** and review the scope of either operation.
-**Remove cached content** clears cached public payloads and the device’s offline
-download records. Bookmarks stay in Saved. Download a discussion again to make it
-available in **Downloaded**. **Remove reading history** clears read markers,
-reading positions, seen-comment markers, and recent search terms. **Cancel** or
-Escape dismisses either review and returns focus to the originating control.
+In Settings, expand **Clear local data**. **Check storage use** measures cached
+data in bytes, KiB or MiB and shows the number of cached items and verified
+downloads. A visible measurement updates after cleanup.
+
+- **Clean temporary cache** removes unpinned story or comment payloads, cached
+  searches and profiles. Bookmarked roots, downloaded discussions and feed lists
+  stay on the device.
+- **Clear cached content** also removes verified offline copies and cached feed
+  lists. Bookmarks remain in Saved and can be downloaded again.
+- **Clear reading history** removes read markers, reading positions, seen-comment
+  markers and recent search terms.
+
+Each cleanup opens a review. **Cancel** or Escape returns focus to its control.
 A failed initial state read pauses automatic writes to protect the existing data.
 A validated backup imported while that read is pending takes precedence over its
 late result. There is no cross-device or concurrent multi-tab state merge.
