@@ -1628,7 +1628,7 @@ impl ReaderView {
                 self.thread_sort.set(sort);
                 self.render_thread();
             }
-            ThreadAction::Parent(id) => self.open_item(id),
+            ThreadAction::GoToItem(id) => self.open_item_internal(id, true),
         }
     }
     fn toggle_collapse_all(&self) {

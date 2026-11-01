@@ -8,7 +8,7 @@ use ember_core::{
 };
 use ferroui_base::controls::ResourceKey;
 use ferroui_base::layout::{HorizontalAlignment, Orientation, VerticalAlignment};
-use ferroui_base::media::{FontWeight, IBrush};
+use ferroui_base::media::{FontWeight, IBrush, TextTrimming};
 use ferroui_base::metadata::from_markup_value;
 use ferroui_base::threading::{Dispatcher, DispatcherPriority};
 use ferroui_base::{BoxedValue, CornerRadius, Point, Ref, Thickness, Vector};
@@ -37,7 +37,7 @@ pub enum ThreadAction {
     Vote(u64),
     LoadMore,
     Sort(ThreadSort),
-    Parent(u64),
+    GoToItem(u64),
 }
 
 #[derive(Clone)]
@@ -168,8 +168,12 @@ pub fn build(
         kind: RowKind::Header,
         document: OnceCell::new(),
     })];
+    let mut branches = Vec::new();
     let mut matches = Vec::new();
     for comment in comments {
+        if comment.depth == 0 {
+            branches.push((rows.len(), comment.id));
+        }
         if comment.matches_query {
             matches.push((rows.len() as i32, comment.id));
         }
@@ -251,10 +255,10 @@ pub fn build(
     let comment_actions: Rc<dyn Fn(ThreadAction)> = {
         let forward = on_action.clone();
         Rc::new(move |action| {
-            if let ThreadAction::Parent(parent) = action {
+            if let ThreadAction::GoToItem(id) = action {
                 if let Some(list) = weak_list.upgrade() {
-                    if let Some(index) = anchor_index(&list, parent) {
-                        scroll_anchor_into_view(&list, index);
+                    if let Some(index) = anchor_index(&list, id) {
+                        reveal_index(&list, index, true);
                         return;
                     }
                 }
@@ -273,6 +277,7 @@ pub fn build(
                         &snapshot.root,
                         &reading,
                         &query,
+                        BranchNeighbors::at(row.key, &branches),
                         &comment_actions,
                     );
                     if comment.matches_query {
@@ -342,7 +347,7 @@ pub(crate) fn select_find_match(
     }
     update_realized_match(&list, row, Some(selected));
     // The template reads current_match when a later scroll first realizes this row.
-    reveal_index(&list, row);
+    reveal_index(&list, row, false);
     Some(selected)
 }
 
@@ -401,16 +406,24 @@ pub fn restore_anchor(control: &Control, id: u64) {
     let Some(index) = anchor_index(&list, id) else {
         return;
     };
-    reveal_index(&list, index);
+    reveal_index(&list, index, false);
 }
 
-fn reveal_index(list: &Ref<ListBox>, index: i32) {
+fn reveal_index(list: &Ref<ListBox>, index: i32, focus_row: bool) {
+    let reveal = move |list: &ListBox| {
+        scroll_anchor_into_view(list, index);
+        if focus_row {
+            if let Some(container) = list.container_from_index(index) {
+                container.focus();
+            }
+        }
+    };
     if list.is_loaded() {
         let weak = list.downgrade();
         Dispatcher::ui_thread().post_local(
             move || {
                 if let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) {
-                    scroll_anchor_into_view(&list, index);
+                    reveal(&list);
                 }
             },
             DispatcherPriority::LOADED,
@@ -421,7 +434,7 @@ fn reveal_index(list: &Ref<ListBox>, index: i32) {
         list.loaded(move |_, _| {
             if !restored.replace(true) {
                 if let Some(list) = weak.upgrade() {
-                    scroll_anchor_into_view(&list, index);
+                    reveal(&list);
                 }
             }
         });
@@ -596,7 +609,7 @@ fn header(
             &menu,
             "Open parent",
             "arrow_up",
-            ThreadAction::Parent(parent),
+            ThreadAction::GoToItem(parent),
             actions,
         );
     }
@@ -665,6 +678,29 @@ fn header(
     heading.set_vertical_alignment(VerticalAlignment::Center);
     heading.set_margin(Thickness::new(0.0, 4.0, 12.0, 4.0));
     sort_row.children().add(heading);
+    if !story.kids.is_empty() {
+        sort_row.children().add(sort_control(sort, actions));
+    }
+    if let Some(expand) = bulk_collapse {
+        let (label, icon) = if expand {
+            ("Expand all replies", "chevron_down")
+        } else {
+            ("Collapse all replies", "collapse")
+        };
+        sort_row
+            .children()
+            .add(icon_action(label, icon, ThreadAction::ToggleAll, actions));
+    }
+    body.children().add(sort_row);
+    if snapshot.stale {
+        body.children().add(muted(
+            "Showing a saved copy. Refresh to check for new replies.",
+        ));
+    }
+    body.upcast()
+}
+
+fn sort_control(sort: ThreadSort, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<ComboBox> {
     let sort_picker = ComboBox::new();
     sort_picker.set_items_source(Some(ItemsSource::from_values([
         "Ranked".to_owned(),
@@ -691,24 +727,25 @@ fn header(
             sort_action(ThreadAction::Sort(value));
         }
     });
-    sort_row.children().add(sort_picker);
-    if let Some(expand) = bulk_collapse {
-        let (label, icon) = if expand {
-            ("Expand all replies", "chevron_down")
-        } else {
-            ("Collapse all replies", "collapse")
-        };
-        sort_row
-            .children()
-            .add(icon_action(label, icon, ThreadAction::ToggleAll, actions));
+    sort_picker
+}
+
+#[derive(Clone, Copy, Default)]
+struct BranchNeighbors {
+    previous: Option<u64>,
+    next: Option<u64>,
+}
+
+impl BranchNeighbors {
+    /// Top-level rows follow the active sort and Find filter. Descendants share their
+    /// branch’s neighbors, so jumping forward skips the remainder of a long exchange.
+    fn at(row: usize, branches: &[(usize, u64)]) -> Self {
+        let next = branches.partition_point(|&(index, _)| index <= row);
+        Self {
+            previous: next.checked_sub(2).map(|index| branches[index].1),
+            next: branches.get(next).map(|&(_, id)| id),
+        }
     }
-    body.children().add(sort_row);
-    if snapshot.stale {
-        body.children().add(muted(
-            "Showing a saved copy. Refresh to check for new replies.",
-        ));
-    }
-    body.upcast()
 }
 
 fn comment_row(
@@ -717,6 +754,7 @@ fn comment_row(
     root: &HnItem,
     reading: &ReadingContext,
     query: &str,
+    neighbors: BranchNeighbors,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let searching = !query.is_empty();
@@ -772,13 +810,8 @@ fn comment_row(
     commands.set_orientation(Orientation::Horizontal);
     Grid::set_column(&commands, 1);
     if !searching && (row.child_count > 0 || row.collapsed) {
-        let (verb, icon) = if row.collapsed {
-            ("Expand", "chevron_down")
-        } else {
-            ("Collapse", "chevron_up")
-        };
-        let name = format!(
-            "{verb} {} {}",
+        let count = format!(
+            "{} {}",
             row.child_count,
             if row.child_count == 1 {
                 "reply"
@@ -786,44 +819,34 @@ fn comment_row(
                 "replies"
             }
         );
-        commands.children().add(icon_action(
-            &name,
-            icon,
-            ThreadAction::ToggleCollapse(row.id),
-            actions,
-        ));
-    }
-    if row.depth == 0 {
-        if row.item.is_some() {
+        let action = ThreadAction::ToggleCollapse(row.id);
+        if row.collapsed {
+            let caption = if row.child_count == 0 {
+                "Show text"
+            } else {
+                &count
+            };
+            let expand = labelled_action(caption, "chevron_down", action, actions);
+            let name = if row.child_count == 0 {
+                "Expand comment".to_owned()
+            } else {
+                format!("Expand comment and {count}")
+            };
+            AutomationProperties::set_name(&expand, Some(&name));
+            ToolTip::set_tip(&expand, Some(Rc::new(name)));
+            commands.children().add(expand);
+        } else {
             commands.children().add(icon_action(
-                "Reply on HN",
-                "reply",
-                ThreadAction::Reply(row.id),
+                &format!("Collapse {count}"),
+                "chevron_up",
+                action,
                 actions,
             ));
         }
-    } else {
-        let more = widgets::icon_button("More comment actions", "more");
-        let menu = MenuFlyout::new();
-        if row.item.is_some() {
-            menu_action(
-                &menu,
-                "Reply on HN",
-                "reply",
-                ThreadAction::Reply(row.id),
-                actions,
-            );
-        }
-        menu_action(
-            &menu,
-            "Go to parent comment",
-            "up",
-            ThreadAction::Parent(row.parent_id),
-            actions,
-        );
-        more.set_flyout(menu);
-        commands.children().add(more);
     }
+    commands
+        .children()
+        .add(comment_menu(row, root.id, neighbors, actions));
     line.children().add(commands);
     body.children().add(line);
 
@@ -842,12 +865,18 @@ fn comment_row(
                 .unwrap_or_else(|| "Collapsed conversation".to_owned()),
             None => "Collapsed conversation".to_owned(),
         };
-        let mut chars = summary.chars();
-        let preview: String = chars.by_ref().take(84).collect();
-        body.children().add(muted(&format!(
-            "{preview}{}",
-            if chars.next().is_some() { "…" } else { "" }
-        )));
+        let mut chars = summary
+            .split_whitespace()
+            .flat_map(|word| word.chars().chain(std::iter::once(' ')));
+        let mut snippet: String = chars.by_ref().take(120).collect();
+        if chars.next().is_some() {
+            snippet.push('…');
+        }
+        let preview = muted(snippet.trim_end());
+        preview.set_max_lines(1);
+        preview.set_text_trimming(<dyn TextTrimming>::character_ellipsis());
+        body.children().add(preview);
+        AutomationProperties::set_item_status(&outer, Some("Collapsed"));
     } else {
         match &row.item {
             None => body.children().add(muted(
@@ -926,6 +955,78 @@ fn comment_row(
     branch.set_child(body);
     outer.set_child(branch);
     outer.upcast()
+}
+
+/// Populate on first open so scrolling a long thread need only realize the overflow trigger.
+fn comment_menu(
+    row: &ThreadRow,
+    root: u64,
+    neighbors: BranchNeighbors,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let more = widgets::icon_button("More comment actions", "more");
+    let menu = MenuFlyout::new();
+    let weak = menu.downgrade();
+    let actions = actions.clone();
+    let id = row.id;
+    let can_reply = row
+        .item
+        .as_ref()
+        .is_some_and(|item| !item.deleted && !item.dead);
+    let parent = (row.depth > 0).then_some(row.parent_id);
+    menu.opening(move |_| {
+        let Some(menu) = weak.upgrade() else {
+            return;
+        };
+        if menu.items().count() != 0 {
+            return;
+        }
+        if can_reply {
+            menu_action(
+                &menu,
+                "Reply on HN",
+                "reply",
+                ThreadAction::Reply(id),
+                &actions,
+            );
+        }
+        if let Some(parent) = parent {
+            menu_action(
+                &menu,
+                "Go to parent comment",
+                "up",
+                ThreadAction::GoToItem(parent),
+                &actions,
+            );
+        }
+        if let Some(previous) = neighbors.previous {
+            menu_action(
+                &menu,
+                "Previous top-level comment",
+                "chevron_up",
+                ThreadAction::GoToItem(previous),
+                &actions,
+            );
+        }
+        if let Some(next) = neighbors.next {
+            menu_action(
+                &menu,
+                "Next top-level comment",
+                "chevron_down",
+                ThreadAction::GoToItem(next),
+                &actions,
+            );
+        }
+        menu_action(
+            &menu,
+            "Back to story",
+            "back",
+            ThreadAction::GoToItem(root),
+            &actions,
+        );
+    });
+    more.set_flyout(menu);
+    more
 }
 
 fn poll_options(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
@@ -1432,6 +1533,7 @@ mod tests {
                     find_foreground: None,
                 },
                 "",
+                BranchNeighbors::default(),
                 &actions,
             );
             let text = control
@@ -1629,6 +1731,49 @@ mod tests {
             assert!(
                 matches!(calls.borrow().last(), Some(ThreadAction::OpenUrl(url)) if url == &expected)
             );
+        }
+        // The overflow follows the realized row after recycling. Exercise the actual
+        // flyout opening event, then jump between comments without leaving this story.
+        for (from, command, destination) in [
+            (10, "Next top-level comment", 11),
+            (11, "Previous top-level comment", 10),
+            (10, "Back to story", 0),
+        ] {
+            let row = list.container_from_index(from).unwrap();
+            let more = row
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<Button>())
+                .find(|button| {
+                    AutomationProperties::get_name(button).as_deref()
+                        == Some("More comment actions")
+                })
+                .unwrap();
+            let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+            menu.show_at(&more);
+            shell.settle();
+            let items = menu.items();
+            let target = (0..items.count())
+                .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+                .filter_map(|control| control.cast::<MenuItem>())
+                .find(|item| {
+                    item.header()
+                        .and_then(|h| h.downcast_ref::<String>().cloned())
+                        .as_deref()
+                        == Some(command)
+                })
+                .unwrap();
+            assert!(menu.is_open());
+            target.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+            menu.hide();
+            for _ in 0..4 {
+                shell.settle();
+            }
+            let expected = (destination != 0).then_some(2000 + destination as u64);
+            assert_eq!(viewport_anchor(&content), expected);
+            assert!(list
+                .container_from_index(destination)
+                .unwrap()
+                .is_keyboard_focus_within());
         }
         assert_eq!(calls.borrow().len(), 3);
         let replacement = build(
