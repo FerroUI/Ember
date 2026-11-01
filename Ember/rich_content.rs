@@ -135,8 +135,12 @@ mod tests {
             shell.click(0, bounds.center());
             shell.settle();
         };
+        text.set_selection_start(1);
+        text.set_selection_end(4);
+        assert_eq!(text.selected_text(), "let");
         tap(&wraps[0]);
         assert_eq!(text.text_wrapping(), TextWrapping::Wrap);
+        assert_eq!(text.selected_text(), "let");
         assert_eq!(scrolls[0].offset().x, 0.0);
         assert!(scrolls[0].extent().width <= scrolls[0].viewport().width + 1.0);
         assert_eq!(
