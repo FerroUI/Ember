@@ -128,6 +128,7 @@ mod tests {
             .filter_map(|v| v.cast::<Run>())
             .any(|run| run.text().as_deref() == Some("MARK") && run.background().is_some()));
         assert!(scrolls[0].extent().width > scrolls[0].viewport().width);
+        let unwrapped_height = text.bounds().height;
         scrolls[0].set_offset(Vector::new(42.0, 0.0));
         let tap = |button: &Button| {
             let bounds = Shell::bounds_of(&window, button);
@@ -143,6 +144,10 @@ mod tests {
         assert_eq!(text.selected_text(), "let");
         assert_eq!(scrolls[0].offset().x, 0.0);
         assert!(scrolls[0].extent().width <= scrolls[0].viewport().width + 1.0);
+        assert!(
+            text.bounds().height > unwrapped_height,
+            "long code must reflow vertically"
+        );
         assert_eq!(
             wraps[1]
                 .clone()
