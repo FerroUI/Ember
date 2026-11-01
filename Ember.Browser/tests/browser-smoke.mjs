@@ -231,6 +231,37 @@ await run([
         } catch (error) { await failure(page, "desktop"); throw error; }
         finally { await page.close(); }
     }],
+    ["storage cleanup releases temporary items and preserves verified downloads", async () => {
+        const page = await start(1024, 820);
+        try {
+            await byName(page, "WelcomeOpen");
+            await waitText(page, title);
+            await byName(page, "DownloadButton");
+            await waitText(page, "Discussion downloaded. It is available offline in Saved stories.");
+            await byName(page, "ThemeButton");
+            await reveal(page, element => element.text === "Clear local data");
+            await byText(page, "Clear local data");
+            const activate = async label => {
+                await reveal(page, element => element.automationName === label);
+                await byAutomation(page, label);
+            };
+            await activate("Check storage use");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.endsWith('6 items · 1 download'))");
+            await activate("Clean temporary cache");
+            await waitText(page, "Clean temporary data");
+            await page.press("Escape");
+            const cached = id => page.evaluate(`import('./ember-platform.js').then(m => m.databaseGet('cache:item:${id}'))`);
+            assert(await cached(102), "Cancelling cleanup lost a cached story");
+            await activate("Clean temporary cache");
+            await activate("Clean temporary data");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.endsWith('4 items · 1 download'))");
+            assert(!await cached(102) && await cached(101) && await cached(203),
+                "Cleanup must preserve the downloaded root and replies and release ordinary cached stories");
+            await page.screenshot(path.join(captures, "tablet-offline-storage.png"));
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "storage"); throw error; }
+        finally { await page.close(); }
+    }],
     ["phone readers wrap and copy a code block and follow an internal rich link", async () => {
         const page = await start(390, 844);
         try {
