@@ -13,15 +13,18 @@ ferroui_base::ferro_thread_local! {
     static GEOMETRIES: RefCell<BTreeMap<&'static str, Ref<Geometry>>> = RefCell::new(BTreeMap::new());
 }
 
-pub(crate) fn icon(name: &str) -> Ref<PathIcon> {
+pub(crate) fn geometry(name: &str) -> Ref<Geometry> {
     let data = path_data(name);
-    let geometry = GEOMETRIES.with(|cache| {
+    GEOMETRIES.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache
             .entry(data)
             .or_insert_with(|| Geometry::parse(data).expect("the checked Fluent icon path"))
             .clone()
-    });
+    })
+}
+
+pub(crate) fn icon(name: &str) -> Ref<PathIcon> {
     let icon = PathIcon::new();
     icon.set_width(18.0);
     icon.set_height(18.0);
@@ -30,7 +33,7 @@ pub(crate) fn icon(name: &str) -> Ref<PathIcon> {
     if name == "chevron_down" {
         icon.set_render_transform(Some(RotateTransform::with_angle(180.0).into()));
     }
-    icon.set_data(Some(geometry));
+    icon.set_data(Some(geometry(name)));
     icon
 }
 

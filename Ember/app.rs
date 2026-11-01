@@ -31,6 +31,15 @@ impl ApplicationImpl for App {
         this.styles().add(theme.as_style());
         *this.theme.borrow_mut() = Some(theme);
         this.initialize_component();
+        for (key, name) in [
+            ("EmberGlyphBookmark", "bookmark"),
+            ("EmberGlyphRead", "check"),
+            ("EmberGlyphComments", "chat"),
+            ("EmberGlyphPoints", "up"),
+        ] {
+            this.resources()
+                .set(key, Some(Rc::new(crate::icons::geometry(name))));
+        }
     }
     fn on_framework_initialization_completed(this: &Self) {
         let lifetime = this.application_lifetime();

@@ -27,6 +27,7 @@ ferro_properties! {
         pub fn metadata_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Metadata", None) }
         pub fn domain_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Domain", None) }
         pub fn score_label_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("ScoreLabel", None) }
+        pub fn comment_count_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("CommentCount", None) }
         pub fn status_label_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("StatusLabel", None) }
     }
 }
@@ -46,16 +47,22 @@ impl StoryCard {
         self.set_headline(Some(&summary.headline));
         self.set_domain(Some(&summary.source));
         self.set_metadata(Some(&summary.byline));
-        let score = item
-            .score
-            .map(|n| format!("{n} {}", if n == 1 { "pt" } else { "pts" }));
-        self.set_score_label(score.as_deref());
-        self.classes().set("has-score", score.is_some());
+        self.set_score_label(item.score.map(|n| n.to_string()).as_deref());
+        self.set_value(
+            Self::comment_count_property(),
+            item.descendants.map(|n| n.to_string()),
+        );
+        self.classes().set("has-score", item.score.is_some());
+        self.classes()
+            .set("has-comments", item.descendants.is_some());
         let accessible = [
             Some(summary.headline),
             Some(summary.source),
             Some(summary.byline),
-            score,
+            item.score
+                .map(|n| format!("{n} {}", if n == 1 { "point" } else { "points" })),
+            item.descendants
+                .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" })),
         ]
         .into_iter()
         .flatten()
@@ -146,12 +153,6 @@ impl StorySummary {
         }
         if item.time.is_some() {
             byline.push(relative_time(item.time, now));
-        }
-        if let Some(n) = item.descendants {
-            byline.push(format!(
-                "{n} {}",
-                if n == 1 { "comment" } else { "comments" }
-            ));
         }
         Self {
             source,

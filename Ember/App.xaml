@@ -45,7 +45,7 @@
       <ControlTheme x:Key="{x:Type controls:StoryCard}" TargetType="controls:StoryCard">
         <Setter Property="Background" Value="{DynamicResource EmberSurface}" />
         <Setter Property="Foreground" Value="{DynamicResource EmberText}" />
-        <Setter Property="Padding" Value="12,11" />
+        <Setter Property="Padding" Value="14,9" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="MinHeight" Value="44" />
@@ -53,30 +53,52 @@
         <Setter Property="Template">
           <ControlTemplate>
             <Grid>
-              <Border Name="CardSurface" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"
-                      BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,0,1">
+              <Border Name="CardSurface" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
                 <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="3">
-                  <TextBlock Name="Headline" Grid.ColumnSpan="2" Text="{TemplateBinding Headline}"
+                  <TextBlock Text="{TemplateBinding Domain}" FontSize="12" FontWeight="Medium"
+                             Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
+                  <Grid Grid.Column="1" VerticalAlignment="Center" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
+                    <PathIcon Name="ReadMark" Data="{DynamicResource EmberGlyphRead}" Width="12" Height="12"
+                              Foreground="{DynamicResource EmberMuted}" IsVisible="False" />
+                    <PathIcon Name="SavedMark" Data="{DynamicResource EmberGlyphBookmark}" Width="12" Height="12"
+                              Foreground="{DynamicResource EmberAccentInk}" IsVisible="False" />
+                  </Grid>
+                  <TextBlock Name="Headline" Grid.Row="1" Grid.ColumnSpan="2" Text="{TemplateBinding Headline}"
                              FontSize="16" FontWeight="SemiBold" LineHeight="21" TextWrapping="Wrap"
                              MaxLines="3" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Grid.Row="1" Text="{TemplateBinding Domain}" FontSize="12"
-                             Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Name="Status" Grid.Row="1" Grid.Column="1" Text="{TemplateBinding StatusLabel}"
-                             FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource EmberMuted}" VerticalAlignment="Center" />
-                  <TextBlock Grid.Row="2" Text="{TemplateBinding Metadata}" FontSize="12"
-                             Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Name="Score" Grid.Row="2" Grid.Column="1" Text="{TemplateBinding ScoreLabel}" IsVisible="False"
-                             FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource EmberMuted}" />
+                  <Grid Grid.Row="2" Grid.ColumnSpan="2" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                    <TextBlock Text="{TemplateBinding Metadata}" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource EmberMuted}" TextTrimming="CharacterEllipsis" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center"
+                                IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
+                      <StackPanel Name="Points" Orientation="Horizontal" Spacing="3" IsVisible="False">
+                        <PathIcon Data="{DynamicResource EmberGlyphPoints}" Width="11" Height="11" VerticalAlignment="Center"
+                                  Foreground="{DynamicResource EmberMuted}" />
+                        <TextBlock Text="{TemplateBinding ScoreLabel}" FontSize="12" MaxWidth="56" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource EmberMuted}" />
+                      </StackPanel>
+                      <StackPanel Name="Replies" Orientation="Horizontal" Spacing="4" IsVisible="False">
+                        <PathIcon Data="{DynamicResource EmberGlyphComments}" Width="12" Height="12" VerticalAlignment="Center"
+                                  Foreground="{DynamicResource EmberMuted}" />
+                        <TextBlock Text="{TemplateBinding CommentCount}" FontSize="12" MaxWidth="56" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource EmberMuted}" />
+                      </StackPanel>
+                    </StackPanel>
+                  </Grid>
                 </Grid>
               </Border>
+              <Border Height="1" VerticalAlignment="Bottom" Margin="14,0,0,0"
+                      Background="{DynamicResource EmberBorder}" IsHitTestVisible="False" />
               <Border Name="SelectionMark" Width="3" Margin="0,8" HorizontalAlignment="Left" Background="Transparent" IsHitTestVisible="False" />
               <Border Name="FocusRing" CornerRadius="4" BorderThickness="2" IsHitTestVisible="False" />
             </Grid>
           </ControlTemplate>
         </Setter>
-        <Style Selector="^.has-score /template/ TextBlock#Score">
-          <Setter Property="IsVisible" Value="True" />
-        </Style>
+        <Style Selector="^.has-score /template/ StackPanel#Points"><Setter Property="IsVisible" Value="True" /></Style>
+        <Style Selector="^.has-comments /template/ StackPanel#Replies"><Setter Property="IsVisible" Value="True" /></Style>
+        <Style Selector="^.read /template/ PathIcon#ReadMark"><Setter Property="IsVisible" Value="True" /></Style>
+        <Style Selector="^.saved /template/ PathIcon#ReadMark"><Setter Property="IsVisible" Value="False" /></Style>
+        <Style Selector="^.saved /template/ PathIcon#SavedMark"><Setter Property="IsVisible" Value="True" /></Style>
         <Style Selector="^.compact">
           <Setter Property="Padding" Value="10,6" />
         </Style>
@@ -87,9 +109,6 @@
         <Style Selector="^.read /template/ TextBlock#Headline">
           <Setter Property="FontWeight" Value="Normal" />
           <Setter Property="Foreground" Value="{DynamicResource EmberMuted}" />
-        </Style>
-        <Style Selector="^.saved /template/ TextBlock#Status">
-          <Setter Property="Foreground" Value="{DynamicResource EmberAccentInk}" />
         </Style>
         <Style Selector="^:pointerover /template/ Border#CardSurface">
           <Setter Property="Background" Value="{DynamicResource EmberRail}" />

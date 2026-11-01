@@ -163,7 +163,8 @@ await run([
             await waitText(page, title);
             await byName(page, "DismissStatus");
             await touchDrag(page, fingerX, fingerY, fingerX - 180, fingerY);
-            await waitText(page, "SAVED");
+            await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
+                e.automationName?.startsWith(${JSON.stringify(title)}) && e.helpText === "Saved. Open discussion.")`);
             assert(!(await page.evaluate("new URL(location.href).searchParams.has('item')")), "Swiping a card also opened its discussion");
             await byName(page, "DismissStatus");
             const heading = (await state(page)).elements.find(element => element.name === "FeedTitle");

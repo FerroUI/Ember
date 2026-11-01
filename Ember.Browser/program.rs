@@ -114,6 +114,7 @@ pub fn reader_state() -> String {
         elements.push(serde_json::json!({
             "type": visual.get_type().name(), "name": visual.name(), "text": text, "hit": hit,
             "automationName": AutomationProperties::get_name(&visual),
+            "helpText": AutomationProperties::get_help_text(&visual),
             "selectedIndex": visual.cast::<ComboBox>().map(|combo| combo.selected_index()),
             "x": origin.x, "y": origin.y, "width": size.width, "height": size.height,
         }));
