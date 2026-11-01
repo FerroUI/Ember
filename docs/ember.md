@@ -12,20 +12,16 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-These captures use deterministic Hacker News fixtures and the actual FerroUI control tree. The phone discussion and Downloaded shelf were captured in Chromium from the WebAssembly application. The native test host rendered the other previews with Skia and HarfBuzz.
+All previews use deterministic Hacker News data. Chromium captured the release WebAssembly discussion, Downloaded shelf, text presets and domain mute editor. The native test host rendered the other views with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
-[Reading desk](images/ember-tablet-reading-desk.png) ·
-[Author profile](images/ember-desktop-profile.png) ·
-[Explore on a phone](images/ember-phone-explore.png) ·
-[Dark desktop](images/ember-desktop-dark.png) ·
-[Phone feed](images/ember-phone-dark.png) ·
-[Custom tablet theme](images/ember-tablet-custom.png) ·
-[Appearance settings](images/ember-tablet-settings.png) ·
-[Phone discussion in Chromium](images/ember-phone-comments.png) ·
-[Downloaded shelf on a phone](images/ember-phone-downloaded.png) ·
-[Focus reading with Find](images/ember-focus-find.png)
+| View | Previews |
+| --- | --- |
+| Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
+| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Focus reading with Find](images/ember-focus-find.png) |
+| Discovery and library | [Author profile](images/ember-desktop-profile.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) |
+| Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Domain mute on a phone](images/ember-domain-mute.png) |
 
 The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
