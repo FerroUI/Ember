@@ -513,3 +513,84 @@ fn resubmitting_unchanged_search_results_keeps_loaded_pages_and_scroll_position(
     assert!((scroll.offset().y - before).abs() < 2.0);
     window.close();
 }
+
+#[test]
+fn preference_edits_survive_reselecting_settings_and_follow_the_live_unread_filter() {
+    use ferroui_controls::{CheckBox, ComboBox, NumberBox};
+    let store = Rc::new(MemoryStore::default());
+    let mut library = ReaderState::default();
+    library.preferences.theme = ember_core::ThemeMode::Custom;
+    library.preferences.custom_background = Some("#29405D".into());
+    ready(store.put("reader:state", &library.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1440.0, 960.0, store.clone(), Rc::new(Cell::new(false)));
+    let tap = |button: &Control| click_in_view(&shell, &window, button);
+    let settings = view.get_control::<Button>("ThemeButton");
+    tap(&settings);
+    let named = |label: &str| {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<Control>())
+            .find(|c| AutomationProperties::get_name(c).as_deref() == Some(label))
+            .unwrap_or_else(|| panic!("missing {label}"))
+    };
+    let accent = named("Accent color").cast::<TextBox>().unwrap();
+    let apply = named("Apply preferences");
+    let discard = named("Discard preference edits");
+    assert!(!apply.is_enabled());
+    assert!(!discard.is_visible());
+    tap(&named("Reset theme & type"));
+    let number = named("Reading font size").cast::<NumberBox>().unwrap();
+    let edit = number
+        .get_visual_descendants()
+        .find_map(|v| v.cast::<TextBox>())
+        .unwrap();
+    edit.set_text(Some("unfinished"));
+    tap(&settings);
+    assert!(std::ptr::eq(
+        &*accent,
+        &*named("Accent color").cast::<TextBox>().unwrap()
+    ));
+    assert_eq!(edit.text().as_deref(), Some("unfinished"));
+    assert!(apply.is_enabled());
+    tap(&view.get_control::<Button>("UnreadButton"));
+    assert_eq!(
+        named("Hide read stories")
+            .cast::<CheckBox>()
+            .unwrap()
+            .is_checked(),
+        Some(true)
+    );
+    tap(&discard);
+    assert_eq!(edit.text().as_deref(), Some("16"));
+    assert_eq!(
+        named("Theme").cast::<ComboBox>().unwrap().selected_index(),
+        3
+    );
+    assert_eq!(
+        named("Custom background")
+            .cast::<TextBox>()
+            .unwrap()
+            .text()
+            .as_deref(),
+        Some("#29405D")
+    );
+    assert_eq!(
+        named("Hide read stories")
+            .cast::<CheckBox>()
+            .unwrap()
+            .is_checked(),
+        Some(true)
+    );
+    assert!(!apply.is_enabled());
+    assert!(!discard.is_visible());
+    accent.set_text(Some("#12789A"));
+    tap(&apply);
+    let applied =
+        ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert_eq!(applied.preferences.accent, "#12789A");
+    assert_eq!(
+        applied.preferences.custom_background.as_deref(),
+        Some("#29405D")
+    );
+    assert!(applied.preferences.hide_read);
+    window.close();
+}

@@ -226,6 +226,7 @@ pub struct ReaderView {
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     profile_mute: RefCell<Option<Ref<ToggleButton>>>,
     pending_settings: RefCell<Option<crate::settings::RestorePreferences>>,
+    live_settings: RefCell<Option<crate::settings::LivePreferences>>,
     downloaded_only: Cell<bool>,
     library_find: RefCell<library_find::LibraryFind>,
     thread: RefCell<Option<ThreadSnapshot>>,
@@ -306,6 +307,7 @@ impl ReaderView {
             explore_counts: RefCell::new(Vec::new()),
             profile_mute: RefCell::new(None),
             pending_settings: RefCell::new(None),
+            live_settings: RefCell::new(None),
             downloaded_only: Cell::new(false),
             library_find: RefCell::default(),
             thread: RefCell::new(None),
@@ -821,7 +823,7 @@ impl ReaderView {
                             view.update_explore_counts();
                             view.update_profile_mute();
                             if let Some(restore) = view.pending_settings.borrow_mut().take() {
-                                restore(&view.state.borrow());
+                                view.live_settings.replace(Some(restore(&view.state.borrow())));
                             }
                         }
                         Err(error) => view.status(&format!(
@@ -846,6 +848,9 @@ impl ReaderView {
     }
     fn set_unread_only(&self, enabled: bool) {
         self.state.borrow_mut().preferences.hide_read = enabled;
+        if let Some(settings) = self.live_settings.borrow().as_ref() {
+            settings.set_hide_read(enabled);
+        }
         self.changed();
         self.render_stories();
     }
@@ -2459,6 +2464,7 @@ impl ReaderView {
         self.explore_counts.borrow_mut().clear();
         self.profile_mute.borrow_mut().take();
         self.pending_settings.borrow_mut().take();
+        self.live_settings.borrow_mut().take();
         let welcome = *self.detail.borrow() == DetailRoute::Welcome;
         self.get_control::<ScrollViewer>("WelcomePane")
             .set_is_visible(welcome);
@@ -2735,6 +2741,11 @@ impl ReaderView {
         }
     }
     fn show_settings(&self) {
+        if *self.detail.borrow() != DetailRoute::Settings {
+            self.present_settings();
+        }
+    }
+    fn present_settings(&self) {
         self.navigate(DetailRoute::Settings);
         self.label("DetailEyebrow").set_text(Some("READER"));
         self.label("DetailTitle").set_text(Some("Settings"));
@@ -2745,7 +2756,8 @@ impl ReaderView {
             }
         }));
         if self.state_ready.get() {
-            restore(&self.state.borrow());
+            self.live_settings
+                .replace(Some(restore(&self.state.borrow())));
         } else {
             self.pending_settings.replace(Some(restore));
         }
@@ -2843,7 +2855,7 @@ impl ReaderView {
         ) {
             self.load_feed(0, FetchMode::CacheFirst);
         }
-        self.show_settings();
+        self.present_settings();
         self.status("Reading library imported.");
     }
     fn open_url(&self, url: &str) {

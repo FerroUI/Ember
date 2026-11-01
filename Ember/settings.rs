@@ -10,10 +10,11 @@ use ferroui_base::layout::{HorizontalAlignment, VerticalAlignment};
 use ferroui_base::media::{Color, SolidColorBrush};
 use ferroui_base::{BoxedValue, CornerRadius, Ref, Thickness, WeakRef};
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
+use ferroui_controls::primitives::{SelectingItemsControl, ToggleButton};
 use ferroui_controls::{
-    Border, Button, CheckBox, ColumnDefinitions, Control, DropDownButton, Grid, MenuFlyout,
-    MenuItem, NumberBox, NumberBoxSpinButtonPlacementMode, NumberBoxValidationMode, ScrollViewer,
-    StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
+    Border, Button, CheckBox, ColumnDefinitions, ComboBox, Control, DropDownButton, Grid,
+    MenuFlyout, MenuItem, NumberBox, NumberBoxSpinButtonPlacementMode, NumberBoxValidationMode,
+    ScrollViewer, StackPanel, TextBlock, TextBox, ToolTip, WrapPanel,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -45,25 +46,115 @@ pub enum SettingsAction {
     ClearHistory,
 }
 
-pub(super) type RestorePreferences = Box<dyn FnOnce(&ReaderState)>;
+pub(super) struct LivePreferences {
+    saved: Rc<RefCell<Preferences>>,
+    hide_read: WeakRef<CheckBox>,
+    update_actions: Rc<dyn Fn()>,
+}
+
+impl LivePreferences {
+    pub(super) fn set_hide_read(&self, enabled: bool) {
+        self.saved.borrow_mut().hide_read = enabled;
+        if let Some(field) = self.hide_read.upgrade() {
+            field.set_is_checked(Some(enabled));
+        }
+        (self.update_actions)();
+    }
+}
+
+pub(super) type RestorePreferences = Box<dyn FnOnce(&ReaderState) -> LivePreferences>;
+
+struct PreferenceEditors {
+    theme: Ref<ComboBox>,
+    accent: Ref<TextBox>,
+    background: Ref<TextBox>,
+    size: Ref<NumberBox>,
+    spacing: Ref<NumberBox>,
+    cache: Ref<TextBox>,
+    flags: [Ref<CheckBox>; 4],
+}
+
+impl PreferenceEditors {
+    fn flags(p: &Preferences) -> [bool; 4] {
+        [p.compact, p.reduced_motion, p.hide_read, p.show_dead]
+    }
+
+    fn restore(&self, p: &Preferences) {
+        self.theme.set_selected_index(theme_index(p.theme));
+        self.accent.set_text(Some(&p.accent));
+        self.background
+            .set_text(Some(p.custom_background.as_deref().unwrap_or("")));
+        replace_reading_value(&self.size, p.font_size);
+        replace_reading_value(&self.spacing, p.line_height);
+        self.cache.set_text(Some(&p.cache_max_items.to_string()));
+        for (field, value) in self.flags.iter().zip(Self::flags(p)) {
+            field.set_is_checked(Some(value));
+        }
+    }
+
+    fn clear_validation(&self) {
+        let mut validation = FormValidation::default();
+        for field in [
+            self.accent.clone().upcast::<Control>(),
+            self.background.clone().upcast(),
+            self.size.clone().upcast(),
+            self.spacing.clone().upcast(),
+            self.cache.clone().upcast(),
+        ] {
+            validation.check(&field, Ok(()));
+        }
+    }
+
+    fn changed(&self, p: &Preferences) -> bool {
+        self.theme.selected_index() != theme_index(p.theme)
+            || self.accent.text().unwrap_or_default() != p.accent
+            || self.background.text().unwrap_or_default()
+                != p.custom_background.as_deref().unwrap_or("")
+            || self.cache.text().unwrap_or_default() != p.cache_max_items.to_string()
+            || !number_matches(&self.size, p.font_size)
+            || !number_matches(&self.spacing, p.line_height)
+            || self
+                .flags
+                .iter()
+                .zip(Self::flags(p))
+                .any(|(field, saved)| field.is_checked() != Some(saved))
+    }
+}
+
+fn theme_index(theme: ThemeMode) -> i32 {
+    match theme {
+        ThemeMode::System => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+        ThemeMode::Custom => 3,
+    }
+}
+
+// NumberBox commits its value on Enter or focus loss. An unfinished edit in the
+// template's TextBox must already enable Apply and Discard.
+fn number_matches(field: &NumberBox, saved: f64) -> bool {
+    field.value() == saved
+        && field
+            .get_visual_descendants()
+            .find_map(|v| v.cast::<TextBox>())
+            .is_none_or(|editor| {
+                let raw = editor.text().unwrap_or_default();
+                raw == field.text() || raw.trim().parse::<f64>().ok() == Some(saved)
+            })
+}
 
 fn build_preferences(
     root: &StackPanel,
     state: &ReaderState,
     on_action: Rc<dyn Fn(SettingsAction)>,
-) {
+) -> LivePreferences {
     let appearance = section(root, "Appearance & reading");
     let (theme_field, accent_field) = field_pair(&appearance);
     let theme = combo(
         &theme_field,
         "Theme",
         &["Follow system", "Light", "Dark", "Custom"],
-        match state.preferences.theme {
-            ThemeMode::System => 0,
-            ThemeMode::Light => 1,
-            ThemeMode::Dark => 2,
-            ThemeMode::Custom => 3,
-        },
+        theme_index(state.preferences.theme),
     );
     let accent = field(
         &accent_field,
@@ -164,8 +255,77 @@ fn build_preferences(
         Some("Preview the default colors, reading size and line spacing."),
     );
     commands.children().add(reset.clone());
+    let discard = button("Discard preference edits");
+    discard.classes().add("quiet");
+    commands.children().add(discard.clone());
     appearance.children().add(commands);
     let current = Rc::new(RefCell::new(state.preferences.clone()));
+    let editors = Rc::new(PreferenceEditors {
+        theme: theme.clone(),
+        accent: accent.clone(),
+        background: background.clone(),
+        size: font_size.clone(),
+        spacing: line_height.clone(),
+        cache: cache_limit.clone(),
+        flags: [
+            compact.clone(),
+            motion.clone(),
+            hide_read.clone(),
+            show_dead.clone(),
+        ],
+    });
+    let update_actions: Rc<dyn Fn()> = {
+        let (apply, discard) = (apply.downgrade(), discard.downgrade());
+        let (editors, saved) = (editors.clone(), current.clone());
+        let message = validation.downgrade();
+        Rc::new(move || {
+            let dirty = editors.changed(&saved.borrow());
+            if let Some(apply) = apply.upgrade() {
+                apply.set_is_enabled(dirty);
+            }
+            if let Some(discard) = discard.upgrade() {
+                discard.set_is_visible(dirty);
+            }
+            if !dirty {
+                editors.clear_validation();
+                if let Some(message) = message.upgrade() {
+                    message.set_is_visible(false);
+                }
+            }
+        })
+    };
+    update_actions();
+    // Listen on the section, including edits in the NumberBox template.
+    let update = update_actions.clone();
+    appearance.add_handler(TextBox::text_changing_event(), move |_, _| update());
+    let update = update_actions.clone();
+    appearance.add_handler(
+        SelectingItemsControl::selection_changed_event(),
+        move |_, _| update(),
+    );
+    let update = update_actions.clone();
+    appearance.add_handler(ToggleButton::is_checked_changed_event(), move |_, _| {
+        update()
+    });
+    {
+        let (editors, saved, update) = (editors.clone(), current.clone(), update_actions.clone());
+        let message = validation.clone();
+        let reset = reset.downgrade();
+        discard.click(move |_, _| {
+            editors.restore(&saved.borrow());
+            update();
+            message.set_text(Some("Preference edits discarded."));
+            message.set_is_visible(true);
+            if let Some(button) = reset.upgrade() {
+                button.focus();
+            }
+        });
+    }
+    let live = LivePreferences {
+        saved: current.clone(),
+        hide_read: hide_read.downgrade(),
+        update_actions: update_actions.clone(),
+    };
     {
         let theme = theme.clone();
         let accent = accent.clone();
@@ -173,13 +333,12 @@ fn build_preferences(
         let size = font_size.clone();
         let spacing = line_height.clone();
         let message = validation.clone();
-        let base = current.clone();
+        let update = update_actions.clone();
         reset.click(move |_, _| {
             let defaults = Preferences::default();
             theme.set_selected_index(0);
             accent.set_text(Some(&defaults.accent));
             background.set_text(Some(""));
-            base.borrow_mut().custom_background = None;
             replace_reading_value(&size, defaults.font_size);
             replace_reading_value(&spacing, defaults.line_height);
             let mut check = FormValidation::default();
@@ -191,9 +350,8 @@ fn build_preferences(
             ] {
                 check.check(&field, Ok(()));
             }
-            message.set_text(Some(
-                "Default theme and type ready. Apply preferences to save.",
-            ));
+            update();
+            message.set_text(Some("Default theme and type previewed."));
             message.set_is_visible(true);
         });
     }
@@ -227,7 +385,7 @@ fn build_preferences(
                 Err("Custom background needs six hex digits, or leave it empty.".into())
             },
         );
-        if p.theme == ThemeMode::Custom {
+        if value.is_empty() || valid_color(value) {
             p.custom_background = (!value.is_empty()).then(|| value.to_owned());
         }
         if let Some(size) = check.check(&font_size, reading_value(&font_size, "Reading font size"))
@@ -258,11 +416,14 @@ fn build_preferences(
             p.show_dead = show_dead.is_checked() == Some(true);
             p.hide_read = hide_read.is_checked() == Some(true);
             current.replace(p.clone());
+            editors.restore(&p);
+            update_actions();
             callback(SettingsAction::Preferences(p));
         }
     });
 
     mute_settings(root, &state.mutes, &on_action);
+    live
 }
 
 pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePreferences) {
@@ -289,7 +450,7 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
     backup.set_is_visible(false);
     let output = crate::widgets::field(
         &backup,
-        "Current backup JSON",
+        "Generated backup JSON",
         "",
         "",
         16 * 1024 * 1024,
@@ -298,19 +459,39 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
     output.set_is_read_only(true);
     let callback = on_action.clone();
     let show_backup = backup.clone();
+    let export_output = output.clone();
     let export = action("Copy backup", "copy", move || {
-        let output = output.downgrade();
+        let output = export_output.downgrade();
         let panel = show_backup.downgrade();
         callback(SettingsAction::Export(Rc::new(move |json| {
             if let (Some(output), Some(panel)) = (output.upgrade(), panel.upgrade()) {
                 output.set_text(Some(json));
                 panel.set_is_visible(true);
+                output.focus();
+                output.select_all();
+                output.bring_into_view();
             }
         })));
     });
     export.set_horizontal_alignment(HorizontalAlignment::Left);
     export.set_is_visible(false);
     data.children().add(export.clone());
+    let dismiss = button("Hide backup");
+    dismiss.classes().add("quiet");
+    {
+        let trigger = export.downgrade();
+        let panel = backup.downgrade();
+        dismiss.click(move |_, _| {
+            output.set_text(Some(""));
+            if let Some(panel) = panel.upgrade() {
+                panel.set_is_visible(false);
+            }
+            if let Some(trigger) = trigger.upgrade() {
+                trigger.focus();
+            }
+        });
+    }
+    backup.children().add(dismiss);
     data.children().add(backup);
     let json = crate::widgets::field(
         &data,
@@ -438,9 +619,10 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
     scroll.set_content(Some(Control::boxed(root)));
     let restore = Box::new(move |state: &ReaderState| {
         preferences.children().clear();
-        build_preferences(&preferences, state, on_action);
+        let live = build_preferences(&preferences, state, on_action);
         export.set_is_visible(true);
         cleanup.set_is_visible(true);
+        live
     });
     (scroll.upcast(), restore)
 }
@@ -995,8 +1177,43 @@ fn split(value: &str) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferroui_controls::{ComboBox, Window};
+    use ferroui_controls::Window;
     use sample_testing::Shell;
+
+    #[test]
+    fn generated_backup_can_be_copied_manually_and_dismissed_on_a_phone() {
+        use ferroui_base::interactivity::RoutedEventArgs;
+        let shell = Shell::start(&crate::SAMPLE, 360.0, 640.0, || crate::App::new().upcast());
+        let (control, restore) = build(Rc::new(|action| {
+            if let SettingsAction::Export(show) = action {
+                show("snapshot");
+            }
+        }));
+        restore(&ReaderState::default());
+        let window = Window::new();
+        window.set_content(Some(Control::boxed(control)));
+        window.show();
+        shell.settle();
+        let named = |name| {
+            window
+                .get_visual_descendants()
+                .filter_map(|v| v.cast::<Control>())
+                .find(|v| AutomationProperties::get_name(v).as_deref() == Some(name))
+                .unwrap()
+        };
+        let output = named("Generated backup JSON").cast::<TextBox>().unwrap();
+        let export = named("Copy backup");
+        export.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+        shell.settle();
+        assert!(output.is_effectively_visible() && output.is_focused());
+        assert_eq!(output.selected_text(), "snapshot");
+        named("Hide backup").raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+        shell.settle();
+        assert!(!output.is_effectively_visible());
+        assert_eq!(output.text().as_deref(), Some(""));
+        assert!(export.is_focused());
+        window.close();
+    }
 
     #[test]
     fn destructive_actions_require_one_confirmation_and_restore_focus_on_cancel() {
