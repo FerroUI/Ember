@@ -49,6 +49,7 @@ ferro_properties! {
     impl StoryCard {
         pub fn swipe_label_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("SwipeLabel", None) }
         pub fn headline_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Headline", None) }
+        pub fn compact_metadata_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("CompactMetadata", None) }
         pub fn metadata_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Metadata", None) }
         pub fn domain_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("Domain", None) }
         pub fn score_label_property() -> StyledProperty<Option<String>> { FerroProperty::register::<StoryCard,_>("ScoreLabel", None) }
@@ -125,6 +126,12 @@ impl StoryCard {
         self.set_headline(Some(&summary.headline));
         self.set_domain(Some(&summary.source));
         self.set_metadata(Some(&summary.byline));
+        let compact_meta = if summary.byline.is_empty() {
+            summary.source.clone()
+        } else {
+            format!("{} · {}", summary.source, summary.byline)
+        };
+        self.set_value(Self::compact_metadata_property(), Some(compact_meta));
         self.set_score_label(item.score.map(|n| n.to_string()).as_deref());
         self.set_value(
             Self::comment_count_property(),

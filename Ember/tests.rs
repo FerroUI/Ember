@@ -1026,3 +1026,9 @@ mod adaptive;
 
 #[path = "test_cases/new_replies.rs"]
 mod new_replies;
+
+#[path = "test_cases/story_swipes.rs"]
+mod story_swipes;
+
+#[path = "test_cases/reading_tools.rs"]
+mod reading_tools;
