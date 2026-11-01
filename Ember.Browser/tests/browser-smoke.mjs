@@ -270,7 +270,7 @@ await run([
             await page.screenshot(path.join(captures, "phone-thread.png"));
             // A live breakpoint crossing lays out an existing, virtualized discussion.
             // Starting independent windows at these widths does not exercise this path.
-            for (const [width, height, rail] of [[700, 420, false], [760, 550, true], [390, 844, false]]) {
+            for (const [width, height, rail] of [[320, 640, false], [700, 420, false], [844, 390, false], [844, 550, true], [760, 550, true], [390, 844, false]]) {
                 await page.resize(width, height);
                 // The viewport changes before the deferred adaptive layout arranges its controls.
                 await page.waitFor(`(() => {
@@ -279,6 +279,21 @@ await run([
                         && view.elements.some(e => e.name === 'NavTop') === ${rail}
                         && view.elements.some(e => e.name === 'SaveButton' && e.hit);
                 })()`);
+                if (width === 320) {
+                    assert(!(await state(page)).elements.some(e => e.name === "DownloadButton" && e.hit), "Download still crowds the narrow toolbar");
+                    await byName(page, "ToolbarMore");
+                    await waitText(page, "Focus reading");
+                    await byText(page, "Focus reading");
+                    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Exit focus reading' && e.hit)");
+                    await byAutomation(page, "Exit focus reading");
+                }
+                if (width === 844 && height === 390) {
+                    const controls = (await state(page)).elements;
+                    const first = controls.find(e => e.name === "MobileHome" && e.hit);
+                    const last = controls.find(e => e.name === "MobileMore" && e.hit);
+                    assert(first && last && first.x === last.x && first.y < last.y, "Landscape primary tabs must form a usable side strip");
+                    await page.screenshot(path.join(captures, "landscape-reader.png"));
+                }
                 assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '101'"), "Resizing changed the selected URL");
                 assert(page.errors.length === 0, page.errors.join("\n"));
             }
