@@ -93,6 +93,28 @@ async function applyTheme(page, index) {
     await sleep(350);
 }
 
+async function reviewLocalData(page) {
+    const revealAction = async name => {
+        await reveal(page, element => element.automationName === name);
+        await byAutomation(page, name);
+    };
+    await revealAction("Import this backup");
+    await waitText(page, "Paste an Ember backup first.");
+    // Validation puts focus back in the JSON field so the correction can be typed directly.
+    await page.type("{}");
+    await revealAction("Import this backup");
+    await waitText(page, "Replace reading data");
+    await byAutomation(page, "Cancel Import this backup");
+    assert(!(await state(page)).elements.some(e => e.automationName === "Replace reading data"), "Cancelled restore remained active");
+
+    await reveal(page, element => element.text === "Clear local data");
+    await byText(page, "Clear local data");
+    await revealAction("Clear cached content");
+    await waitText(page, "Remove cached content");
+    await page.press("Escape");
+    assert(!(await state(page)).elements.some(e => e.automationName === "Remove cached content"), "Escape did not cancel cache removal");
+}
+
 async function start(width, height) {
     const page = await open(site, { width, height, initScript });
     try { await page.waitForView(); await waitText(page, title); return page; }
@@ -140,6 +162,7 @@ await run([
             assert(dark.pixel(4, 4).reduce((sum, channel) => sum + channel, 0) < shot.pixel(4, 4).reduce((sum, channel) => sum + channel, 0) - 80, "Dark theme did not change the reader surface");
             await applyTheme(page, 3);
             await page.screenshot(path.join(captures, "desktop-custom.png"));
+            await reviewLocalData(page);
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "desktop"); throw error; }
         finally { await page.close(); }
@@ -166,6 +189,14 @@ await run([
             await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
                 e.automationName?.startsWith(${JSON.stringify(title)}) && e.helpText === "Saved. Open discussion.")`);
             assert(!(await page.evaluate("new URL(location.href).searchParams.has('item')")), "Swiping a card also opened its discussion");
+            await byName(page, "DismissStatus");
+            const otherTitle = fixtures[102].title;
+            const other = (await state(page)).elements.find(element => element.hit && element.text === otherTitle);
+            assert(other, "Second bookmark fixture has no touch target");
+            const secondX = Math.min(screen.width - 35, other.x + other.width - 15);
+            const secondY = other.y + other.height / 2;
+            await touchDrag(page, secondX, secondY, secondX - 180, secondY);
+            await waitText(page, "Added to Saved stories. Download the thread to keep all its comments offline.");
             await byName(page, "DismissStatus");
             const heading = (await state(page)).elements.find(element => element.name === "FeedTitle");
             assert(heading, "The feed heading is absent");
@@ -208,6 +239,12 @@ await run([
             await page.waitFor("!new URL(location.href).searchParams.has('item')");
             await byName(page, "MobileSaved");
             await waitText(page, title);
+            await waitText(page, otherTitle);
+            await byAutomation(page, "Show downloaded discussions only");
+            await waitText(page, title);
+            assert(!(await state(page)).elements.some(e => e.text === otherTitle), "Downloaded filter retained a bookmark without a download");
+            await byAutomation(page, "Show all saved stories");
+            await waitText(page, otherTitle);
             await byText(page, title);
             await page.waitFor("location.search.includes('item=101')");
             await page.waitFor("navigator.serviceWorker.controller !== null", 30000);
