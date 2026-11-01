@@ -359,6 +359,10 @@ requires the SDK/NDK prerequisites of FerroUI; iOS packaging requires macOS/Xcod
 directory. iOS uses `Library/Application Support/Ember` within its application
 sandbox. Signing and installation follow the existing platform scripts.
 
+## Performance
+
+[Measurement methods, workload sizes and reproduction commands](performance.md)
+
 ## Verification and CI
 
 The [CI workflow](../.github/workflows/ci.yml) calls FerroUI's shared application
