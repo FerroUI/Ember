@@ -392,6 +392,21 @@ await run([
             assert(!downloaded.elements.some(e => e.text === otherTitle), "Explore included an undownloaded bookmark");
             assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Explore fetched its offline library from the network");
             await page.screenshot(path.join(captures, "phone-offline-saved.png"));
+            await byName(page, "LibraryFindButton");
+            await page.type("curious maker example.org");
+            await page.press("Enter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FeedSummary' && e.text?.startsWith('1 match'))");
+            await page.screenshot(path.join(captures, "phone-library-find.png"));
+            await byText(page, title);
+            await page.waitFor("new URL(location.href).searchParams.get('item') === '101' && JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton' && e.hit)");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            const result = await state(page);
+            assert(result.elements.some(e => e.name === "LibraryFind" && e.text === "curious maker example.org"), "Returning from a match discarded the collection query");
+            await byName(page, "CloseLibraryFind");
+            await waitText(page, title);
+            assert(!(await state(page)).elements.some(e => e.name === "LibraryFind"), "Closing collection Find did not restore browsing");
+            assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Searching and reopening the downloaded discussion used the network");
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "phone"); throw error; }
         finally { await page.close(); }
