@@ -484,6 +484,31 @@ await run([
             await waitText(page, title);
             assert(!(await state(page)).elements.some(e => e.name === "LibraryFind"), "Closing collection Find did not restore browsing");
             assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Searching and reopening the downloaded discussion used the network");
+
+            // Downloads and bookmarks are independent. Exercise both collections offline.
+            await byText(page, title);
+            await byAutomation(page, "Remove saved story");
+            await waitText(page, "Removed from Saved stories.");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            await byAutomation(page, "Show all saved stories");
+            await waitText(page, otherTitle);
+            assert(!(await state(page)).elements.some(e => e.text === title), "Unsaving retained the item in ordinary bookmarks");
+            await byAutomation(page, "Show downloaded discussions only");
+            await waitText(page, title);
+            await byText(page, title);
+            await waitText(page, "3 comments");
+            await byAutomation(page, "Manage downloaded discussion");
+            // The platform flyout may be hosted outside the main canvas control tree.
+            await page.press("End");
+            await page.press("Enter");
+            await waitText(page, "Removed from Downloads. Temporary pages can be reclaimed in Settings.");
+            await byName(page, "BackButton");
+            await waitText(page, "No downloaded discussions");
+            await byName(page, "RetryButton");
+            await waitText(page, otherTitle);
+            assert(!(await state(page)).elements.some(e => e.text === title), "Releasing a download restored its bookmark");
+
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "phone"); throw error; }
         finally { await page.close(); }
