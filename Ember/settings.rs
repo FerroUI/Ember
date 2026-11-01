@@ -567,6 +567,12 @@ fn accent_choices(parent: &StackPanel, input: &TextBox) {
         chip.set_width(24.0);
         chip.set_height(24.0);
         chip.set_corner_radius(CornerRadius::uniform(12.0));
+        chip.set_border_thickness(Thickness::uniform(1.0));
+        crate::widgets::bind_resource(
+            &chip,
+            Border::border_brush_property().as_property(),
+            "EmberMuted",
+        );
         chip.set_background(Some(
             SolidColorBrush::with_color(Color::parse(hex).expect("accent preset")).into(),
         ));
