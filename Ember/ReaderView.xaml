@@ -122,13 +122,25 @@
           </Grid>
         </Border>
       </Grid>
-      <Border Grid.Row="2" Grid.Column="1" x:Name="StatusBar" Background="{DynamicResource EmberTint}" Padding="12,0,3,0" IsVisible="False">
-        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
-          <TextBlock x:Name="StatusText" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-          <Button x:Name="UndoStory" Grid.Column="1" Classes="quiet" IsVisible="False" Content="Undo" AutomationProperties.Name="Undo story change" />
-          <Button x:Name="DismissStatus" Grid.Column="2" Classes="icon-button" AutomationProperties.Name="Dismiss notification" ToolTip.Tip="Dismiss notification" />
-        </Grid>
-      </Border>
+      <StackPanel Grid.Row="2" Grid.Column="1">
+        <Border x:Name="TransferBar" IsVisible="False" Background="{DynamicResource EmberBackground}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,1,0,0" Padding="12,3,6,3">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock x:Name="TransferTitle" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+              <TextBlock x:Name="TransferCount" FontSize="12" Classes="muted" TextWrapping="Wrap" />
+              <ProgressBar x:Name="TransferProgress" Height="3" Minimum="0" Maximum="1" IsVisible="False" AutomationProperties.Name="Offline copy verification" />
+            </StackPanel>
+            <Button x:Name="CancelTransfer" Grid.Column="1" Classes="quiet" Content="Cancel" VerticalAlignment="Center" AutomationProperties.Name="Cancel offline operation" />
+          </Grid>
+        </Border>
+        <Border x:Name="StatusBar" Background="{DynamicResource EmberTint}" Padding="12,0,3,0" IsVisible="False">
+          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
+            <TextBlock x:Name="StatusText" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button x:Name="UndoStory" Grid.Column="1" Classes="quiet" IsVisible="False" Content="Undo" AutomationProperties.Name="Undo story change" />
+            <Button x:Name="DismissStatus" Grid.Column="2" Classes="icon-button" AutomationProperties.Name="Dismiss notification" ToolTip.Tip="Dismiss notification" />
+          </Grid>
+        </Border>
+      </StackPanel>
       <Border Grid.Row="3" Grid.Column="1" x:Name="BottomNavigation" Background="{DynamicResource EmberSurface}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,1,0,0" Padding="2" IsVisible="False">
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
           <UniformGrid x:Name="PrimaryTabs" Columns="5">

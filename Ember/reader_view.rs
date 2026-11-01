@@ -232,6 +232,7 @@ pub struct ReaderView {
     thread: RefCell<Option<ThreadSnapshot>>,
     thread_control: RefCell<Option<Ref<Control>>>,
     cache_work: Cell<CacheWork>,
+    transfer_cancel: RefCell<Option<futures_util::future::AbortHandle>>,
     storage_report: RefCell<Option<Rc<dyn Fn(&str)>>>,
     storage_request: Cell<u64>,
     /// Whether the cache was pruned after a feed loaded this session (see `accept_items`).
@@ -313,6 +314,7 @@ impl ReaderView {
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
             cache_work: Cell::new(CacheWork::Idle),
+            transfer_cancel: RefCell::new(None),
             storage_report: RefCell::default(),
             storage_request: Cell::new(0),
             pruned_after_feed: Cell::new(false),
@@ -476,6 +478,7 @@ impl ReaderView {
                 v.download();
             }
         });
+        self.on("CancelTransfer", Self::cancel_transfer);
         self.on("UndoStory", |v| v.undo_story_edit());
         self.on("DismissStatus", |v| {
             v.undo_story.set(None);
@@ -1652,6 +1655,12 @@ impl ReaderView {
                     "download",
                     Box::new(move |v| v.release_download(id)),
                 );
+            } else if view.cache_work.get() == CacheWork::Idle {
+                add(
+                    "Download for offline reading",
+                    "download",
+                    Box::new(move |v| v.start_download(id)),
+                );
             }
             add(
                 "Copy HN link",
@@ -2353,60 +2362,9 @@ impl ReaderView {
         ToolTip::set_tip(&button, Some(Rc::new(name.to_owned()) as BoxedValue));
     }
     fn download(&self) {
-        if self.cache_work.get() != CacheWork::Idle {
-            return;
+        if let Some(id) = self.selected.get() {
+            self.start_download(id);
         }
-        if !self.state_ready.get() {
-            self.status("Download is paused until reading data is restored. Import a backup in Settings first.");
-            return;
-        }
-        let (Some(id), Some(repo)) = (self.selected.get(), self.repo()) else {
-            return;
-        };
-        self.set_cache_work(CacheWork::Downloading(id));
-        self.status("Downloading discussion for offline reading…");
-        let generation = self.library_generation.get();
-        let weak = self.to_ref().downgrade();
-        drop(Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-            let result = repo.download_thread(id, 10000, services::now()).await;
-            let Some(view) = weak.upgrade() else { return; };
-            view.set_cache_work(CacheWork::Idle);
-            // A backup can replace the library while the network operation is outstanding.
-            if generation != view.library_generation.get() { return; }
-            let library_changed = if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
-                let mut state = view.state.borrow_mut();
-                let first_download = state.downloaded_threads.insert(id, thread.items.keys().copied().collect()).is_none();
-                if first_download {
-                    state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
-                }
-                true
-            } else {
-                view.state.borrow_mut().downloaded_threads.remove(&id).is_some()
-            };
-            if library_changed {
-                view.changed();
-                view.update_thread_commands();
-                if *view.feed.borrow() == FeedRoute::Saved {
-                    view.load_feed(0, FetchMode::CacheFirst);
-                }
-            }
-            match result {
-                Ok(thread) => {
-                    let message = if thread.complete {
-                        "Discussion downloaded. It is available offline in Saved stories.".to_owned()
-                    } else {
-                        format!("Download incomplete. {} items missing or pending. Retry Download to continue.",
-                            thread.missing_ids.len() + thread.pending_ids.len())
-                    };
-                    if view.selected.get() == Some(id) && matches!(*view.detail.borrow(), DetailRoute::Thread(_)) {
-                        view.accept_thread(thread);
-                    }
-                    view.status(&message);
-                }
-                Err(error) => view.status(&format!("Download could not complete: {error}")),
-            }
-            view.prune_cache();
-        }));
     }
     fn clear_cache(&self) {
         if !self.state_ready.get() {

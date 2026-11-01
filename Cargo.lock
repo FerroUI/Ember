@@ -619,6 +619,7 @@ dependencies = [
  "ferroui-markup",
  "ferroui-markup-xaml",
  "ferroui-themes-winui",
+ "futures-util",
  "sample-build",
  "sample-support",
  "sample-testing",

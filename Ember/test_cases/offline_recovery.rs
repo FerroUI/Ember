@@ -155,3 +155,93 @@ fn measured_storage_updates_after_reviewed_cleanup_and_keeps_the_bookmarked_down
     }
     window.close();
 }
+
+#[test]
+fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_read() {
+    use ferroui_base::input::ContextRequestedEventArgs;
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::{Border, MenuItem};
+
+    struct DelayedReplies {
+        fixture: FixtureHttp,
+        hold: Cell<bool>,
+        waiting: Cell<bool>,
+    }
+    impl HttpClient for DelayedReplies {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            if self.hold.get() && url.ends_with("/item/2001.json") {
+                self.waiting.set(true);
+                return Box::pin(std::future::pending());
+            }
+            self.fixture.get(url)
+        }
+    }
+    let http = Rc::new(DelayedReplies {
+        fixture: FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        },
+        hold: Cell::new(true),
+        waiting: Cell::new(false),
+    });
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start_with_http(390.0, 844.0, store.clone(), http.clone());
+    let begin = || {
+        let card = first_story(&window);
+        card.raise_event(&ContextRequestedEventArgs::new());
+        let menu = card.context_menu().unwrap();
+        let items = menu.items();
+        let action = (0..items.count())
+            .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+            .filter_map(|c| c.cast::<MenuItem>())
+            .find(|item| {
+                item.header().is_some_and(|h| {
+                    h.downcast_ref::<String>().map(String::as_str)
+                        == Some("Download for offline reading")
+                })
+            })
+            .unwrap();
+        menu.close();
+        action.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        shell.settle();
+    };
+    begin();
+    assert!(http.waiting.get());
+    assert!(view
+        .get_control::<TextBlock>("TransferCount")
+        .text()
+        .unwrap()
+        .contains("1 item loaded"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("MobileSaved"));
+    let transfer = view.get_control::<Border>("TransferBar");
+    assert!(transfer.is_effectively_visible());
+    click_in_view(
+        &shell,
+        &window,
+        &view.get_control::<Button>("CancelTransfer"),
+    );
+    assert!(!transfer.is_effectively_visible());
+    assert_eq!(
+        view.get_control::<TextBlock>("StatusText")
+            .text()
+            .as_deref(),
+        Some("Download canceled.")
+    );
+    let state = || {
+        ready(store.get("reader:state"))
+            .unwrap()
+            .map(|json| ReaderState::import_json(&json).unwrap())
+            .unwrap_or_default()
+    };
+    assert!(!state().is_saved(1001) && !state().downloaded_threads.contains_key(&1001));
+    http.hold.set(false);
+    click_in_view(&shell, &window, &view.get_control::<Button>("MobileHome"));
+    begin();
+    let saved = state();
+    assert!(saved.is_saved(1001));
+    assert!(saved.downloaded_threads.contains_key(&1001));
+    assert!(!saved.is_read(1001));
+    assert!(!view
+        .get_control::<Border>("DetailPane")
+        .is_effectively_visible());
+    window.close();
+}

@@ -3,6 +3,151 @@ use super::*;
 use ferroui_controls::MenuFlyout;
 
 impl ReaderView {
+    pub(super) fn start_download(&self, id: u64) {
+        use futures_util::future::{AbortHandle, Abortable};
+
+        if !self.state_ready.get() {
+            self.status("Download is paused until reading data is restored. Import a backup in Settings first.");
+            return;
+        }
+        if self.cache_work.get() != CacheWork::Idle {
+            return;
+        }
+        let Some(repo) = self.repo() else { return };
+        let checking = self.state.borrow().downloaded_threads.contains_key(&id);
+        let mode = if checking {
+            FetchMode::Offline
+        } else {
+            FetchMode::CacheFirst
+        };
+        let title = self
+            .current_item()
+            .filter(|item| item.id == id)
+            .or_else(|| {
+                self.stories
+                    .borrow()
+                    .iter()
+                    .find(|item| item.id == id)
+                    .cloned()
+            })
+            .map(|item| {
+                StorySummary::new(
+                    &item,
+                    services::now(),
+                    self.state.borrow().preferences.show_dead,
+                )
+                .headline
+            })
+            .unwrap_or_else(|| format!("Discussion {id}"));
+        let (cancel, registration) = AbortHandle::new_pair();
+        self.transfer_cancel.replace(Some(cancel));
+        self.set_cache_work(CacheWork::Downloading(id));
+        self.label("TransferTitle").set_text(Some(&title));
+        self.label("TransferCount").set_text(Some(if checking {
+            "Checking local copy…"
+        } else {
+            "Preparing download…"
+        }));
+        self.button("CancelTransfer").set_is_enabled(true);
+        self.get_control::<ferroui_controls::ProgressBar>("TransferProgress")
+            .set_is_visible(false);
+        self.get_control::<Border>("TransferBar")
+            .set_is_visible(true);
+
+        let generation = self.library_generation.get();
+        let weak = self.to_ref().downgrade();
+        drop(Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+            let transfer = repo.download_thread_with_progress(id, 10000, services::now(), mode, |progress| {
+                if let Some(view) = weak.upgrade() {
+                    view.show_transfer_progress(progress, checking);
+                }
+            });
+            let result = Abortable::new(transfer, registration).await;
+            let Some(view) = weak.upgrade() else { return };
+            view.transfer_cancel.borrow_mut().take();
+            let had_focus = view.button("CancelTransfer").is_focused();
+            view.get_control::<Border>("TransferBar").set_is_visible(false);
+            view.set_cache_work(CacheWork::Idle);
+            if had_focus {
+                let toolbar = ["DownloadButton", "ToolbarMore", "BackButton"]
+                    .into_iter().map(|name| view.button(name))
+                    .find(|button| button.is_effectively_visible() && button.is_enabled());
+                if let Some(command) = toolbar {
+                    command.focus();
+                } else if view.get_control::<ListBox>("Stories").items().count() > 0 {
+                    view.get_control::<ListBox>("Stories").focus();
+                } else if view.button("RetryButton").is_effectively_visible() {
+                    view.button("RetryButton").focus();
+                }
+            }
+            if generation != view.library_generation.get() { return; }
+            let Ok(result) = result else {
+                view.status(if checking { "Offline check canceled." } else { "Download canceled." });
+                return;
+            };
+            let library_changed = if let Some(thread) = result.as_ref().ok().filter(|thread| thread.complete) {
+                let mut state = view.state.borrow_mut();
+                let first_download = state.downloaded_threads.insert(id, thread.items.keys().copied().collect()).is_none();
+                if first_download {
+                    state.items.entry(id).or_default().saved_at.get_or_insert_with(services::now);
+                }
+                true
+            } else {
+                view.state.borrow_mut().downloaded_threads.remove(&id).is_some()
+            };
+            if library_changed {
+                view.changed();
+                view.update_thread_commands();
+                if *view.feed.borrow() == FeedRoute::Saved {
+                    view.load_feed(0, FetchMode::CacheFirst);
+                }
+            }
+            match result {
+                Ok(thread) => {
+                    let message = if !thread.complete {
+                        format!("Download incomplete. {} items missing or pending. Retry Download to continue.",
+                            thread.missing_ids.len() + thread.pending_ids.len())
+                    } else if checking {
+                        "Offline copy checked. All items are available on this device.".to_owned()
+                    } else {
+                        "Discussion downloaded. It is available offline in Saved stories.".to_owned()
+                    };
+                    if view.selected.get() == Some(id) && matches!(*view.detail.borrow(), DetailRoute::Thread(_)) && !checking {
+                        view.accept_thread(thread);
+                    }
+                    view.status(&message);
+                }
+                Err(error) => view.status(&format!("Offline copy unavailable: {error}")),
+            }
+            view.prune_cache();
+        }));
+    }
+
+    pub(super) fn cancel_transfer(&self) {
+        if let Some(cancel) = self.transfer_cancel.borrow().as_ref() {
+            cancel.abort();
+        }
+    }
+
+    fn show_transfer_progress(&self, progress: ember_core::DownloadProgress, checking: bool) {
+        use ember_core::DownloadProgress;
+        let bar = self.get_control::<ferroui_controls::ProgressBar>("TransferProgress");
+        let message = match progress {
+            DownloadProgress::Collecting { loaded, pending } => {
+                let action = if checking { "Checking" } else { "Downloading" };
+                let unit = if loaded == 1 { "item" } else { "items" };
+                format!("{action} · {loaded} {unit} loaded · {pending} pending")
+            }
+            DownloadProgress::Verifying { checked, total } => {
+                bar.set_maximum(total as f64);
+                bar.set_range_value(checked as f64);
+                bar.set_is_visible(true);
+                format!("Verifying offline copy · {checked} of {total}")
+            }
+        };
+        self.label("TransferCount").set_text(Some(&message));
+    }
+
     pub(super) fn offline_actions(&self, id: u64) -> Ref<MenuFlyout> {
         let menu = MenuFlyout::new();
         for (label, icon, release) in [
