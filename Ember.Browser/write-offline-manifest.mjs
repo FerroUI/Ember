@@ -29,10 +29,30 @@ function visit(directory) {
 }
 visit(out);
 files.sort();
+const modules = files.filter(file => file.endsWith(".wasm"));
+const html = path.join(out, "index.html");
+if (modules.length === 1 && /^[a-zA-Z0-9_.-]+$/.test(modules[0])) {
+    const markup = fs.readFileSync(html, "utf8").replace("<!-- Ember single-module hint -->",
+        `<meta name="ember-wasm" content="./${modules[0]}">`);
+    fs.writeFileSync(html, markup);
+}
 const hash = crypto.createHash("sha256");
-for (const file of files) { hash.update(file); hash.update(fs.readFileSync(path.join(out, file))); }
-hash.update(fs.readFileSync(path.join(out, "ferroui-sw.js")));
+const moduleHashes = {};
+for (const file of files) {
+    hash.update(file);
+    const moduleHash = modules.includes(file) ? crypto.createHash("sha256") : null;
+    for await (const chunk of fs.createReadStream(path.join(out, file))) {
+        hash.update(chunk);
+        moduleHash?.update(chunk);
+    }
+    if (moduleHash) moduleHashes[file] = moduleHash.digest("base64");
+}
+const worker = path.join(out, "ferroui-sw.js");
+// Rebuilding the manifest for an existing site must not recursively hash or
+// append the previous version's generated worker configuration.
+const baseWorker = fs.readFileSync(worker, "utf8").split("\nself.EMBER_SHELL_VERSION = ")[0];
+hash.update(baseWorker);
 const version = hash.digest("hex").slice(0, 20);
-fs.writeFileSync(path.join(out, "offline-manifest.json"), JSON.stringify({ version, files }, null, 2) + "\n");
-fs.appendFileSync(path.join(out, "ferroui-sw.js"), `\nself.EMBER_SHELL_VERSION = ${JSON.stringify(version)};\nself.EMBER_SHELL_FILES = ${JSON.stringify(files)};\nimportScripts("./ember-offline.js");\n`);
+fs.writeFileSync(path.join(out, "offline-manifest.json"), JSON.stringify({ version, files, moduleHashes }, null, 2) + "\n");
+fs.writeFileSync(worker, baseWorker + `\nself.EMBER_SHELL_VERSION = ${JSON.stringify(version)};\nself.EMBER_SHELL_FILES = ${JSON.stringify(files)};\nself.EMBER_MODULE_HASHES = ${JSON.stringify(moduleHashes)};\nimportScripts("./ember-offline.js");\n`);
 console.log(`Ember offline shell: ${files.length} files, version ${version}`);

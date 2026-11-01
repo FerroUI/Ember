@@ -29,6 +29,22 @@ async function startReader() {
             "WebAssembly is unavailable in this browser.");
         return;
     }
+    // The build supplies this hint only for the single-module site. Combined
+    // builds let FerroUI choose between plain and threaded modules first.
+    const wasm = document.querySelector('meta[name="ember-wasm"]');
+    if (wasm) {
+        const preload = document.createElement("link");
+        preload.rel = "preload";
+        preload.as = "fetch";
+        preload.type = "application/wasm";
+        preload.crossOrigin = "anonymous";
+        preload.href = wasm.content;
+        document.head.append(preload);
+        const glue = document.createElement("link");
+        glue.rel = "modulepreload";
+        glue.href = "./ember-browser.js";
+        document.head.append(glue);
+    }
     const [{ FerroExports }, { loadModule }] = await Promise.all([
         import("./ferroui.js"),
         import("./ferroui-loader.js"),
