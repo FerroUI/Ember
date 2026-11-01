@@ -22,7 +22,7 @@ const fixtures = {
 };
 const initScript = `(() => {
     const original = globalThis.fetch.bind(globalThis);
-    const items = ${JSON.stringify(fixtures)};
+    const items = globalThis.__emberFixtureItems = ${JSON.stringify(fixtures)};
     globalThis.fetch = async (input, options) => {
         const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
         if (!["hacker-news.firebaseio.com", "hn.algolia.com"].includes(url.hostname)) return original(input, options);
@@ -213,6 +213,49 @@ await run([
             await reviewLocalData(page);
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "desktop"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["returning readers catch up on new nested replies and copy their link", async () => {
+        const page = await start(1024, 820);
+        try {
+            await byName(page, "WelcomeOpen");
+            await byAutomation(page, "Collapse 1 reply");
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            await page.evaluate(`(() => {
+                const items = globalThis.__emberFixtureItems;
+                items[101].descendants++;
+                items[201].kids.push(204);
+                items[204] = { id: 204, parent: 201, type: "comment", by: "visitor", time: Math.floor(Date.now() / 1000), text: "<p>A new nested reply for returning readers.</p>" };
+            })()`);
+            await byText(page, title);
+            await waitText(page, "3 comments");
+            await byName(page, "RefreshButton");
+            await waitText(page, "4 comments");
+            await byName(page, "NewReplyFilter");
+            await waitText(page, "1 new reply");
+            await waitText(page, "Earlier reply");
+            const nested = (await state(page)).elements.find(e => e.hit && e.automationName === "View visitor’s profile");
+            assert(nested, "The new reply is missing under its previously collapsed parent");
+            assert(!(await state(page)).elements.some(e => e.automationName === "View engineer’s profile"),
+                "A branch without new replies should be filtered out");
+            await page.screenshot(path.join(captures, "tablet-new-replies.png"));
+            const menu = (await state(page)).elements.find(e => e.hit && e.automationName === "More comment actions"
+                && Math.abs((e.y + e.height / 2) - (nested.y + nested.height / 2)) < 12);
+            assert(menu, "No overflow next to the new reply");
+            await page.click(menu.x + menu.width / 2, menu.y + menu.height / 2);
+            await page.setPermission("clipboard-read", "granted");
+            // Flyout menus can use a separate popup root. Select the first action by keyboard.
+            await page.press("Home");
+            await page.press("Enter");
+            await waitText(page, "Comment link copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === "https://news.ycombinator.com/item?id=204", "The copy action used the wrong comment");
+            await byName(page, "NewReplyFilter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Expand comment and 2 replies')");
+            assert(!(await state(page)).elements.some(e => e.automationName === "View visitor’s profile"),
+                "Clearing the scope lost the original collapsed state");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "new-replies"); throw error; }
         finally { await page.close(); }
     }],
     ["phone touch gestures, navigation, downloads, persistence, and offline reload", async () => {
