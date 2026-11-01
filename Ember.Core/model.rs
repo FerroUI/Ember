@@ -540,6 +540,43 @@ pub fn user_url(username: &str) -> String {
     url.into()
 }
 
+/// A public HN permalink that can be read inside Ember.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HnDestination {
+    Discussion(ItemId),
+    Profile(String),
+}
+
+impl HnDestination {
+    pub fn from_link(input: &str) -> Option<Self> {
+        let value = input.trim();
+        if value.chars().any(char::is_whitespace) || value.contains('\\') {
+            return None;
+        }
+        let url = Url::parse(value).ok()?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str() != Some("news.ycombinator.com")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+        {
+            return None;
+        }
+        let mut ids = url.query_pairs().filter(|(key, _)| key == "id");
+        let (_, id) = ids.next()?;
+        if ids.next().is_some() {
+            return None;
+        }
+        match url.path() {
+            "/item" if id.bytes().all(|byte| byte.is_ascii_digit()) => {
+                id.parse().ok().filter(|id| *id > 0).map(Self::Discussion)
+            }
+            "/user" if validate_username(&id).is_ok() => Some(Self::Profile(id.into_owned())),
+            _ => None,
+        }
+    }
+}
+
 pub fn validate_username(username: &str) -> Result<(), crate::ReaderError> {
     if username.is_empty()
         || username.len() > 64

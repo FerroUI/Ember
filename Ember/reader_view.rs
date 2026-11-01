@@ -2079,13 +2079,21 @@ impl ReaderView {
     }
     fn submit_quick_search(&self) {
         let query = self.textbox("SearchBox").text().unwrap_or_default();
-        if query.trim().is_empty() {
+        if let Some(link) = ember_core::HnDestination::from_link(&query) {
+            self.open_hn_destination(link);
+        } else if query.trim().is_empty() {
             self.show_search();
         } else {
             self.run_search(SearchQuery {
                 query,
                 ..Default::default()
             });
+        }
+    }
+    fn open_hn_destination(&self, destination: ember_core::HnDestination) {
+        match destination {
+            ember_core::HnDestination::Discussion(id) => self.open_item_internal(id, true),
+            ember_core::HnDestination::Profile(user) => self.show_profile(user),
         }
     }
     fn show_search(&self) {
@@ -2137,9 +2145,9 @@ impl ReaderView {
                     v.run_search(query);
                 }
             }),
-            Rc::new(move |name| {
+            Rc::new(move |link| {
                 if let Some(v) = profile.upgrade() {
-                    v.show_profile(name);
+                    v.open_hn_destination(link);
                 }
             }),
         ));

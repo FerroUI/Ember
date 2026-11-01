@@ -3,7 +3,7 @@ use crate::widgets::{
     combo, disclosure, field_pair, form_button as button, icon_button, label as text, section,
     FormValidation,
 };
-use ember_core::{validate_username, SearchKind, SearchQuery, SearchSort};
+use ember_core::{validate_username, HnDestination, SearchKind, SearchQuery, SearchSort};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs, KeyModifiers};
 use ferroui_base::layout::HorizontalAlignment;
 use ferroui_base::media::TextTrimming;
@@ -28,7 +28,7 @@ pub fn build(
     profile_lookup: Option<&str>,
     forget_search: Rc<dyn Fn(&str)>,
     on_search: Rc<dyn Fn(SearchQuery)>,
-    on_profile: Rc<dyn Fn(String)>,
+    on_open: Rc<dyn Fn(HnDestination)>,
 ) -> Ref<Control> {
     let root = StackPanel::new();
     root.set_spacing(10.0);
@@ -39,7 +39,7 @@ pub fn build(
         &search,
         "Search terms",
         &query.query,
-        "Stories, comments, or a phrase",
+        "Search terms or a Hacker News link",
     );
     words.set_name(Some("SearchTerms".to_owned()));
     if profile_lookup.is_none() {
@@ -147,9 +147,31 @@ pub fn build(
     let submit = button("Search");
     submit.classes().add("accent");
     search.children().add(submit.clone());
+    let trigger = submit.downgrade();
+    let update_action = move |value: Option<String>| {
+        let Some(button) = trigger.upgrade() else {
+            return;
+        };
+        let label = match HnDestination::from_link(value.as_deref().unwrap_or_default()) {
+            Some(HnDestination::Discussion(_)) => "Open discussion",
+            Some(HnDestination::Profile(_)) => "Open profile link",
+            None => "Search",
+        };
+        button.set_content(Some(Rc::new(label.to_owned())));
+        AutomationProperties::set_name(&button, Some(label));
+    };
+    update_action(words.text());
+    let input = words.downgrade();
+    words.property_changed(move |event| {
+        if event.property() == TextBox::text_property().as_property() {
+            if let Some(input) = input.upgrade() {
+                update_action(input.text());
+            }
+        }
+    });
     let reset = button("Clear filters");
     filters.children().add(reset.clone());
-    author.set_max_length(64);
+    author.set_max_length(65);
     let summary = text("", 12.0, true);
     search.children().add(summary.clone());
     let advanced = [author.clone(), points.clone(), comments.clone()];
@@ -216,11 +238,16 @@ pub fn build(
     }
     let original = query.clone();
     let recent_input = words.downgrade();
+    let open_link = on_open.clone();
     let run: Rc<dyn Fn()> = Rc::new(move || {
         let mut check = FormValidation::default();
         let mut q = original.clone();
         q.page = 0;
         q.query = words.text().unwrap_or_default().trim().to_owned();
+        if let Some(destination) = HnDestination::from_link(&q.query) {
+            open_link(destination);
+            return;
+        }
         check.check(
             &words,
             if q.query.len() <= FIELD_LENGTH as usize {
@@ -244,6 +271,7 @@ pub fn build(
         };
         let value = author.text().unwrap_or_default();
         let value = value.trim();
+        let value = value.strip_prefix('@').unwrap_or(value);
         check.check(
             &author,
             if value.is_empty() {
@@ -396,9 +424,9 @@ pub fn build(
         &people,
         "Hacker News username",
         profile_lookup.unwrap_or(""),
-        "Case-sensitive username",
+        "Username, @name, or profile link",
     );
-    username.set_max_length(64);
+
     if profile_lookup.is_some() {
         focus_on_load(&username, true);
     }
@@ -413,13 +441,18 @@ pub fn build(
         &open,
         Rc::new(move || {
             let name = username.text().unwrap_or_default();
+            let value = name.trim();
+            let user = match HnDestination::from_link(value) {
+                Some(HnDestination::Profile(user)) => user,
+                _ => value.strip_prefix('@').unwrap_or(value).to_owned(),
+            };
             let mut check = FormValidation::default();
             check.check(
                 &username,
-                validate_username(name.trim()).map_err(|e| e.to_string()),
+                validate_username(&user).map_err(|e| e.to_string()),
             );
             if check.finish(&message) {
-                on_profile(name.trim().to_owned());
+                on_open(HnDestination::Profile(user));
             }
         }),
     );
@@ -716,7 +749,10 @@ mod tests {
         key.set_routed_event(Some(InputElement::key_down_event()));
         username.raise_event(&key);
         shell.settle();
-        assert_eq!(submitted.borrow().as_deref(), Some("Ada"));
+        assert_eq!(
+            *submitted.borrow(),
+            Some(HnDestination::Profile("Ada".into()))
+        );
         window.close();
     }
 

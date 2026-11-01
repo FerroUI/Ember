@@ -705,3 +705,29 @@ fn mute_domains_accept_article_links_and_match_host_boundaries() {
         );
     }
 }
+
+#[test]
+fn hn_permalinks_accept_only_unambiguous_public_destinations() {
+    assert_eq!(
+        HnDestination::from_link(" https://NEWS.ycombinator.com/item?from=test&id=42#42 "),
+        Some(HnDestination::Discussion(42))
+    );
+    assert_eq!(
+        HnDestination::from_link("http://news.ycombinator.com/user?id=aDa-1"),
+        Some(HnDestination::Profile("aDa-1".into()))
+    );
+    for link in [
+        "http://example.com/item?id=42",
+        "https://news.ycombinator.com.example.org/item?id=42",
+        "https://person@news.ycombinator.com/item?id=42",
+        "https://news.ycombinator.com:8080/item?id=42",
+        "https://news.ycombinator.com/item?id=0",
+        "https://news.ycombinator.com/item?id=1&id=2",
+        "https://news.ycombinator.com/item?id=18446744073709551616",
+        "https://news.ycombinator.com/user?id=a%2Fb",
+        "https://news.ycombinator.com/reply?id=42",
+        "not a link",
+    ] {
+        assert_eq!(HnDestination::from_link(link), None, "{link}");
+    }
+}

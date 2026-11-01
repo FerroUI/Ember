@@ -15,7 +15,7 @@
           </StackPanel>
           <Border x:Name="SearchHost" Grid.Column="1" MaxWidth="410" HorizontalAlignment="Center" VerticalAlignment="Center">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="2">
-              <TextBox x:Name="SearchBox" MinWidth="210" PlaceholderText="Search Hacker News" AutomationProperties.Name="Search Hacker News" />
+              <TextBox x:Name="SearchBox" MinWidth="210" PlaceholderText="Search or paste an HN link" AutomationProperties.Name="Search Hacker News" />
               <Button x:Name="SearchButton" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Search Hacker News" AutomationProperties.Name="Search" />
             </Grid>
           </Border>
