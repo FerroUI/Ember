@@ -55,14 +55,20 @@ impl ReaderView {
             report("Storage is unavailable.");
             return;
         };
+        self.storage_report.replace(Some(report.clone()));
+        let request = self.storage_request.get().wrapping_add(1);
+        self.storage_request.set(request);
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-                match repo.cache_stats().await {
+                let result = repo.cache_stats().await;
+                let Some(view) = weak.upgrade().filter(|v| {
+                    v.storage_request.get() == request && v.storage_report.borrow().is_some()
+                }) else {
+                    return;
+                };
+                match result {
                     Ok(stats) => {
-                        let Some(view) = weak.upgrade() else {
-                            return;
-                        };
                         let downloads = view.state.borrow().downloaded_threads.len();
                         let unit = if downloads == 1 {
                             "download"
@@ -82,6 +88,13 @@ impl ReaderView {
         );
     }
 
+    pub(super) fn refresh_storage_report(&self) {
+        let report = self.storage_report.borrow().clone();
+        if let Some(report) = report {
+            self.measure_storage(report);
+        }
+    }
+
     pub(super) fn clean_temporary_cache(&self) {
         if !self.state_ready.get() || self.cache_work.get() != CacheWork::Idle {
             self.status("Offline storage is busy. Try cleaning it again when the current operation finishes.");
@@ -98,6 +111,7 @@ impl ReaderView {
                 let result = repo.clean_temporary_cache(&state).await;
                 if let Some(view) = weak.upgrade() {
                     view.set_cache_work(CacheWork::Idle);
+                    view.refresh_storage_report();
                     match result {
                         Ok(stats) if stats.records == 0 => {
                             view.status("Temporary cache is already clean.")

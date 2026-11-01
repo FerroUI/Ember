@@ -734,7 +734,10 @@ impl Repository {
     }
     /// Release browsing cache while retaining feed lists, bookmarks and every verified
     /// download. Protect both the active library and any state still durable on disk.
-    pub async fn clean_temporary_cache(&self, state: &ReaderState) -> Result<CacheStats, ReaderError> {
+    pub async fn clean_temporary_cache(
+        &self,
+        state: &ReaderState,
+    ) -> Result<CacheStats, ReaderError> {
         let mut pinned = state.pinned_items();
         pinned.extend(self.load_state().await?.pinned_items());
         let mut removed = CacheStats::default();

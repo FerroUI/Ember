@@ -100,3 +100,58 @@ fn unbookmarked_downloads_remain_readable_and_can_be_released_individually() {
     assert_eq!(http.requests.get(), 0);
     window.close();
 }
+
+#[test]
+fn measured_storage_updates_after_reviewed_cleanup_and_keeps_the_bookmarked_download() {
+    use ferroui_controls::Expander;
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(1280.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
+    click_in_view(&shell, &window, &first_story(&window));
+    click(
+        &shell,
+        &window,
+        &view.get_control::<Button>("DownloadButton"),
+    );
+    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    let maintenance = view
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<Expander>())
+        .find(|e| AutomationProperties::get_name(e).as_deref() == Some("Clear local data"))
+        .unwrap();
+    maintenance.set_is_expanded(true);
+    shell.settle();
+    let tap = |name| {
+        let button = view
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<Button>())
+            .find(|b| {
+                b.is_effectively_visible()
+                    && AutomationProperties::get_name(b).as_deref() == Some(name)
+            })
+            .unwrap_or_else(|| panic!("visible option {name}"));
+        click_in_view(&shell, &window, &button);
+    };
+    tap("Check storage use");
+    let report = view
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<TextBlock>())
+        .find(|t| t.text().unwrap_or_default().contains("of cached data"))
+        .unwrap();
+    assert!(report.text().unwrap().ends_with("1 download"));
+    tap("Clean temporary cache");
+    tap("Cancel Clean temporary cache");
+    assert!(ready(store.get("cache:item:1002")).unwrap().is_some());
+    tap("Clean temporary cache");
+    tap("Clean temporary data");
+    assert!(ready(store.get("cache:item:1002")).unwrap().is_none());
+    assert!(ready(store.get("cache:item:2004")).unwrap().is_some());
+    assert!(report.text().unwrap().ends_with("5 items · 1 download"));
+    if let Some(dir) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&std::path::Path::new(&dir).join("desktop-offline-storage.ppm"))
+            .unwrap();
+    }
+    window.close();
+}

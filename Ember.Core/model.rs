@@ -465,14 +465,19 @@ impl ReaderState {
     pub fn downloaded_ids(&self) -> Vec<ItemId> {
         let mut ids: Vec<_> = self.downloaded_threads.keys().copied().collect();
         ids.sort_unstable_by_key(|id| {
-            let time = self.items.get(id).and_then(|item| item.saved_at.or(item.last_opened_at));
+            let time = self
+                .items
+                .get(id)
+                .and_then(|item| item.saved_at.or(item.last_opened_at));
             std::cmp::Reverse((time, *id))
         });
         ids
     }
 
     pub(crate) fn pinned_items(&self) -> BTreeSet<ItemId> {
-        let mut pinned: BTreeSet<_> = self.items.iter()
+        let mut pinned: BTreeSet<_> = self
+            .items
+            .iter()
             .filter_map(|(&id, item)| item.saved_at.map(|_| id))
             .collect();
         for (&root, items) in &self.downloaded_threads {

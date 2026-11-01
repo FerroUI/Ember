@@ -200,6 +200,8 @@ pub struct ReaderView {
     thread: RefCell<Option<ThreadSnapshot>>,
     thread_control: RefCell<Option<Ref<Control>>>,
     cache_work: Cell<CacheWork>,
+    storage_report: RefCell<Option<Rc<dyn Fn(&str)>>>,
+    storage_request: Cell<u64>,
     /// Whether the cache was pruned after a feed loaded this session (see `accept_items`).
     pruned_after_feed: Cell<bool>,
     library_generation: Cell<u64>,
@@ -275,6 +277,8 @@ impl ReaderView {
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
             cache_work: Cell::new(CacheWork::Idle),
+            storage_report: RefCell::default(),
+            storage_request: Cell::new(0),
             pruned_after_feed: Cell::new(false),
             library_generation: Cell::new(0),
             thread_budget: Cell::new(120),
@@ -2114,6 +2118,7 @@ impl ReaderView {
             view.changed();
             view.render_stories();
             if view.downloaded_shelf() { view.load_feed(0, FetchMode::Offline); }
+            view.refresh_storage_report();
             match result {
                 Ok(()) => view.status("Cached content cleared. Bookmarks and preferences are retained."),
                 Err(error) => view.status(&format!("Cache clearing did not finish: {error}. Download discussions again to verify offline availability.")),
@@ -2136,6 +2141,7 @@ impl ReaderView {
         self.animate_detail();
     }
     fn configure_detail(&self) {
+        self.storage_report.borrow_mut().take();
         self.explore_counts.borrow_mut().clear();
         self.profile_mute.borrow_mut().take();
         self.pending_settings.borrow_mut().take();
