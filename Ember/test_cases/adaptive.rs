@@ -57,3 +57,96 @@ fn a_short_landscape_window_keeps_the_same_primary_tabs_and_an_unbroken_reading_
     assert_eq!(title.text().as_deref(), Some("Small tools, carefully made"));
     window.close();
 }
+
+#[test]
+fn narrow_toolbar_downloads_and_enters_focus_from_the_sticky_discussion_options() {
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::{MenuFlyout, MenuItem};
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(320.0, 540.0, store.clone(), Rc::new(Cell::new(false)));
+    click(&shell, &window, &first_story(&window));
+    let more = view.get_control::<Button>("ToolbarMore");
+    let download = view.get_control::<Button>("DownloadButton");
+    assert!(!download.is_effectively_visible());
+    let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+    let invoke = |name: &str| {
+        click_in_view(&shell, &window, &more);
+        assert!(menu.is_open());
+        let items = menu.items();
+        let item = (0..items.count())
+            .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+            .filter_map(|c| c.cast::<MenuItem>())
+            .find(|item| {
+                item.is_visible()
+                    && item
+                        .header()
+                        .and_then(|h| h.downcast_ref::<String>().cloned())
+                        .as_deref()
+                        == Some(name)
+            })
+            .unwrap_or_else(|| panic!("missing option {name}"));
+        item.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        menu.hide();
+        for _ in 0..5 {
+            shell.settle();
+        }
+    };
+    invoke("Download thread");
+    let state =
+        ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert!(state.downloaded_threads.contains_key(&1001));
+    invoke("Focus reading");
+    assert!(!view
+        .get_control::<Border>("BottomNavigation")
+        .is_effectively_visible());
+    let exit = view.get_control::<Button>("FocusButton");
+    assert_eq!(
+        AutomationProperties::get_name(&exit).as_deref(),
+        Some("Exit focus reading")
+    );
+    click(&shell, &window, &exit);
+    assert!(more.is_effectively_visible());
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
+    window.set_width(390.0);
+    shell.settle();
+    assert!(download.is_effectively_visible());
+    assert_eq!(
+        AutomationProperties::get_name(&download).as_deref(),
+        Some("Available offline. Download again")
+    );
+    window.close();
+}
+
+#[test]
+fn an_unavailable_permalink_can_be_retried_from_the_detail_pane() {
+    let offline = Rc::new(Cell::new(true));
+    let (shell, window, view) = start(
+        320.0,
+        440.0,
+        Rc::new(MemoryStore::default()),
+        offline.clone(),
+    );
+    crate::navigate_location("?item=1001");
+    for _ in 0..5 {
+        shell.settle();
+    }
+    let retry = view
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<Button>())
+        .find(|b| AutomationProperties::get_name(b).as_deref() == Some("Retry discussion"))
+        .expect("a failed deep link should include a reachable retry");
+    offline.set(false);
+    click_in_view(&shell, &window, &retry);
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Small tools, carefully made")
+    );
+    window.close();
+}

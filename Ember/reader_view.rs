@@ -329,7 +329,7 @@ impl ReaderView {
             ("SearchButton", "search"),
             ("CompactSearch", "search"),
             ("EditFeedSearch", "search"),
-            ("ThreadRefresh", "refresh"),
+            ("ToolbarMore", "more"),
             ("FindButton", "search"),
             ("FocusButton", "focus_reading"),
             ("CloseFind", "dismiss"),
@@ -382,11 +382,7 @@ impl ReaderView {
         self.on("MobileMore", |v| v.show_more());
         self.on("SearchButton", |v| v.submit_quick_search());
         self.on("RefreshButton", |v| v.refresh());
-        self.on("ThreadRefresh", |v| {
-            if let DetailRoute::Thread(id) = *v.detail.borrow() {
-                v.fetch_thread(id, FetchMode::Refresh);
-            }
-        });
+        self.wire_phone_toolbar();
         self.on("FindButton", |v| {
             v.set_find_open(!v.get_control::<Border>("ThreadTools").is_visible())
         });
@@ -1545,13 +1541,40 @@ impl ReaderView {
                     match result {
                         Ok(thread) => v.accept_thread(thread),
                         Err(error) => {
-                            v.status(&format!("Discussion unavailable: {error}. Try Refresh."));
-                            v.label("DetailTitle")
-                                .set_text(Some("Could not load this discussion"));
+                            v.status(&format!("Discussion unavailable: {error}"));
                             if v.thread.borrow().is_none() {
-                                let message = widgets::text("This discussion is not available on this device yet. Check your connection and tap Refresh to try again.", 17.0);
-                                message.set_margin(Thickness::uniform(28.0));
-                                v.show_content(message.upcast());
+                                v.label("DetailTitle")
+                                    .set_text(Some("Discussion unavailable"));
+                                let panel = widgets::stack(8.0);
+                                panel.set_margin(Thickness::uniform(18.0));
+                                panel
+                                    .children()
+                                    .add(widgets::heading("Couldn’t open this discussion"));
+                                let offline = mode == FetchMode::Offline;
+                                panel.children().add(widgets::muted(if offline {
+                                    "The downloaded copy is missing from this device."
+                                } else {
+                                    "Check your connection and try loading the discussion again."
+                                }));
+                                let weak = v.downgrade();
+                                let retry =
+                                    widgets::action("Retry discussion", "refresh", move || {
+                                        if let Some(view) = weak.upgrade() {
+                                            view.fetch_thread(
+                                                id,
+                                                if offline {
+                                                    FetchMode::Offline
+                                                } else {
+                                                    FetchMode::Refresh
+                                                },
+                                            );
+                                        }
+                                    });
+                                retry.set_horizontal_alignment(
+                                    ferroui_base::layout::HorizontalAlignment::Left,
+                                );
+                                panel.children().add(retry);
+                                v.show_content(widgets::scroll(panel.upcast()));
                             }
                         }
                     }
@@ -1849,6 +1872,46 @@ impl ReaderView {
             }
             self.update_thread_commands();
         }
+    }
+    fn wire_phone_toolbar(&self) {
+        let menu = ferroui_controls::MenuFlyout::new();
+        let action = |label: &str, icon: &str, run: fn(&ReaderView)| {
+            let item = MenuItem::new();
+            item.set_header(Some(Rc::new(label.to_owned())));
+            item.set_icon(Some(Control::boxed(crate::icons::icon(icon))));
+            let weak = self.to_ref().downgrade();
+            item.click(move |_, _| {
+                if let Some(view) = weak.upgrade() {
+                    run(&view);
+                }
+            });
+            menu.items().add(Some(Control::boxed(&item)));
+            item
+        };
+        action("Focus reading", "focus_reading", |v| {
+            v.set_focus_reading(true)
+        });
+        let menu_download = action("Download thread", "download", Self::download);
+        action("Refresh discussion", "refresh", |v| {
+            if let Some(id) = v.selected.get() {
+                v.fetch_thread(id, FetchMode::Refresh);
+            }
+        });
+        action("Copy discussion link", "copy", |v| {
+            v.thread_action(ThreadAction::Share)
+        });
+        let weak = self.to_ref().downgrade();
+        menu.opening(move |_| {
+            if let Some(view) = weak.upgrade() {
+                let command = view.button("DownloadButton");
+                menu_download.set_is_visible(!command.is_visible());
+                menu_download.set_is_enabled(command.is_enabled());
+                menu_download.set_header(
+                    AutomationProperties::get_name(&command).map(|s| Rc::new(s) as BoxedValue),
+                );
+            }
+        });
+        self.button("ToolbarMore").set_flyout(menu);
     }
     fn update_thread_commands(&self) {
         self.update_download_command();
@@ -2424,7 +2487,7 @@ impl ReaderView {
         if focus.is_effectively_visible() {
             focus.focus();
         } else {
-            self.button("BackButton").focus();
+            self.button("ToolbarMore").focus();
         }
     }
     fn apply_layout(&self) {
@@ -2460,7 +2523,10 @@ impl ReaderView {
             .set_is_visible(split || detail);
         self.get_control::<Border>("Masthead")
             .set_is_visible(split || (phone && !detail));
-        self.button("ThreadRefresh").set_is_visible(phone && thread);
+        self.button("ToolbarMore").set_is_visible(phone && thread);
+        // On narrow phones the secondary offline command yields its slot to the headline.
+        self.button("DownloadButton")
+            .set_is_visible(thread && (!phone || width >= 380.0));
         self.button("FocusButton").set_is_visible(!phone && thread);
         self.get_control::<Border>("SearchHost")
             .set_is_visible(mode == WorkspaceLayout::LabeledRail);

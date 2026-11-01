@@ -87,7 +87,7 @@
                 <Button x:Name="DownloadButton" Grid.Column="3" Classes="icon-button" IsVisible="False" ToolTip.Tip="Download for offline reading" AutomationProperties.Name="Download thread" />
                 <Button x:Name="SaveButton" Grid.Column="4" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Save story" ToolTip.Tip="Save story (S)" />
                 <Button x:Name="FocusButton" Grid.Column="5" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Focus reading" ToolTip.Tip="Focus reading (F)" />
-                <Button x:Name="ThreadRefresh" Grid.Column="5" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Refresh discussion" ToolTip.Tip="Refresh discussion" />
+                <Button x:Name="ToolbarMore" Grid.Column="5" Classes="icon-button" IsVisible="False" AutomationProperties.Name="Discussion options" ToolTip.Tip="Discussion options" />
               </Grid>
             </Border>
             <Border x:Name="ThreadTools" Grid.Row="1" Padding="8,3" IsVisible="False">
