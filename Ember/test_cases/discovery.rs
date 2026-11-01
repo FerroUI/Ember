@@ -375,6 +375,16 @@ fn back_from_a_profile_restores_unsubmitted_search_edits_and_the_phone_viewport(
         .set_selected_index(4);
     field("Discussion").set_text(Some("1001"));
     field("Minimum points").set_text(Some("1x"));
+    let terms = field("Search terms");
+    let mut shortcut = KeyEventArgs::new();
+    shortcut.key = Key::K;
+    shortcut.key_modifiers = ferroui_base::input::KeyModifiers::CONTROL;
+    shortcut.set_routed_event(Some(InputElement::key_down_event()));
+    field("Minimum points").raise_event(&shortcut);
+    shell.settle();
+    assert!(shortcut.handled());
+    assert!(std::ptr::eq(&*terms, &*field("Search terms")));
+    assert!(terms.is_focused());
     named("Find a person")
         .cast::<Expander>()
         .unwrap()

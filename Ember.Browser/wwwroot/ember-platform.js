@@ -191,8 +191,11 @@ export function setLocation(item) {
     const url = new URL(globalThis.location.href);
     if (locationItem(url.href) === item) return;
     // A legacy id= or fragment route would otherwise reopen its story on reload.
-    url.searchParams.delete("id");
-    url.searchParams.delete("item");
+    for (const [name, value] of [...url.searchParams]) {
+        const namedRoute = (name === "id" || name === "item") && itemId(value);
+        const pathRoute = value === "" && locationItem(name);
+        if (namedRoute || pathRoute) url.searchParams.delete(name, value);
+    }
     if (url.hash) {
         const parts = url.hash.slice(1).split("&").filter(part => !locationItem(part));
         url.hash = parts.join("&");

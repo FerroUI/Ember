@@ -120,7 +120,7 @@ test("legacy discussion URLs can return to the feed and keep unrelated URL state
     const base = "https://example.test/Ember/?Renderer=Vello";
     globalThis.history = { pushState: (_state, _title, href) => { globalThis.location.href = href; } };
     try {
-        for (const route of ["&id=00042", "#id=42", "#/item/42", "#item=42&debug", "&id=42&item=7#item/9"]) {
+        for (const route of ["&id=00042", "&item/42", "#id=42", "#/item/42", "#item=42&debug", "&id=42&item=7#item/9"]) {
             globalThis.location = { href: base + route };
             assert.equal(locationItem(globalThis.location.href), "42");
             setLocation("42");
