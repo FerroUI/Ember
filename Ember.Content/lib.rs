@@ -16,7 +16,9 @@ mod find;
 #[cfg(feature = "render")]
 mod renderer;
 #[cfg(feature = "render")]
-pub use renderer::{render, render_with_find, FindHighlight, RenderOptions};
+pub use renderer::{
+    render, render_with_code_toolbar, render_with_find, CodeToolbar, FindHighlight, RenderOptions,
+};
 
 #[cfg(test)]
 mod tests;

@@ -70,7 +70,7 @@ pub fn render(
     options: &RenderOptions,
     activate_link: Rc<dyn Fn(&str)>,
 ) -> Ref<Control> {
-    render_document(document, options, activate_link, None)
+    render_document(document, options, activate_link, None, None)
 }
 
 /// Native text colors for the matched characters. Both brushes are supplied by
@@ -89,7 +89,23 @@ pub fn render_with_find(
     highlight: FindHighlight<'_>,
     activate_link: Rc<dyn Fn(&str)>,
 ) -> Ref<Control> {
-    render_document(document, options, activate_link, Some(highlight))
+    render_document(document, options, activate_link, Some(highlight), None)
+}
+
+/// Builds a host-styled header for a preformatted block. Its callback switches only
+/// visual wrapping, leaving the original, decoded source and selection intact.
+pub type CodeToolbar<'a> = dyn Fn(&str, Rc<dyn Fn(bool)>) -> Ref<Control> + 'a;
+
+/// Render the same selectable document with host-provided code tools, including
+/// inside quotations and lists. A toolbar is created only for a realized code block.
+pub fn render_with_code_toolbar(
+    document: &HtmlDocument,
+    options: &RenderOptions,
+    highlight: Option<FindHighlight<'_>>,
+    activate_link: Rc<dyn Fn(&str)>,
+    toolbar: &CodeToolbar<'_>,
+) -> Ref<Control> {
+    render_document(document, options, activate_link, highlight, Some(toolbar))
 }
 
 struct FindPass<'a> {
@@ -113,6 +129,7 @@ fn render_document(
     options: &RenderOptions,
     activate_link: Rc<dyn Fn(&str)>,
     highlight: Option<FindHighlight<'_>>,
+    toolbar: Option<&CodeToolbar<'_>>,
 ) -> Ref<Control> {
     let mut find = FindPass {
         needle: highlight
@@ -122,7 +139,13 @@ fn render_document(
         highlight,
         remaining: 128,
     };
-    let root = render_blocks(&document.blocks, options, &activate_link, &mut find);
+    let root = render_blocks(
+        &document.blocks,
+        options,
+        &activate_link,
+        &mut find,
+        toolbar,
+    );
     root.classes().add("ember-html");
     if document.truncated {
         let notice = text_block(options);
@@ -141,6 +164,7 @@ fn render_blocks(
     options: &RenderOptions,
     activate_link: &Rc<dyn Fn(&str)>,
     find: &mut FindPass<'_>,
+    toolbar: Option<&CodeToolbar<'_>>,
 ) -> Ref<StackPanel> {
     let panel = StackPanel::new();
     panel.set_spacing(finite(options.paragraph_spacing, 12.0).clamp(0.0, 64.0));
@@ -179,7 +203,13 @@ fn render_blocks(
                         .or_else(|| Some(Brushes::gray())),
                 );
                 border.set_padding(Thickness::new(14.0, 4.0, 0.0, 4.0));
-                border.set_child(render_blocks(children, options, activate_link, find));
+                border.set_child(render_blocks(
+                    children,
+                    options,
+                    activate_link,
+                    find,
+                    toolbar,
+                ));
                 panel.children().add(border);
             }
             Block::List {
@@ -203,7 +233,7 @@ fn render_blocks(
                     }));
                     marker.set_min_width(22.0);
                     marker.set_margin(Thickness::new(0.0, 0.0, 8.0, 0.0));
-                    let content = render_blocks(item, options, activate_link, find);
+                    let content = render_blocks(item, options, activate_link, find, toolbar);
                     Grid::set_column(&content, 1);
                     row.children().add(marker);
                     row.children().add(content);
@@ -240,7 +270,36 @@ fn render_blocks(
                 border.set_corner_radius(CornerRadius::uniform(8.0));
                 border.set_padding(Thickness::uniform(12.0));
                 border.set_background(options.code_background.clone());
-                border.set_child(scroll);
+                if let Some(header) = toolbar {
+                    let text = text.downgrade();
+                    let viewport = scroll.downgrade();
+                    let wrap = Rc::new(move |enabled| {
+                        if let (Some(text), Some(viewport)) = (text.upgrade(), viewport.upgrade()) {
+                            text.set_text_wrapping(if enabled {
+                                TextWrapping::Wrap
+                            } else {
+                                TextWrapping::NoWrap
+                            });
+                            viewport.set_horizontal_scroll_bar_visibility(if enabled {
+                                ScrollBarVisibility::Disabled
+                            } else {
+                                ScrollBarVisibility::Auto
+                            });
+                            if enabled {
+                                viewport.set_offset(ferroui_base::Vector::new(
+                                    0.0,
+                                    viewport.offset().y,
+                                ));
+                            }
+                        }
+                    });
+                    let panel = StackPanel::new();
+                    panel.children().add(header(code, wrap));
+                    panel.children().add(scroll);
+                    border.set_child(panel);
+                } else {
+                    border.set_child(scroll);
+                }
                 panel.children().add(border);
             }
             Block::Rule => {
