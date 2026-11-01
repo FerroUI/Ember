@@ -1641,6 +1641,9 @@ impl ReaderView {
                 }
             }
             ThreadAction::FocusReading => self.set_focus_reading(true),
+            ThreadAction::CopyCommentLink(id) => {
+                self.copy_text(&ember_core::item_url(id), "Comment link copied.");
+            }
             ThreadAction::Share => {
                 if let Some(id) = self.selected.get() {
                     self.copy_text(&ember_core::item_url(id), "Discussion link copied.");

@@ -30,6 +30,7 @@ pub enum ThreadAction {
     ToggleCollapse(u64),
     ToggleAll,
     Share,
+    CopyCommentLink(u64),
     FocusReading,
     Hide,
     MuteDomain,
@@ -1052,6 +1053,13 @@ fn comment_menu(
         if menu.items().count() != 0 {
             return;
         }
+        menu_action(
+            &menu,
+            "Copy comment link",
+            "copy",
+            ThreadAction::CopyCommentLink(id),
+            &actions,
+        );
         if can_reply {
             menu_action(
                 &menu,
@@ -2078,6 +2086,32 @@ mod tests {
                 .is_keyboard_focus_within());
         }
         assert_eq!(calls.borrow().len(), 3);
+        let row = list.container_from_index(1).unwrap();
+        let more = row
+            .get_visual_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|b| AutomationProperties::get_name(b).as_deref() == Some("More comment actions"))
+            .unwrap();
+        let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+        menu.show_at(&more);
+        shell.settle();
+        let entries = menu.items();
+        let copy = (0..entries.count())
+            .filter_map(|i| Control::from_boxed(&entries.get_at(i)?))
+            .filter_map(|v| v.cast::<MenuItem>())
+            .find(|item| {
+                item.header()
+                    .and_then(|v| v.downcast_ref::<String>().cloned())
+                    .as_deref()
+                    == Some("Copy comment link")
+            })
+            .unwrap();
+        copy.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        menu.hide();
+        assert!(matches!(
+            calls.borrow().last(),
+            Some(ThreadAction::CopyCommentLink(2001))
+        ));
         let replacement = build(
             &snapshot,
             &ReaderState::default(),
