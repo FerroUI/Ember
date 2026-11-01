@@ -30,16 +30,17 @@ The focus view keeps the discussion in a centered column as the window grows. Th
 
 | Area | Implemented behavior |
 | --- | --- |
-| Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. The Recent searches list holds up to 20 terms. Select a term to edit it or use its search icon to run it with the current filters. Clearing advanced filters preserves the search scope and sort order. |
-| Discussion | Browse ranked, newest or oldest branches. Collapse individual branches or all top-level replies. Find highlights matching text in comments and keeps their ancestors visible for context. Jump between matching comments or return to your previous reading position. |
-| Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
-| Profiles | User biography, karma, account creation information and submissions through the public HN API. |
-| Local library | Saved stories, read history, hidden stories, domain/user/keyword mutes, and hide-read filtering. |
+| Feeds | Browse the front page, Latest, Best, Ask HN, Show HN and Jobs. Returning from a discussion preserves the loaded feed pages. In split view, the reading desk suggests an unread story from the current list, or the last opened item in History. |
+| Explore | Open **More** to browse feeds and see counts for downloaded discussions, reading history and hidden stories. Reader tools include Settings and a keyboard shortcut reference. |
+| Search | Search stories, comments, Ask HN, Show HN and polls by relevance or date. Filter by author, points, comments or a UTC date range. **Edit search** reopens the query from the results header. In **Recent searches**, edit, run or remove one of the last 20 terms. Replaying a term keeps the active filters. |
+| Discussion | Browse ranked, newest or oldest branches. Collapsed branches show their reply count. A comment’s menu offers jumps to its parent, neighboring top-level comments and the story. Find highlights matching text and keeps its ancestors visible for context. |
+| Long threads and polls | The footer counts loaded comments, pending items and unavailable items. Load the next batch or retry missing items directly. Polls retain HN option order and show vote shares once all counts are available and at least one vote has been cast. |
+| Profiles | Read the biography and preview up to five recent submissions in HN order. Open an item directly or choose **All stories** or **All comments** to search by that author. **Copy profile link** copies the HN profile URL. If lookup fails, **Edit username** selects the name for correction. |
+| Local library | Browse saved stories, read history and hidden stories. In Settings, choose **Domains**, **Authors** or **Title keywords** to edit mute rules. Switching rule types keeps the draft. **Save filters** applies all three. Paste an article URL to mute its domain and subdomains, or enter an author with an optional leading @. |
 | Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to list and open saved discussions from the local cache. Select it again to see all bookmarks. |
-| Sharing and accounts | Copy the canonical discussion link, open the article or HN page, and open HN for sign-in, voting, replies and submission. |
-| Appearance | Choose system, light, dark or custom appearance. Select an Ember, Ocean, Forest or Plum accent, or type a hex color and inspect its swatch. Custom appearance also has a background preview. Try reading size and line spacing in the live text sample, then choose **Apply preferences**. |
-| Data controls | Versioned JSON export/import of local reading state, cache clearing and history clearing. |
+| Sharing and accounts | Copy the discussion link or open HN to sign in, vote, reply or submit. A comment permalink opens that comment and provides access to its parent. A poll option permalink links back to its poll. |
+| Appearance | Choose system, light, dark or custom appearance. Pick a named accent or preview a hex color and custom background. **Text presets** previews four combinations of type size and line spacing. Fine-tune either value, then choose **Apply preferences**. |
+| Data controls | Export or restore local reading state as versioned JSON. Review a backup replacement or clear operation before committing it. |
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
 read operations. Ember's **Vote on HN**, **Reply on HN**, sign-in and submit actions
@@ -71,7 +72,7 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
 | `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from the story menu. |
 | `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
-| `J` / `K` | Select the next/previous story. |
+| `J` / `K` | Open the next or previous visible story. With **Unread** enabled, navigation continues from the story you just read even after its row disappears. |
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the selected story's saved state. |
 | `O` | Open the selected story's article, or its HN page when no article is available. |
