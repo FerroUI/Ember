@@ -1023,3 +1023,6 @@ mod discovery;
 
 #[path = "test_cases/adaptive.rs"]
 mod adaptive;
+
+#[path = "test_cases/new_replies.rs"]
+mod new_replies;

@@ -3,8 +3,8 @@
 use crate::widgets::{self, bind_resource, muted, text as label};
 use ember_content::{FindHighlight, HtmlDocument, RenderOptions};
 use ember_core::{
-    flatten_thread, flatten_thread_with_match, relative_time, HnItem, ItemKind, ReaderState,
-    ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
+    flatten_thread, flatten_thread_since, flatten_thread_with_match, relative_time, HnItem,
+    ItemKind, ReaderState, ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
 };
 use ferroui_base::controls::ResourceKey;
 use ferroui_base::layout::{HorizontalAlignment, Orientation, VerticalAlignment};
@@ -29,6 +29,7 @@ pub enum ThreadAction {
     Profile(String),
     ToggleCollapse(u64),
     ToggleAll,
+    ShowNewReplies(bool),
     Share,
     CopyCommentLink(u64),
     FocusReading,
@@ -113,6 +114,7 @@ impl From<&ThreadSnapshot> for ThreadContext {
 struct ReadingContext {
     hidden: bool,
     seen: BTreeSet<u64>,
+    new_count: Option<usize>,
     show_dead: bool,
     typography: RenderOptions,
     find_foreground: Option<Rc<dyn IBrush>>,
@@ -131,6 +133,7 @@ pub fn build(
     state: &ReaderState,
     query: &str,
     sort: ThreadSort,
+    new_only: bool,
     on_action: Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let query = query.trim();
@@ -143,7 +146,12 @@ pub fn build(
         ..Default::default()
     };
     let mut matched_documents = BTreeMap::new();
-    let comments = if query.is_empty() {
+    let seen = local.map(|s| s.seen_comments.clone()).unwrap_or_default();
+    // Find always searches the whole loaded discussion and restores the selected scope on close.
+    let new_only = new_only && !seen.is_empty() && query.is_empty();
+    let comments = if new_only {
+        flatten_thread_since(snapshot, &options, &seen)
+    } else if query.is_empty() {
         flatten_thread(snapshot, &options)
     } else {
         flatten_thread_with_match(snapshot, &options, |item, query| {
@@ -164,6 +172,12 @@ pub fn build(
             matches
         })
     };
+    let new_count = new_only.then(|| {
+        comments
+            .iter()
+            .filter(|row| is_new_reply(row, &seen, options.show_dead))
+            .count()
+    });
     let mut rows = vec![Rc::new(ConversationRow {
         key: 0,
         kind: RowKind::Header,
@@ -240,7 +254,8 @@ pub fn build(
     let snapshot = Rc::new(ThreadContext::from(snapshot));
     let reading = ReadingContext {
         hidden: local.is_some_and(|s| s.hidden),
-        seen: local.map(|s| s.seen_comments.clone()).unwrap_or_default(),
+        seen,
+        new_count,
         show_dead: state.preferences.show_dead,
         typography: render_options(state),
         find_foreground: if query.is_empty() {
@@ -249,7 +264,7 @@ pub fn build(
             brush("EmberSurface")
         },
     };
-    let bulk_collapse = (query.is_empty() && !snapshot.root.kids.is_empty())
+    let bulk_collapse = (query.is_empty() && !new_only && !snapshot.root.kids.is_empty())
         .then_some(!options.collapsed.is_empty());
     let query = query.to_lowercase();
     let weak_list = list.downgrade();
@@ -270,7 +285,14 @@ pub fn build(
     list.set_item_template(Some(FuncDataTemplate::for_type::<Rc<ConversationRow>>(
         move |row, _| {
             let control = match &row.kind {
-                RowKind::Header => header(&snapshot, &reading, sort, bulk_collapse, &on_action),
+                RowKind::Header => header(
+                    &snapshot,
+                    &reading,
+                    sort,
+                    bulk_collapse,
+                    query.is_empty(),
+                    &on_action,
+                ),
                 RowKind::Comment(comment) => {
                     let control = comment_row(
                         comment,
@@ -290,7 +312,7 @@ pub fn build(
                     }
                     control
                 }
-                RowKind::Empty => empty(&snapshot, &query, &on_action),
+                RowKind::Empty => empty(&snapshot, &query, new_only, &on_action),
                 RowKind::Footer => footer(&snapshot, &on_action),
             };
             // Stretch into narrow panes, cap the line length on wide monitors.
@@ -442,6 +464,24 @@ fn reveal_index(list: &Ref<ListBox>, index: i32, focus_row: bool) {
     }
 }
 
+pub(crate) fn focus_reply_scope(control: &Control) {
+    let weak = control.to_ref().downgrade();
+    Dispatcher::ui_thread().post_local(
+        move || {
+            if let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) {
+                if let Some(button) = list
+                    .get_visual_descendants()
+                    .filter_map(|v| v.cast::<Button>())
+                    .find(|button| button.name().as_deref() == Some("NewReplyFilter"))
+                {
+                    button.focus();
+                }
+            }
+        },
+        DispatcherPriority::LOADED,
+    );
+}
+
 fn conversation_list(control: &Control) -> Option<Ref<ListBox>> {
     control
         .to_ref()
@@ -550,6 +590,7 @@ fn header(
     reading: &ReadingContext,
     sort: ThreadSort,
     bulk_collapse: Option<bool>,
+    show_scope: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let story = &snapshot.root;
@@ -733,17 +774,24 @@ fn header(
     body.children().add(separator);
 
     let sort_row = WrapPanel::new();
-    let caption = story
-        .descendants
-        .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" }))
-        .unwrap_or_else(|| {
-            if story.kind == Some(ItemKind::Comment) {
-                "Replies"
-            } else {
-                "Conversation"
-            }
-            .to_owned()
-        });
+    let caption = if let Some(count) = reading.new_count {
+        format!(
+            "{count} new {}",
+            if count == 1 { "reply" } else { "replies" }
+        )
+    } else {
+        story
+            .descendants
+            .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" }))
+            .unwrap_or_else(|| {
+                if story.kind == Some(ItemKind::Comment) {
+                    "Replies"
+                } else {
+                    "Conversation"
+                }
+                .to_owned()
+            })
+    };
     let heading = label(&caption, 17.0);
     AutomationProperties::set_heading_level(&heading, 2);
     heading.set_font_weight(FontWeight::SemiBold);
@@ -762,6 +810,29 @@ fn header(
         sort_row
             .children()
             .add(icon_action(label, icon, ThreadAction::ToggleAll, actions));
+    }
+    if show_scope
+        && !reading.seen.is_empty()
+        && (reading.new_count.is_some() || !story.kids.is_empty())
+    {
+        let filter = ferroui_controls::primitives::ToggleButton::new();
+        filter.set_content(Some(Rc::new("New replies".to_owned())));
+        filter.classes().add("quiet");
+        filter.classes().set("active", reading.new_count.is_some());
+        filter.set_name(Some("NewReplyFilter".to_owned()));
+        filter.set_min_height(44.0);
+        filter.set_is_checked(Some(reading.new_count.is_some()));
+        AutomationProperties::set_name(&filter, Some("New replies since last visit"));
+        ToolTip::set_tip(
+            &filter,
+            Some(Rc::new(
+                "Show loaded replies absent from your previous copy".to_owned(),
+            )),
+        );
+        let actions = actions.clone();
+        let enabled = reading.new_count.is_none();
+        filter.click(move |_, _| actions(ThreadAction::ShowNewReplies(enabled)));
+        sort_row.children().add(filter);
     }
     body.children().add(sort_row);
     if snapshot.stale {
@@ -820,6 +891,15 @@ impl BranchNeighbors {
     }
 }
 
+fn is_new_reply(row: &ThreadRow, previous: &BTreeSet<u64>, show_dead: bool) -> bool {
+    !previous.is_empty()
+        && !previous.contains(&row.id)
+        && row
+            .item
+            .as_ref()
+            .is_some_and(|item| !item.deleted && (!item.dead || show_dead))
+}
+
 fn comment_row(
     row: &ThreadRow,
     document: &OnceCell<HtmlDocument>,
@@ -868,8 +948,12 @@ fn comment_row(
             actions,
         );
         byline.children().add(permalink);
-        if !reading.seen.is_empty() && !reading.seen.contains(&row.id) {
+        if is_new_reply(row, &reading.seen, reading.show_dead) {
             byline.children().add(badge("NEW"));
+        } else if reading.new_count.is_some() {
+            let context = muted("Earlier reply");
+            context.set_vertical_alignment(VerticalAlignment::Center);
+            byline.children().add(context);
         }
         if row.matches_query {
             byline.children().add(badge("MATCH"));
@@ -881,7 +965,7 @@ fn comment_row(
     let commands = widgets::stack(0.0);
     commands.set_orientation(Orientation::Horizontal);
     Grid::set_column(&commands, 1);
-    if !searching && (row.child_count > 0 || row.collapsed) {
+    if reading.new_count.is_none() && !searching && (row.child_count > 0 || row.collapsed) {
         let count = format!(
             "{} {}",
             row.child_count,
@@ -922,7 +1006,7 @@ fn comment_row(
     line.children().add(commands);
     body.children().add(line);
 
-    if row.collapsed && !searching {
+    if row.collapsed && reading.new_count.is_none() && !searching {
         let summary = match &row.item {
             Some(item) if item.deleted => "[deleted]".to_owned(),
             Some(item) if item.dead && !reading.show_dead => "[dead]".to_owned(),
@@ -1244,6 +1328,7 @@ fn footer(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<C
 fn empty(
     snapshot: &ThreadContext,
     query: &str,
+    new_only: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let panel = StackPanel::new();
@@ -1254,6 +1339,16 @@ fn empty(
         panel.children().add(muted(&format!(
             "No loaded comments contain “{query}”. Edit or clear the search above."
         )));
+    } else if new_only {
+        panel
+            .children()
+            .add(label("No new replies in this copy", 17.0));
+        panel.children().add(labelled_action(
+            "Show all replies",
+            "chat",
+            ThreadAction::ShowNewReplies(false),
+            actions,
+        ));
     } else if !snapshot.complete && !snapshot.root.kids.is_empty() {
         panel
             .children()
@@ -1427,6 +1522,7 @@ mod tests {
             hidden: true,
             show_dead: false,
             seen: BTreeSet::new(),
+            new_count: None,
             typography: RenderOptions::default(),
             find_foreground: None,
         };
@@ -1439,6 +1535,7 @@ mod tests {
             &reading,
             ThreadSort::Ranked,
             None,
+            true,
             &actions,
         );
         let more = header
@@ -1497,6 +1594,7 @@ mod tests {
         let reading = ReadingContext {
             hidden: false,
             seen: BTreeSet::new(),
+            new_count: None,
             show_dead: false,
             typography: RenderOptions::default(),
             find_foreground: None,
@@ -1544,6 +1642,7 @@ mod tests {
                 &reading,
                 ThreadSort::Ranked,
                 None,
+                true,
                 &actions,
             );
             let button = content
@@ -1563,6 +1662,7 @@ mod tests {
                     &ReaderState::default(),
                     "",
                     ThreadSort::Ranked,
+                    false,
                     actions.clone(),
                 )
                 .cast::<ListBox>()
@@ -1595,6 +1695,7 @@ mod tests {
         let reading = ReadingContext {
             hidden: false,
             seen: BTreeSet::new(),
+            new_count: None,
             show_dead: false,
             typography: RenderOptions::default(),
             find_foreground: None,
@@ -1630,7 +1731,7 @@ mod tests {
             .filter_map(|v| v.cast::<Button>())
             .any(|b| AutomationProperties::get_name(&b).as_deref()
                 == Some("Retry unavailable items")));
-        let no_comments = empty(&context, "", &actions);
+        let no_comments = empty(&context, "", false, &actions);
         assert!(no_comments
             .get_logical_descendants()
             .filter_map(|v| v.cast::<TextBlock>())
@@ -1701,6 +1802,7 @@ mod tests {
                 &ReaderState::default(),
                 query,
                 ThreadSort::Ranked,
+                false,
                 Rc::new(|_| {}),
             );
             let list = control.cast::<ListBox>().unwrap();
@@ -1757,7 +1859,7 @@ mod tests {
         };
         let mut state = ReaderState::default();
         state.items.entry(1).or_default().collapsed.insert(2);
-        let view = |q: &str, sort| build(&snapshot, &state, q, sort, Rc::new(|_| {}));
+        let view = |q: &str, sort| build(&snapshot, &state, q, sort, false, Rc::new(|_| {}));
         let results = view("found", ThreadSort::Ranked);
         let first = FindMatch {
             id: 3,
@@ -1838,6 +1940,7 @@ mod tests {
                 &ReadingContext {
                     hidden: false,
                     seen: BTreeSet::new(),
+                    new_count: None,
                     show_dead: false,
                     typography: render_options(&state),
                     find_foreground: None,
@@ -1999,6 +2102,7 @@ mod tests {
             &ReaderState::default(),
             "",
             ThreadSort::Ranked,
+            false,
             Rc::new(move |action| observed.borrow_mut().push(action)),
         );
         let list = content.cast::<ListBox>().unwrap();
@@ -2117,6 +2221,7 @@ mod tests {
             &ReaderState::default(),
             "",
             ThreadSort::Ranked,
+            false,
             Rc::new(|_| {}),
         );
         // A rebuilt view is not attached yet when the controller applies saved context.
@@ -2131,6 +2236,7 @@ mod tests {
             &ReaderState::default(),
             "native",
             ThreadSort::Ranked,
+            false,
             Rc::new(|_| {}),
         );
         let list = filtered.clone().cast::<ListBox>().unwrap();

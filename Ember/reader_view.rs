@@ -209,6 +209,7 @@ pub struct ReaderView {
     find_match_id: Cell<Option<u64>>,
     // Unfiltered reading position (the root identifies the story header).
     find_origin: Cell<Option<u64>>,
+    new_replies_origin: Cell<Option<u64>>,
     focus_reading: Cell<bool>,
     layout_mode: Cell<Option<WorkspaceLayout>>,
     layout_update_queued: Cell<bool>,
@@ -280,6 +281,7 @@ impl ReaderView {
             applied_find_query: RefCell::new(String::new()),
             find_match_id: Cell::new(None),
             find_origin: Cell::new(None),
+            new_replies_origin: Cell::new(None),
             focus_reading: Cell::new(false),
             layout_mode: Cell::new(None),
             layout_update_queued: Cell::new(false),
@@ -1656,6 +1658,7 @@ impl ReaderView {
             &state,
             &query,
             self.thread_sort.get(),
+            self.new_replies_origin.get().is_some(),
             Rc::new(move |action| {
                 if let Some(v) = weak.upgrade() {
                     v.thread_action(action);
@@ -1700,8 +1703,9 @@ impl ReaderView {
         let local = state.items.entry(id).or_default();
         local.seen_comments.extend(thread.items.keys().copied());
         local.scroll_anchor = self
-            .find_origin
+            .new_replies_origin
             .get()
+            .or(self.find_origin.get())
             .or(anchor)
             .filter(|&anchor| anchor != id);
         drop(state);
@@ -1711,6 +1715,31 @@ impl ReaderView {
         match action {
             ThreadAction::OpenUrl(url) => self.open_url(&url),
             ThreadAction::Profile(user) => self.show_profile(user),
+            ThreadAction::ShowNewReplies(enabled) => {
+                if enabled {
+                    let origin = self
+                        .thread_control
+                        .borrow()
+                        .as_ref()
+                        .and_then(|control| crate::thread_view::viewport_anchor(control))
+                        .or(self.selected.get());
+                    self.new_replies_origin.set(origin);
+                }
+                let restore = if enabled {
+                    None
+                } else {
+                    self.new_replies_origin.take()
+                };
+                self.render_thread();
+                if let Some(control) = self.thread_control.borrow().as_ref() {
+                    if let Some(origin) = restore {
+                        crate::thread_view::restore_anchor(control, origin);
+                    }
+                    if restore.is_none() || restore == self.selected.get() {
+                        crate::thread_view::focus_reply_scope(control);
+                    }
+                }
+            }
             ThreadAction::ToggleAll => self.toggle_collapse_all(),
             ThreadAction::ToggleCollapse(id) => {
                 if let Some(root) = self.selected.get() {
@@ -2082,6 +2111,7 @@ impl ReaderView {
             .set_is_visible(false);
         self.button("FindButton").classes().set("active", false);
         self.find_origin.set(None);
+        self.new_replies_origin.set(None);
         self.applied_find_query.borrow_mut().clear();
         self.show_find_result(None, false);
         for name in ["SaveButton", "FindButton", "DownloadButton"] {

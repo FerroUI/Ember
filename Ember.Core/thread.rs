@@ -78,7 +78,33 @@ pub fn flatten_thread_with_match(
     mut matches: impl FnMut(&HnItem, &str) -> bool,
 ) -> Vec<ThreadRow> {
     let query = options.query.trim().to_lowercase();
+    collect_rows(snapshot, options, !query.is_empty(), true, |item| {
+        matches(item, &query)
+    })
+}
+
+/// Return new replies and their ancestry, across collapsed branches, in the current sort order.
+/// The baseline contains the items loaded on previous visits. Unavailable records and hidden
+/// text cannot qualify as new replies, but their children remain reachable.
+pub fn flatten_thread_since(
+    snapshot: &ThreadSnapshot,
+    options: &ThreadOptions,
+    previous: &BTreeSet<ItemId>,
+) -> Vec<ThreadRow> {
+    collect_rows(snapshot, options, true, false, |item| {
+        !previous.contains(&item.id)
+    })
+}
+
+fn collect_rows(
+    snapshot: &ThreadSnapshot,
+    options: &ThreadOptions,
+    filtered: bool,
+    text_search: bool,
+    mut matches: impl FnMut(&HnItem) -> bool,
+) -> Vec<ThreadRow> {
     let mut rows = Vec::new();
+    let mut matching = Vec::new();
     let mut seen = BTreeSet::from([snapshot.root.id]);
     let mut stack = Vec::new();
     let children = ordered_children(&snapshot.root.kids, snapshot, options.sort);
@@ -91,10 +117,13 @@ pub fn flatten_thread_with_match(
         }
         let item = snapshot.items.get(&id).cloned();
         let collapsed = options.collapsed.contains(&id);
-        let matches_query = !query.is_empty()
+        let matched = filtered
             && item.as_ref().is_some_and(|item| {
-                (!item.dead || options.show_dead) && !item.deleted && matches(item, &query)
+                (!item.dead || options.show_dead) && !item.deleted && matches(item)
             });
+        if matched {
+            matching.push(id);
+        }
         let children = item
             .as_ref()
             .map(|item| ordered_children(&item.kids, snapshot, options.sort))
@@ -106,19 +135,18 @@ pub fn flatten_thread_with_match(
             item,
             collapsed,
             child_count: children.len(),
-            matches_query,
+            matches_query: text_search && matched,
         });
-        if depth < options.max_depth.min(256) && (!collapsed || !query.is_empty()) {
+        if depth < options.max_depth.min(256) && (!collapsed || filtered) {
             for child in children.into_iter().rev() {
                 stack.push((child, id, depth + 1));
             }
         }
     }
-    if !query.is_empty() {
+    if filtered {
         let parents: BTreeMap<_, _> = rows.iter().map(|row| (row.id, row.parent_id)).collect();
         let mut retained = BTreeSet::new();
-        for row in rows.iter().filter(|row| row.matches_query) {
-            let mut current = row.id;
+        for mut current in matching {
             while retained.insert(current) {
                 let Some(parent) = parents.get(&current) else {
                     break;
