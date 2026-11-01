@@ -153,3 +153,83 @@ fn keyboard_navigation_keeps_its_place_after_opening_an_unread_story() {
     );
     window.close();
 }
+
+#[test]
+fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    use ferroui_base::Vector;
+    let store = Rc::new(MemoryStore::default());
+    let http = Rc::new(CountingHttp {
+        fixture: FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        },
+        requests: Cell::new(0),
+    });
+    let mut state = ReaderState::default();
+    for id in 5000..5090 {
+        state.toggle_saved(id, id);
+        let headline = if id == 5000 {
+            "The lost atlas &amp; its margin".to_owned()
+        } else {
+            format!("Atlas volume {id}")
+        };
+        let record = json!({"fetched_at":crate::services::now(),"value":{"id":id,"type":"story","title":headline,"by":"lin","url":"https://journal.example/atlas"}});
+        ready(store.put(&format!("cache:item:{id}"), &record.to_string())).unwrap();
+    }
+    state.toggle_saved(4999, 0); // A foreign bookmark restored without its payload.
+    ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start_with_http(390.0, 720.0, store, http.clone());
+    let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
+    let stories = view.get_control::<ListBox>("Stories");
+    tap("MobileSaved");
+    tap("LoadMoreButton");
+    assert_eq!(stories.items().count(), 60);
+    let scroll = stories.scroll().unwrap().cast::<ScrollViewer>().unwrap();
+    scroll.set_offset(Vector::new(0.0, 610.0));
+    shell.settle();
+    tap("LibraryFindButton");
+    let initial_offset = scroll.offset().y;
+    assert!(initial_offset > 400.0);
+    let field = view.get_control::<TextBox>("LibraryFind");
+    let query = |value| {
+        field.set_text(Some(value));
+        let mut enter = KeyEventArgs::new();
+        enter.key = Key::Enter;
+        enter.set_routed_event(Some(InputElement::key_down_event()));
+        field.raise_event(&enter);
+        for _ in 0..5 {
+            shell.settle();
+        }
+        assert!(enter.handled());
+    };
+    let requests = http.requests.get();
+    query("ATLAS  lin   journal.example");
+    assert_eq!(stories.items().count(), 30);
+    tap("LoadMoreButton");
+    assert_eq!(stories.items().count(), 60);
+    query("lost atlas & margin");
+    assert_eq!(stories.items().count(), 1);
+    assert_eq!(
+        first_story(&window).headline().as_deref(),
+        Some("The lost atlas & its margin")
+    );
+    assert_eq!(
+        view.get_control::<TextBlock>("FeedSummary")
+            .text()
+            .as_deref(),
+        Some("1 match · 1 unavailable on this device")
+    );
+    query("no such title");
+    assert_eq!(
+        view.get_control::<TextBlock>("EmptyTitle")
+            .text()
+            .as_deref(),
+        Some("No matches on this device")
+    );
+    tap("RetryButton");
+    assert!(!field.is_effectively_visible());
+    assert_eq!(stories.items().count(), 60);
+    assert!((scroll.offset().y - initial_offset).abs() < 2.0);
+    assert_eq!(http.requests.get(), requests);
+    window.close();
+}
