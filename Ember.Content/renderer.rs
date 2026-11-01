@@ -52,7 +52,9 @@ impl Default for RenderOptions {
             link_brush: None,
             code_background: None,
             quote_brush: None,
-            code_font_family: FontFamily::new("Cascadia Code, SFMono-Regular, Consolas, monospace"),
+            code_font_family: FontFamily::new(
+                "Cascadia Code, SFMono-Regular, Menlo, Consolas, DejaVu Sans Mono, Liberation Mono, Droid Sans Mono, monospace",
+            ),
             link_min_height: 32.0,
             max_link_width: 320.0,
             max_code_height: 420.0,
