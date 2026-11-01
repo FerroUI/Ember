@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import "fake-indexeddb/auto";
-import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
+import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
 
 const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
@@ -112,5 +112,30 @@ test("reader navigation retains rendering options and does not duplicate browser
     } finally {
         if (location === undefined) delete globalThis.location; else globalThis.location = location;
         if (history === undefined) delete globalThis.history; else globalThis.history = history;
+    }
+});
+
+test("legacy discussion URLs can return to the feed and keep unrelated URL state", () => {
+    const original = { location: globalThis.location, history: globalThis.history };
+    const base = "https://example.test/Ember/?Renderer=Vello";
+    globalThis.history = { pushState: (_state, _title, href) => { globalThis.location.href = href; } };
+    try {
+        for (const route of ["&id=00042", "#id=42", "#/item/42", "#item=42&debug", "&id=42&item=7#item/9"]) {
+            globalThis.location = { href: base + route };
+            assert.equal(locationItem(globalThis.location.href), "42");
+            setLocation("42");
+            assert.equal(globalThis.location.href, base + route);
+            setLocation("64");
+            assert.equal(locationItem(globalThis.location.href), "64");
+            setLocation(null);
+            assert.equal(globalThis.location.href, base + (route.includes("debug") ? "#debug" : ""));
+        }
+        assert.equal(locationItem(base + "&id=18446744073709551615"), "18446744073709551615");
+        assert.equal(locationItem(base + "&id=18446744073709551616"), null);
+        assert.equal(locationItem(base + "&id=0"), null);
+    } finally {
+        for (const [key, value] of Object.entries(original)) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
     }
 });

@@ -166,17 +166,37 @@ export async function storageEstimate() {
     return { usage: estimate?.usage ?? null, quota: estimate?.quota ?? null };
 }
 
+// Keep the startup HN link and history writes in sync with the reader's u64 item IDs.
+function itemId(value) {
+    if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+    const digits = value.replace(/^0+/, "");
+    if (!digits || digits.length > 20 || (digits.length === 20 && digits > "18446744073709551615")) return null;
+    return digits;
+}
+
+export function locationItem(href) {
+    for (const part of href.split(/[?&#]/)) {
+        const match = /^(?:item=|id=|\/?item\/)(\d+)$/.exec(part);
+        const id = match && itemId(match[1]);
+        if (id) return id;
+    }
+    return null;
+}
+
 /** Keep story links shareable and make browser Back/Forward follow the reader. */
 export function setLocation(item) {
     // wasm-bindgen represents Option<String>::None as undefined.
     item = item ?? null;
+    if (item !== null && itemId(item) !== item) return;
     const url = new URL(globalThis.location.href);
-    const hashItem = /^(?:#item=|#\/?item\/)(\d+)$/.exec(url.hash)?.[1] ?? null;
-    const current = url.searchParams.get("item") ?? hashItem;
-    if (current === item) return;
-    if (item === null || item === undefined) url.searchParams.delete("item");
-    else if (/^[1-9]\d*$/.test(item)) url.searchParams.set("item", item);
-    else return;
-    if (hashItem !== null) url.hash = "";
-    globalThis.history.pushState({ emberItem: item ?? null }, "", url.href);
+    if (locationItem(url.href) === item) return;
+    // A legacy id= or fragment route would otherwise reopen its story on reload.
+    url.searchParams.delete("id");
+    url.searchParams.delete("item");
+    if (url.hash) {
+        const parts = url.hash.slice(1).split("&").filter(part => !locationItem(part));
+        url.hash = parts.join("&");
+    }
+    if (item !== null) url.searchParams.set("item", item);
+    globalThis.history.pushState({ emberItem: item }, "", url.href);
 }

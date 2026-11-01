@@ -1,16 +1,14 @@
+import { locationItem } from "./ember-platform.js";
+
 const host = document.getElementById("out");
 
 // Accept the same public discussion ID forms as the reader. Only the decimal ID
 // is carried across to the fixed Hacker News origin.
 function setSourceLink(link) {
-    for (const part of location.href.split(/[?&#]/)) {
-        const match = /^(?:item=|id=|\/?item\/)([0-9]+)$/.exec(part);
-        if (!match) continue;
-        const id = BigInt(match[1]);
-        if (id === 0n || id > 0xffffffffffffffffn) continue;
+    const id = locationItem(location.href);
+    if (id) {
         link.href = "https://news.ycombinator.com/item?id=" + id;
         link.textContent = "Read discussion on Hacker News";
-        return;
     }
 }
 setSourceLink(host.querySelector(".boot-link"));
