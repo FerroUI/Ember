@@ -78,8 +78,8 @@ struct ThreadContext {
     root: HnItem,
     poll_options: BTreeMap<u64, HnItem>,
     loaded_comments: usize,
-    pending_comments: usize,
-    missing_comments: usize,
+    pending_items: usize,
+    missing_items: usize,
     complete: bool,
     stale: bool,
     warning: Option<String>,
@@ -100,8 +100,8 @@ impl From<&ThreadSnapshot> for ThreadContext {
                 .keys()
                 .filter(|&&id| id != snapshot.root.id && !snapshot.root.parts.contains(&id))
                 .count(),
-            pending_comments: snapshot.pending_ids.len(),
-            missing_comments: snapshot.missing_ids.len(),
+            pending_items: snapshot.pending_ids.len(),
+            missing_items: snapshot.missing_ids.len(),
             complete: snapshot.complete,
             stale: snapshot.stale,
             warning: snapshot.warning.clone(),
@@ -652,8 +652,9 @@ fn header(
             ));
         }
     }
-    if !story.parts.is_empty() {
-        body.children().add(poll_options(snapshot, actions));
+    if !story.parts.is_empty() && !story.deleted && (!story.dead || reading.show_dead) {
+        body.children()
+            .add(poll_options(snapshot, reading, actions));
     }
     if story.kind == Some(ItemKind::Job) && story.kids.is_empty() {
         return body.upcast();
@@ -1029,44 +1030,82 @@ fn comment_menu(
     more
 }
 
-fn poll_options(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let panel = StackPanel::new();
-    panel.set_spacing(12.0);
-    panel.children().add(muted("POLL RESULTS"));
-    let total: i64 = snapshot
-        .root
-        .parts
-        .iter()
-        .filter_map(|id| snapshot.poll_options.get(id))
-        .map(|item| item.score.unwrap_or(0).max(0))
-        .fold(0i64, i64::saturating_add);
-    for id in &snapshot.root.parts {
+fn poll_options(
+    snapshot: &ThreadContext,
+    reading: &ReadingContext,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Control> {
+    let panel = widgets::stack(8.0);
+    let title = label("Poll results", 17.0);
+    title.set_font_weight(FontWeight::SemiBold);
+    AutomationProperties::set_heading_level(&title, 2);
+    panel.children().add(title);
+
+    // A share is meaningful only after every option has a reported vote count.
+    let total: Option<u64> = snapshot.root.parts.iter().try_fold(0u64, |total, id| {
+        let votes = u64::try_from(snapshot.poll_options.get(id)?.score?).ok()?;
+        total.checked_add(votes)
+    });
+    let caption = match total {
+        Some(0) => "No votes yet".to_owned(),
+        Some(votes) => format!("{} in total", vote_count(votes)),
+        None => "Some poll results are unavailable.".to_owned(),
+    };
+    panel.children().add(muted(&caption));
+    for (index, id) in snapshot.root.parts.iter().enumerate() {
         let Some(option) = snapshot.poll_options.get(id) else {
             panel
                 .children()
-                .add(muted("A poll option is still loading."));
+                .add(muted(&format!("Option {} is unavailable.", index + 1)));
             continue;
         };
-        let item = StackPanel::new();
-        item.set_spacing(6.0);
-        let text = HtmlDocument::parse(
-            option
-                .text
-                .as_deref()
-                .or(option.title.as_deref())
-                .unwrap_or("Poll option"),
-        )
-        .plain_text();
-        item.children().add(label(
-            &format!("{}  ·  {} votes", text, option.score.unwrap_or(0)),
-            14.0,
-        ));
-        let progress = ProgressBar::new();
-        progress.set_maximum(total.max(1) as f64);
-        progress.set_range_value(option.score.unwrap_or(0).max(0) as f64);
-        progress.set_height(5.0);
-        AutomationProperties::set_name(&progress, Some(&text));
-        item.children().add(progress);
+        let item = widgets::stack(3.0);
+        let text = if option.deleted {
+            "[deleted]".to_owned()
+        } else if option.dead && !reading.show_dead {
+            "[dead]".to_owned()
+        } else {
+            HtmlDocument::parse(
+                option
+                    .text
+                    .as_deref()
+                    .or(option.title.as_deref())
+                    .unwrap_or_default(),
+            )
+            .plain_text()
+        };
+        let text = if text.trim().is_empty() {
+            format!("Option {}", index + 1)
+        } else {
+            text
+        };
+        item.children()
+            .add(label(&text, reading.typography.font_size));
+        if let Some(votes) = option.score.and_then(|score| u64::try_from(score).ok()) {
+            let count = vote_count(votes);
+            if let Some(total) = total.filter(|&total| total > 0) {
+                let share = 100.0 * votes as f64 / total as f64;
+                let percentage = if votes > 0 && share < 1.0 {
+                    "<1%".to_owned()
+                } else if votes < total && share > 99.0 {
+                    ">99%".to_owned()
+                } else {
+                    format!("{share:.0}%")
+                };
+                let info = format!("{count} · {percentage}");
+                let progress = ProgressBar::new();
+                progress.set_maximum(total as f64);
+                progress.set_range_value(votes as f64);
+                progress.set_height(4.0);
+                AutomationProperties::set_name(&progress, Some(&format!("{text}, {info}")));
+                item.children().add(progress);
+                item.children().add(muted(&info));
+            } else {
+                item.children().add(muted(&count));
+            }
+        } else {
+            item.children().add(muted("Vote count unavailable"));
+        }
         panel.children().add(item);
     }
     panel.children().add(labelled_action(
@@ -1078,21 +1117,45 @@ fn poll_options(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) ->
     panel.upcast()
 }
 
+fn vote_count(votes: u64) -> String {
+    format!("{votes} {}", if votes == 1 { "vote" } else { "votes" })
+}
+
 fn footer(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let panel = StackPanel::new();
-    panel.set_spacing(10.0);
-    panel.set_margin(Thickness::uniform(12.0));
-    panel.children().add(muted(&format!(
-        "{} comments loaded · {} pending · {} unavailable",
-        snapshot.loaded_comments, snapshot.pending_comments, snapshot.missing_comments
-    )));
+    let panel = widgets::stack(6.0);
+    panel.set_margin(Thickness::new(0.0, 8.0, 0.0, 12.0));
+    if !snapshot.complete {
+        let mut facts = vec![format!(
+            "{} {} loaded",
+            snapshot.loaded_comments,
+            if snapshot.loaded_comments == 1 {
+                "comment"
+            } else {
+                "comments"
+            }
+        )];
+        if snapshot.pending_items != 0 {
+            facts.push(format!("{} pending", snapshot.pending_items));
+        }
+        if snapshot.missing_items != 0 {
+            facts.push(format!("{} unavailable", snapshot.missing_items));
+        }
+        panel.children().add(muted(&facts.join(" · ")));
+    }
     if let Some(warning) = &snapshot.warning {
         panel.children().add(muted(warning));
     }
     if !snapshot.complete {
+        let (label, icon) = if snapshot.pending_items == 0 {
+            ("Retry unavailable items", "refresh")
+        } else if snapshot.root.parts.is_empty() {
+            ("Load more comments", "chevron_down")
+        } else {
+            ("Load more items", "chevron_down")
+        };
         panel.children().add(labelled_action(
-            "Load more comments",
-            "chevron_down",
+            label,
+            icon,
             ThreadAction::LoadMore,
             actions,
         ));
@@ -1113,16 +1176,16 @@ fn empty(
         panel.children().add(muted(&format!(
             "No loaded comments contain “{query}”. Edit or clear the search above."
         )));
-    } else if !snapshot.complete {
+    } else if !snapshot.complete && !snapshot.root.kids.is_empty() {
         panel
             .children()
             .add(label("Comments haven’t loaded yet", 17.0));
-        panel
-            .children()
-            .add(muted("Load more comments below to continue reading."));
+        panel.children().add(muted(
+            "Use the action below to continue loading this discussion.",
+        ));
     } else {
         panel.children().add(label("No comments yet", 17.0));
-        if !snapshot.root.deleted {
+        if !snapshot.root.deleted && !snapshot.root.dead {
             panel.children().add(labelled_action(
                 "Reply on Hacker News",
                 "reply",
@@ -1340,6 +1403,82 @@ mod tests {
                 ThreadAction::MuteDomain
             ]
         ));
+    }
+
+    #[test]
+    fn poll_results_withhold_shares_until_all_counts_are_known() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let root = HnItem {
+            id: 1,
+            kind: Some(ItemKind::Poll),
+            parts: vec![2, 3],
+            ..Default::default()
+        };
+        let option = |id, score, text: &str| HnItem {
+            id,
+            score,
+            text: Some(text.to_owned()),
+            ..Default::default()
+        };
+        let reading = ReadingContext {
+            hidden: false,
+            seen: BTreeSet::new(),
+            show_dead: false,
+            typography: RenderOptions::default(),
+            find_foreground: None,
+        };
+        let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(|_| {});
+        let mut snapshot = ThreadSnapshot {
+            root,
+            items: [(2, option(2, Some(1), "First"))].into(),
+            missing_ids: vec![3],
+            ..Default::default()
+        };
+        let inspect = |snapshot: &ThreadSnapshot| {
+            let control = poll_options(&ThreadContext::from(snapshot), &reading, &actions);
+            let lines = control
+                .get_logical_descendants()
+                .filter_map(|v| v.cast::<TextBlock>())
+                .filter_map(|t| t.text())
+                .collect::<Vec<_>>();
+            let bars = control
+                .get_logical_descendants()
+                .filter(|v| v.cast::<ProgressBar>().is_some())
+                .count();
+            (lines, bars)
+        };
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "1 vote"));
+        assert!(lines.iter().any(|s| s == "Option 2 is unavailable."));
+        let context = ThreadContext::from(&snapshot);
+        let footer = footer(&context, &actions);
+        assert!(footer
+            .get_logical_descendants()
+            .filter_map(|v| v.cast::<Button>())
+            .any(|b| AutomationProperties::get_name(&b).as_deref()
+                == Some("Retry unavailable items")));
+        let no_comments = empty(&context, "", &actions);
+        assert!(no_comments
+            .get_logical_descendants()
+            .filter_map(|v| v.cast::<TextBlock>())
+            .any(|t| t.text().as_deref() == Some("No comments yet")));
+        snapshot.items.insert(3, option(3, None, "Second"));
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "Vote count unavailable"));
+        snapshot.items.get_mut(&3).unwrap().score = Some(3);
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 2);
+        assert!(lines.iter().any(|s| s == "4 votes in total"));
+        assert!(lines.iter().any(|s| s == "1 vote · 25%"));
+        assert!(lines.iter().any(|s| s == "3 votes · 75%"));
+        snapshot.items.get_mut(&2).unwrap().score = Some(0);
+        snapshot.items.get_mut(&3).unwrap().score = Some(0);
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "No votes yet"));
     }
 
     #[test]
