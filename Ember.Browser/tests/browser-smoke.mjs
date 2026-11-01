@@ -29,7 +29,9 @@ const initScript = `(() => {
         globalThis.__emberApiRequests = (globalThis.__emberApiRequests ?? 0) + 1;
         if (sessionStorage.getItem("ember-test-offline") === "1") throw new TypeError("Simulated offline connection");
         let value = null;
-        if (url.hostname === "hn.algolia.com") value = { hits: [{ objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url }], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
+        if (url.hostname === "hn.algolia.com") {
+            globalThis.__emberLastSearch = url.href;
+            value = { hits: [{ objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url }], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
         else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
         else if (/\\/item\\//.test(url.pathname)) value = items[Number(url.pathname.split("/").pop().replace(".json", ""))] ?? null;
         else if (/\\/user\\//.test(url.pathname)) value = { id: "maker", karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
@@ -115,6 +117,31 @@ async function reviewLocalData(page) {
     assert(!(await state(page)).elements.some(e => e.automationName === "Remove cached content"), "Escape did not cancel cache removal");
 }
 
+async function verifyProfileActivity(page) {
+    await byAutomation(page, "View maker’s profile");
+    const comment = e => e.automationName?.startsWith("Thank you! Here is the tiny core:");
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.automationName?.startsWith('Thank you! Here is the tiny core:'))");
+    await page.screenshot(path.join(captures, "desktop-profile.png"));
+    await page.resize(390, 844);
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'MobileMore' && e.hit)");
+    await page.screenshot(path.join(captures, "phone-profile.png"));
+    await click(page, comment, "maker’s recent comment");
+    await page.waitFor("new URL(location.href).searchParams.get('item') === '202'");
+    await waitText(page, "Comment by maker");
+    await byName(page, "BackButton");
+    await waitText(page, "Recent activity");
+    await byAutomation(page, "All comments");
+    await page.waitFor("globalThis.__emberLastSearch?.includes('author_maker')");
+    const search = new URL(await page.evaluate("globalThis.__emberLastSearch"));
+    assert(search.searchParams.get("tags") === "comment,author_maker" && search.pathname.endsWith("/search_by_date"),
+        "Profile comments must request recent results scoped to this author");
+    await page.resize(1440, 960);
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavMore' && e.hit)");
+    await byName(page, "NavMore");
+    await waitText(page, "Your library");
+    await page.screenshot(path.join(captures, "desktop-explore.png"));
+}
+
 async function start(width, height) {
     const page = await open(site, { width, height, initScript });
     try { await page.waitForView(); await waitText(page, title); return page; }
@@ -134,7 +161,7 @@ await run([
         try {
             const screen = await state(page);
             assert(screen.elements.some(element => element.name === "NavTop"), "Desktop navigation rail is absent");
-            await byText(page, title);
+            await byName(page, "WelcomeOpen");
             await page.waitFor("location.search.includes('item=101')");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             assert(!(await page.evaluate("globalThis.__emberUnsafeHtml === true")), "HN content executed script");
@@ -154,6 +181,7 @@ await run([
             assert(!(await state(page)).elements.some(e => e.name === "ThreadFind"), "Escape should close find without leaving the discussion");
             const shot = await page.screenshot(path.join(captures, "desktop-thread.png"));
             assert(colours(shot) > 40, "The screenshot does not contain a rendered reader");
+            await verifyProfileActivity(page);
             await byName(page, "ThemeButton");
             await waitText(page, "Appearance & reading");
             await page.screenshot(path.join(captures, "desktop-settings.png"));
@@ -265,8 +293,17 @@ await run([
             await waitText(page, title);
             await page.screenshot(path.join(captures, "phone-offline-thread.png"));
             await byName(page, "BackButton");
-            await byName(page, "MobileSaved");
+            await byName(page, "MobileMore");
+            await waitText(page, "Your library");
+            await page.screenshot(path.join(captures, "phone-explore.png"));
+            const requests = await page.evaluate("globalThis.__emberApiRequests ?? 0");
+            await byAutomation(page, "Downloaded discussions");
             await waitText(page, title);
+            const downloaded = await state(page);
+            assert(downloaded.elements.some(e => e.hit && e.automationName === "Show all saved stories"),
+                "Explore did not activate the Downloaded filter");
+            assert(!downloaded.elements.some(e => e.text === otherTitle), "Explore included an undownloaded bookmark");
+            assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Explore fetched its offline library from the network");
             await page.screenshot(path.join(captures, "phone-offline-saved.png"));
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "phone"); throw error; }
