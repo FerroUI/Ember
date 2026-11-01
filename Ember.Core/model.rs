@@ -400,13 +400,13 @@ impl ReaderState {
         self.items.get(&id).is_some_and(|s| s.read_at.is_some())
     }
     pub fn is_visible(&self, item: &HnItem) -> bool {
+        self.passes_content_filters(item) && !(self.preferences.hide_read && self.is_read(item.id))
+    }
+    pub fn passes_content_filters(&self, item: &HnItem) -> bool {
         !item.deleted
             && (!item.dead || self.preferences.show_dead)
             && !self.mutes.matches(item)
-            && !self
-                .items
-                .get(&item.id)
-                .is_some_and(|s| s.hidden || (self.preferences.hide_read && s.read_at.is_some()))
+            && !self.items.get(&item.id).is_some_and(|s| s.hidden)
     }
     pub fn saved_ids(&self) -> Vec<ItemId> {
         let mut values: Vec<_> = self
