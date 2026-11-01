@@ -9,10 +9,37 @@
     const index = new URL("index.html", scope).href;
     self.addEventListener("install", event => {
         event.waitUntil((async () => {
-            const cache = await caches.open(prefix + self.EMBER_SHELL_VERSION);
-            // Either the complete shell is ready, or installation fails and the
-            // previously working worker keeps serving its complete version.
-            await cache.addAll(files);
+            const name = prefix + self.EMBER_SHELL_VERSION;
+            const existing = await caches.has(name);
+            const cache = await caches.open(name);
+            try {
+                await cache.addAll(files);
+            } catch (error) {
+                // Some Chromium installations can fetch a large module but reject
+                // its streamed body in Cache Storage. Keep the atomic fast path above.
+                const modules = files.filter(file => new URL(file).pathname.endsWith(".wasm"));
+                if (error.name !== "NetworkError" || modules.length === 0) throw error;
+                try {
+                    await cache.addAll(files.filter(file => !modules.includes(file)));
+                    for (const file of modules) {
+                        const response = await fetch(file);
+                        if (response.status !== 200) {
+                            throw new Error("Cannot cache the offline module (HTTP " + response.status + ")");
+                        }
+                        // Fetch decodes HTTP content codings before exposing the bytes.
+                        const bytes = await response.arrayBuffer();
+                        const headers = new Headers(response.headers);
+                        headers.delete("Content-Encoding");
+                        headers.set("Content-Length", String(bytes.byteLength));
+                        await cache.put(file, new Response(bytes, { headers }));
+                    }
+                } catch (retryError) {
+                    // Activation requires every file. A failed new version must not
+                    // leave partial assets or remove a previously installed version.
+                    if (!existing) await caches.delete(name);
+                    throw retryError;
+                }
+            }
         })());
     });
     self.addEventListener("activate", event => {
