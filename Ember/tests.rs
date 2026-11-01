@@ -77,9 +77,15 @@ impl HttpClient for FixtureHttp {
                 return Ok(json!((1001..=1012).collect::<Vec<_>>()).to_string());
             }
             if url.contains("/user/") {
-                return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2001]}).to_string());
+                if !url.ends_with("/ada.json") {
+                    return Ok("null".to_owned());
+                }
+                return Ok(json!({"id":"ada","karma":8240,"created":1451606400u64,"about":"<p>Systems, typography, and tools for thought.</p>","submitted":[1001,2002]}).to_string());
             }
             if url.contains("/api/v1/search") {
+                if url.contains("query=profile-context") {
+                    return Ok(json!({"hits":[{"objectID":"2002","story_id":1001,"story_title":"Small tools, carefully made","comment_text":"Exactly","author":"ada","_tags":["comment"]}],"page":0,"nbPages":1,"nbHits":1}).to_string());
+                }
                 return Ok(json!({"hits":[{"objectID":"1001","title":"Small tools, carefully made","author":"ada","points":326,"num_comments":4,"url":"https://example.com/tools","created_at_i":1792600000u64}],"page":0,"nbPages":1,"nbHits":1}).to_string());
             }
             let id = url
@@ -1011,3 +1017,6 @@ mod offline_recovery;
 
 #[path = "test_cases/feed_navigation.rs"]
 mod feed_navigation;
+
+#[path = "test_cases/discovery.rs"]
+mod discovery;
