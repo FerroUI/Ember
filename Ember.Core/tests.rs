@@ -687,6 +687,34 @@ fn sqlite_store_persists_across_connections_and_scans_literal_prefixes() {
                 store.scan_prefix("user:a_").await.unwrap(),
                 [("user:a_%".into(), "saved".into())]
             );
+            store.put("bytes:unicode", "Ł😀").await.unwrap();
+            assert_eq!(
+                store.scan_sizes("bytes:").await.unwrap(),
+                [("bytes:unicode".into(), 6)]
+            );
+            let keys = vec!["user:abc".into(), "missing".into(), "user:abc".into()];
+            assert_eq!(
+                store.get_many(&keys).await.unwrap(),
+                [Some("other".into()), None, Some("other".into())]
+            );
+            for key in [
+                "x\u{d7ff}",
+                "x\u{d7ff}\u{10ffff}",
+                "x\u{e000}",
+                "\u{10ffff}z",
+            ] {
+                store.put(key, "utf8").await.unwrap();
+            }
+            assert_eq!(store.count_prefix("x\u{d7ff}").await.unwrap(), 2);
+            assert_eq!(store.count_prefix("\u{10ffff}").await.unwrap(), 1);
+            store.remove_prefix("x\u{d7ff}").await.unwrap();
+            assert_eq!(
+                store.get("x\u{e000}").await.unwrap().as_deref(),
+                Some("utf8")
+            );
+            assert_eq!(store.count_prefix("x\u{d7ff}").await.unwrap(), 0);
+            store.remove_many(&keys).await.unwrap();
+            assert_eq!(store.get("user:abc").await.unwrap(), None);
         }
         {
             let reopened = native::SqliteStore::open(&path).unwrap();
@@ -821,5 +849,48 @@ fn temporary_cleanup_keeps_shared_downloads_bookmarks_and_feed_lists() {
             repo.clean_temporary_cache(&current).await.unwrap().records,
             0
         );
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Run with --ignored --nocapture in the same Cargo profile on both revisions.
+#[test]
+#[ignore = "timed SQLite workload"]
+fn sqlite_offline_workload() {
+    use std::time::Instant;
+
+    block_on(async {
+        let store = Rc::new(native::SqliteStore::in_memory().unwrap());
+        let http = Rc::new(FakeHttp::default());
+        let repo = Repository::new(http.clone(), store.clone());
+        let children: Vec<u64> = (2..=1_001).collect();
+        let body = "x".repeat(1024);
+        for id in 1..=1001 {
+            let mut item = item(id, if id == 1 { &children } else { &[] });
+            item.text = Some(body.clone());
+            let json = serde_json::json!({ "fetched_at": 1, "value": item }).to_string();
+            store.put(&format!("cache:item:{id}"), &json).await.unwrap();
+        }
+        let mut reads = Vec::new();
+        let mut prunes = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            let snapshot = repo
+                .download_thread_with_progress(1, 1001, 2, FetchMode::Offline, |_| {})
+                .await
+                .unwrap();
+            reads.push(start.elapsed());
+            assert!(snapshot.complete && snapshot.items.len() == 1001);
+            let start = Instant::now();
+            assert_eq!(repo.prune_cache(&ReaderState::default()).await.unwrap(), 0);
+            prunes.push(start.elapsed());
+        }
+        reads.sort();
+        prunes.sort();
+        println!(
+            "1001 cached items, 1 KiB each, 9 samples; median verification {:?}, under-limit prune {:?}",
+            reads[4], prunes[4]
+        );
+        assert_eq!(http.calls.get(), 0);
     });
 }

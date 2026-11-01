@@ -139,26 +139,94 @@ export function databaseRemove(key) {
     return transaction("readwrite", store => { store.delete(key); });
 }
 
-export function databaseScan(prefix) {
+// IndexedDB orders string keys by UTF-16 code units. A true exclusive end
+// includes suffixes containing U+FFFF, without inspecting unrelated keys.
+function prefixRange(prefix) {
+    for (let i = prefix.length - 1; i >= 0; --i) {
+        const unit = prefix.charCodeAt(i);
+        if (unit !== 0xffff) {
+            return IDBKeyRange.bound(prefix, prefix.slice(0, i) + String.fromCharCode(unit + 1), false, true);
+        }
+    }
+    // Binary keys sort immediately after all string keys.
+    try {
+        return IDBKeyRange.bound(prefix, new Uint8Array(0), false, true);
+    } catch (error) {
+        // Some implementations reject zero-length binary keys. For those,
+        // a single zero byte is the smallest admissible binary key.
+        if (error.name !== "DataError") throw error;
+        return IDBKeyRange.bound(prefix, new Uint8Array([0]), false, true);
+    }
+}
+
+export function databaseGetMany(keys) {
+    return transaction("readonly", (store, answer) => {
+        const values = Array(keys.length).fill(null);
+        answer(values);
+        keys.forEach((key, index) => {
+            const request = store.get(key);
+            request.onsuccess = () => { values[index] = request.result ?? null; };
+        });
+    });
+}
+
+export function databaseRemoveMany(keys) {
+    return transaction("readwrite", store => {
+        for (const key of keys) store.delete(key);
+    });
+}
+
+export function databaseRemovePrefix(prefix) {
+    return transaction("readwrite", store => { store.delete(prefixRange(prefix)); });
+}
+
+export function databaseCount(prefix) {
+    return transaction("readonly", (store, answer) => {
+        const request = store.count(prefixRange(prefix));
+        request.onsuccess = () => answer(request.result);
+    });
+}
+
+// A cursor posts a separate success callback for every record. Pair bounded
+// getAllKeys/getAll requests on the same read snapshot; enqueue each next
+// page before leaving the callback so the transaction stays active.
+function scanRecords(prefix, project) {
     return transaction("readonly", (store, answer) => {
         const records = [];
-        // Core keys are ASCII namespaces (item/, state/, feed/, ...). Iterating
-        // from lowerBound also handles arbitrary Unicode values without a sentinel.
-        const request = store.openCursor(IDBKeyRange.lowerBound(prefix));
-        request.onsuccess = () => {
-            const cursor = request.result;
-            if (!cursor || typeof cursor.key !== "string" || !cursor.key.startsWith(prefix)) {
-                answer(JSON.stringify(records));
-                return;
-            }
-            if (typeof cursor.value !== "string") {
-                request.transaction?.abort();
-                return;
-            }
-            records.push([cursor.key, cursor.value]);
-            cursor.continue();
-        };
+        const range = prefixRange(prefix);
+        const pageSize = 64;
+        function readPage(page) {
+            const keys = store.getAllKeys(page, pageSize);
+            const values = store.getAll(page, pageSize);
+            values.onsuccess = () => {
+                const pageKeys = keys.result;
+                const pageValues = values.result;
+                for (let i = 0; i < pageKeys.length; i++) {
+                    const value = pageValues[i];
+                    if (typeof value !== "string") {
+                        store.transaction.abort();
+                        return;
+                    }
+                    records.push([pageKeys[i], project(value)]);
+                }
+                if (pageKeys.length === pageSize) {
+                    readPage(IDBKeyRange.bound(pageKeys[pageSize - 1], range.upper, true, true));
+                } else {
+                    answer(JSON.stringify(records));
+                }
+            };
+        }
+        readPage(range);
     });
+}
+
+export function databaseScan(prefix) {
+    return scanRecords(prefix, value => value);
+}
+
+export function databaseSizes(prefix) {
+    const encoder = new TextEncoder();
+    return scanRecords(prefix, value => /[^\x00-\x7f]/.test(value) ? encoder.encode(value).byteLength : value.length);
 }
 
 export async function storageEstimate() {

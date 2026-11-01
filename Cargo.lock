@@ -647,6 +647,7 @@ dependencies = [
  "ferroui-browser",
  "ferroui-controls",
  "ferroui-fonts-inter",
+ "js-sys",
  "serde_json",
  "wasm-bindgen",
 ]

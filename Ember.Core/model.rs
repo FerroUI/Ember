@@ -316,15 +316,27 @@ impl Preferences {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ItemState {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub read_at: Option<u64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_opened_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll_anchor: Option<ItemId>,
     /// Logical pixels already read within the anchored story header or comment.
+    #[serde(skip_serializing_if = "is_zero")]
     pub scroll_inset: u32,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub collapsed: BTreeSet<ItemId>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub seen_comments: BTreeSet<ItemId>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

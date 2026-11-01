@@ -139,3 +139,45 @@ test("legacy discussion URLs can return to the feed and keep unrelated URL state
         }
     }
 });
+
+test("ordered batch reads use one transaction and range cleanup preserves neighboring keys", async () => {
+    const { databaseCount, databaseGetMany, databaseRemoveMany, databaseRemovePrefix } = await import("../wwwroot/ember-platform.js");
+    const prefix = "batch/%_/\uffff";
+    const keys = [prefix + "3", prefix + "😀", prefix + "\uffffZ"];
+    for (const key of [...keys, "batch/%_/X"]) await databasePut(key, key);
+    const original = IDBDatabase.prototype.transaction;
+    let transactions = 0;
+    IDBDatabase.prototype.transaction = function (...args) {
+        transactions++;
+        return original.apply(this, args);
+    };
+    try {
+        assert.deepEqual(await databaseGetMany([keys[2], prefix + "missing", keys[0], keys[2]]),
+            [keys[2], null, keys[0], keys[2]]);
+        assert.equal(transactions, 1);
+        assert.equal(await databaseCount(prefix), 3);
+        await databaseRemoveMany([keys[0], keys[1]]);
+        assert.equal(transactions, 3);
+        assert.equal(await databaseCount(prefix), 1);
+        await databaseRemovePrefix(prefix);
+        assert.equal(await databaseCount(prefix), 0);
+        assert.equal(await databaseGet("batch/%_/X"), "batch/%_/X");
+    } finally {
+        IDBDatabase.prototype.transaction = original;
+    }
+});
+
+test("paged size scans return ordered UTF-8 lengths without returning cached documents", async () => {
+    const { databaseCount, databaseRemoveMany, databaseRemovePrefix, databaseSizes } = await import("../wwwroot/ember-platform.js");
+    const prefix = "\uffff";
+    const entries = Array.from({ length: 139 }, (_, i) => [prefix + i.toString().padStart(3, "0"), "Ł😀" + i]);
+    await Promise.all(entries.map(([key, value]) => databasePut(key, value)));
+    assert.equal(await databaseCount(prefix), entries.length);
+    assert.deepEqual(JSON.parse(await databaseSizes(prefix)), entries.map(([key, value]) => [key, Buffer.byteLength(value)]));
+    assert.deepEqual(JSON.parse(await databaseScan(prefix)), entries);
+    // An invalid key after the first queued delete aborts the entire transaction.
+    await assert.rejects(databaseRemoveMany([entries[0][0], null]));
+    assert.equal(await databaseCount(prefix), entries.length);
+    await databaseRemovePrefix(prefix);
+    assert.equal(await databaseCount(prefix), 0);
+});

@@ -21,6 +21,9 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// are separate, and saved/downloaded item pinning does not use this budget.
 pub const METADATA_CACHE_LIMIT: usize = 256;
 
+// Bound transient payloads, storage requests per transaction and cancellation latency.
+const STORE_BATCH: usize = 32;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReaderError {
     Network(String),
@@ -55,6 +58,58 @@ pub trait Store {
         &'a self,
         prefix: &'a str,
     ) -> BoxFuture<'a, Result<Vec<(String, String)>, ReaderError>>;
+
+    /// Key and stored UTF-8 value length, without copying payloads into the caller.
+    fn scan_sizes<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, usize)>, ReaderError>> {
+        Box::pin(async move {
+            Ok(self
+                .scan_prefix(prefix)
+                .await?
+                .into_iter()
+                .map(|(key, value)| (key, value.len()))
+                .collect())
+        })
+    }
+
+    /// Return one slot per input key, including missing records and duplicates.
+    fn get_many<'a>(
+        &'a self,
+        keys: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<Option<String>>, ReaderError>> {
+        Box::pin(async move {
+            let mut values = Vec::with_capacity(keys.len());
+            for key in keys {
+                values.push(self.get(key).await?);
+            }
+            Ok(values)
+        })
+    }
+
+    fn remove_many<'a>(&'a self, keys: &'a [String]) -> BoxFuture<'a, Result<(), ReaderError>> {
+        Box::pin(async move {
+            for key in keys {
+                self.remove(key).await?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Clear only records in the requested namespace.
+    fn remove_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<(), ReaderError>> {
+        Box::pin(async move {
+            for (key, _) in self.scan_prefix(prefix).await? {
+                self.remove(&key).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn count_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<usize, ReaderError>> {
+        Box::pin(async move { Ok(self.scan_prefix(prefix).await?.len()) })
+    }
 }
 
 #[derive(Default)]
@@ -89,6 +144,31 @@ impl Store for MemoryStore {
                 .filter(|(key, _)| key.starts_with(prefix))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect())
+        })
+    }
+    fn scan_sizes<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, usize)>, ReaderError>> {
+        Box::pin(async move {
+            Ok(self
+                .entries
+                .borrow()
+                .range(prefix.to_owned()..)
+                .take_while(|(k, _)| k.starts_with(prefix))
+                .map(|(k, v)| (k.clone(), v.len()))
+                .collect())
+        })
+    }
+
+    fn count_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<usize, ReaderError>> {
+        Box::pin(async move {
+            Ok(self
+                .entries
+                .borrow()
+                .range(prefix.to_owned()..)
+                .take_while(|(key, _)| key.starts_with(prefix))
+                .count())
         })
     }
 }
@@ -297,17 +377,31 @@ impl Repository {
         &self,
         key: &str,
     ) -> Result<Option<CacheRecord<T>>, ReaderError> {
-        self.store
-            .get(key)
-            .await?
-            .map(|json| {
-                serde_json::from_str(&json)
-                    .map_err(|e| ReaderError::InvalidData(format!("Invalid cached record: {e}")))
-            })
-            .transpose()
+        decode_record(self.store.get(key).await)
     }
 
-    async fn load<T: Clone + Serialize + DeserializeOwned>(
+    // Retry an exceptional batch failure individually: one corrupt adapter record
+    // must not make its healthy neighbors unavailable offline.
+    async fn read_item_records(
+        &self,
+        keys: &[String],
+    ) -> Vec<Result<Option<CacheRecord<Option<HnItem>>>, ReaderError>> {
+        if let Ok(values) = self.store.get_many(keys).await {
+            if values.len() == keys.len() {
+                return values
+                    .into_iter()
+                    .map(|value| decode_record(Ok(value)))
+                    .collect();
+            }
+        }
+        let mut records = Vec::with_capacity(keys.len());
+        for key in keys {
+            records.push(self.cached(key).await);
+        }
+        records
+    }
+
+    async fn load<T: Serialize + DeserializeOwned>(
         &self,
         key: &str,
         url: &str,
@@ -315,15 +409,27 @@ impl Repository {
         ttl: u64,
         mode: FetchMode,
     ) -> Result<Loaded<T>, ReaderError> {
-        let cached = self.cached::<T>(key).await;
+        let cached = self.cached(key).await;
+        self.resolve(key, || url.to_owned(), now, ttl, mode, cached)
+            .await
+    }
+
+    async fn resolve<T: Serialize + DeserializeOwned>(
+        &self,
+        key: &str,
+        url: impl FnOnce() -> String,
+        now: u64,
+        ttl: u64,
+        mode: FetchMode,
+        cached: Result<Option<CacheRecord<T>>, ReaderError>,
+    ) -> Result<Loaded<T>, ReaderError> {
         let storage_warning = cached.as_ref().err().map(ToString::to_string);
-        let cached = cached.ok().flatten();
-        if let Some(record) = &cached {
+        let cached = if let Some(record) = cached.ok().flatten() {
             // Future-dated records can follow a wall-clock correction; refresh them.
             let fresh = record.fetched_at <= now && now - record.fetched_at < ttl;
             if mode == FetchMode::Offline || (mode == FetchMode::CacheFirst && fresh) {
                 return Ok(Loaded {
-                    value: record.value.clone(),
+                    value: record.value,
                     source: if fresh {
                         DataSource::Cache
                     } else {
@@ -334,13 +440,16 @@ impl Repository {
                     warning: storage_warning,
                 });
             }
-        }
+            Some(record)
+        } else {
+            None
+        };
         if mode == FetchMode::Offline {
             return Err(ReaderError::Storage(
                 storage_warning.unwrap_or_else(|| "This content has not been downloaded".into()),
             ));
         }
-        let loaded = self.request(url).await.and_then(|body| {
+        let loaded = self.request(&url()).await.and_then(|body| {
             serde_json::from_str::<T>(&body)
                 .map_err(|e| ReaderError::InvalidData(format!("Invalid response: {e}")))
         });
@@ -348,7 +457,7 @@ impl Repository {
             Ok(value) => {
                 let record = CacheRecord {
                     fetched_at: now,
-                    value: value.clone(),
+                    value: &value,
                 };
                 let json = serde_json::to_string(&record)
                     .map_err(|e| ReaderError::InvalidData(e.to_string()))?;
@@ -394,22 +503,41 @@ impl Repository {
         now: u64,
         mode: FetchMode,
     ) -> Result<Loaded<Option<HnItem>>, ReaderError> {
+        let key = format!("cache:item:{id}");
+        if id == 0 {
+            return Err(ReaderError::InvalidInput(
+                "An item ID must be positive".into(),
+            ));
+        }
+        let cached = self.cached(&key).await;
+        self.resolve_item(id, &key, now, mode, cached).await
+    }
+
+    async fn resolve_item(
+        &self,
+        id: ItemId,
+        key: &str,
+        now: u64,
+        mode: FetchMode,
+        cached: Result<Option<CacheRecord<Option<HnItem>>>, ReaderError>,
+    ) -> Result<Loaded<Option<HnItem>>, ReaderError> {
         if id == 0 {
             return Err(ReaderError::InvalidInput(
                 "An item ID must be positive".into(),
             ));
         }
         let loaded = self
-            .load::<Option<HnItem>>(
-                &format!("cache:item:{id}"),
-                &format!("{HN_API}/item/{id}.json"),
+            .resolve(
+                key,
+                || format!("{HN_API}/item/{id}.json"),
                 now,
                 self.policy.item_ttl,
                 mode,
+                cached,
             )
             .await?;
         if loaded.value.as_ref().is_some_and(|item| item.id != id) {
-            let _ = self.store.remove(&format!("cache:item:{id}")).await;
+            let _ = self.store.remove(key).await;
             return Err(ReaderError::InvalidData(
                 "Response item ID does not match the requested item".into(),
             ));
@@ -418,32 +546,41 @@ impl Repository {
     }
 
     pub async fn load_items(&self, ids: &[ItemId], now: u64, mode: FetchMode) -> ItemBatch {
-        let results = stream::iter(
-            ids.iter()
-                .copied()
-                .map(|id| async move { (id, self.load_item(id, now, mode).await) }),
-        )
-        .buffered(self.policy.concurrency)
-        .collect::<Vec<_>>()
-        .await;
         let mut batch = ItemBatch::default();
-        for (id, result) in results {
-            match result {
-                Ok(loaded) => {
-                    combine_source(&mut batch.source, loaded.source);
-                    batch.stale |= loaded.stale;
-                    if batch.warning.is_none() {
-                        batch.warning = loaded.warning;
+        for ids in ids.chunks(STORE_BATCH) {
+            let keys: Vec<_> = ids.iter().map(|id| format!("cache:item:{id}")).collect();
+            let cached = self.read_item_records(&keys).await;
+            let mut results = stream::iter(ids.iter().zip(&keys).zip(cached).enumerate().map(
+                |(index, ((&id, key), record))| async move {
+                    // A preceding occurrence may have populated the cache after
+                    // this page was read. Let it share that request or fresh value.
+                    let result = if mode != FetchMode::Offline && ids[..index].contains(&id) {
+                        self.load_item(id, now, mode).await
+                    } else {
+                        self.resolve_item(id, key, now, mode, record).await
+                    };
+                    (id, result)
+                },
+            ))
+            .buffered(self.policy.concurrency);
+            while let Some((id, result)) = results.next().await {
+                match result {
+                    Ok(loaded) => {
+                        combine_source(&mut batch.source, loaded.source);
+                        batch.stale |= loaded.stale;
+                        if batch.warning.is_none() {
+                            batch.warning = loaded.warning;
+                        }
+                        match loaded.value {
+                            Some(item) => batch.items.push(item),
+                            None => batch.missing_ids.push(id),
+                        }
                     }
-                    match loaded.value {
-                        Some(item) => batch.items.push(item),
-                        None => batch.missing_ids.push(id),
-                    }
-                }
-                Err(error) => {
-                    batch.missing_ids.push(id);
-                    if batch.warning.is_none() {
-                        batch.warning = Some(error.to_string());
+                    Err(error) => {
+                        batch.missing_ids.push(id);
+                        if batch.warning.is_none() {
+                            batch.warning = Some(error.to_string());
+                        }
                     }
                 }
             }
@@ -541,12 +678,13 @@ impl Repository {
             .value
             .ok_or_else(|| ReaderError::InvalidData("This story is unavailable".into()))?;
         let mut snapshot = ThreadSnapshot {
-            root: root.clone(),
+            root,
             source: loaded.source,
             stale: loaded.stale,
             warning: loaded.warning,
             ..ThreadSnapshot::default()
         };
+        let root = &snapshot.root;
         snapshot.items.insert(id, root.clone());
         let budget = budget.clamp(1, 20_000);
         let mut seen = BTreeSet::from([id]);
@@ -562,7 +700,11 @@ impl Repository {
         while !pending.is_empty() && requested < budget {
             let count = pending
                 .len()
-                .min(self.policy.concurrency)
+                .min(if mode == FetchMode::Offline {
+                    STORE_BATCH
+                } else {
+                    self.policy.concurrency
+                })
                 .min(budget - requested);
             let ids: Vec<_> = pending.drain(..count).collect();
             requested += ids.len();
@@ -617,23 +759,29 @@ impl Repository {
             .await?;
         let total = snapshot.items.len();
         report(DownloadProgress::Verifying { checked: 0, total });
-        for (index, (&id, expected)) in snapshot.items.iter().enumerate() {
-            let cached = self
-                .cached::<Option<HnItem>>(&format!("cache:item:{id}"))
-                .await;
-            if !matches!(cached, Ok(Some(CacheRecord { value: Some(ref item), .. })) if item == expected)
-            {
-                if !snapshot.missing_ids.contains(&id) {
+        let mut items = snapshot.items.iter();
+        let mut checked = 0;
+        while checked < total {
+            let group: Vec<_> = items.by_ref().take(STORE_BATCH).collect();
+            let keys: Vec<_> = group
+                .iter()
+                .map(|(id, _)| format!("cache:item:{id}"))
+                .collect();
+            let records = self.read_item_records(&keys).await;
+            for ((&id, expected), record) in group.into_iter().zip(records) {
+                if !matches!(record, Ok(Some(CacheRecord { value: Some(ref item), .. })) if item == expected)
+                {
+                    // Traversal visits each ID once. A successfully loaded item
+                    // cannot also be in the traversal's missing-ID collection.
                     snapshot.missing_ids.push(id);
+                    snapshot.warning = Some(
+                        "Some content could not be saved. Free storage and retry the download."
+                            .into(),
+                    );
                 }
-                snapshot.warning = Some(
-                    "Some content could not be saved. Free storage and retry the download.".into(),
-                );
             }
-            let checked = index + 1;
-            if checked % 32 == 0 || checked == total {
-                report(DownloadProgress::Verifying { checked, total });
-            }
+            checked += keys.len();
+            report(DownloadProgress::Verifying { checked, total });
         }
         snapshot.complete = snapshot.missing_ids.is_empty() && snapshot.pending_ids.is_empty();
         Ok(snapshot)
@@ -701,19 +849,28 @@ impl Repository {
             None => Ok(ReaderState::default()),
         }
     }
-    pub async fn save_state(&self, state: &ReaderState) -> Result<(), ReaderError> {
-        self.store.put("reader:state", &state.export_json()?).await
+    /// Encode a compact snapshot before returning the write future. The caller can
+    /// release its UI-state borrow while the storage transaction is in flight.
+    pub fn save_state<'a>(
+        &'a self,
+        state: &ReaderState,
+    ) -> impl Future<Output = Result<(), ReaderError>> + use<'a> {
+        let json = serde_json::to_string(state)
+            .map_err(|error| ReaderError::InvalidData(error.to_string()));
+        async move { self.store.put("reader:state", &json?).await }
     }
     pub async fn cached_items(&self, ids: &[ItemId]) -> Vec<HnItem> {
         let mut items = Vec::new();
-        for id in ids {
-            if let Ok(Some(record)) = self
-                .cached::<Option<HnItem>>(&format!("cache:item:{id}"))
+        for group in ids.chunks(STORE_BATCH) {
+            let keys: Vec<_> = group.iter().map(|id| format!("cache:item:{id}")).collect();
+            for record in self
+                .read_item_records(&keys)
                 .await
+                .into_iter()
+                .flatten()
+                .flatten()
             {
-                if let Some(item) = record.value {
-                    items.push(item);
-                }
+                items.extend(record.value);
             }
         }
         items
@@ -721,54 +878,72 @@ impl Repository {
 
     /// Evicts oldest unpinned items and excess search/profile records. Reading
     /// state, feed lists and saved/downloaded content survive. Returns removals.
-    pub async fn prune_cache(&self, state: &ReaderState) -> Result<usize, ReaderError> {
-        let records = self.store.scan_prefix("cache:item:").await?;
+    pub fn prune_cache<'a>(
+        &'a self,
+        state: &ReaderState,
+    ) -> BoxFuture<'a, Result<usize, ReaderError>> {
+        let limit = state.preferences.cache_max_items;
         let pinned = state.pinned_items();
-        let mut candidates = Vec::new();
-        for (key, json) in &records {
-            let id = key.trim_start_matches("cache:item:").parse::<ItemId>().ok();
-            if id.is_some_and(|id| pinned.contains(&id)) {
-                continue;
+        Box::pin(async move {
+            if self.store.count_prefix("cache:item:").await? <= limit {
+                return self.prune_metadata_cache().await;
             }
-            let fetched_at = cache_record_time(json);
-            candidates.push((fetched_at, key));
+            let records = self.store.scan_prefix("cache:item:").await?;
+            let mut candidates = Vec::new();
+            let remove = records.len().saturating_sub(limit);
+            for (key, json) in records {
+                let id = key.trim_start_matches("cache:item:").parse::<ItemId>().ok();
+                if id.is_some_and(|id| pinned.contains(&id)) {
+                    continue;
+                }
+                let fetched_at = cache_record_time(&json);
+                candidates.push((fetched_at, key));
+            }
+            candidates.sort();
+            let keys: Vec<_> = candidates
+                .into_iter()
+                .take(remove)
+                .map(|(_, key)| key)
+                .collect();
+            self.remove_keys(&keys).await?;
+            Ok(keys.len() + self.prune_metadata_cache().await?)
+        })
+    }
+
+    async fn remove_keys(&self, keys: &[String]) -> Result<(), ReaderError> {
+        for batch in keys.chunks(STORE_BATCH) {
+            self.store.remove_many(batch).await?;
         }
-        candidates.sort();
-        let remove = records
-            .len()
-            .saturating_sub(state.preferences.cache_max_items);
-        let mut removed = 0;
-        for (_, key) in candidates.into_iter().take(remove) {
-            self.store.remove(key).await?;
-            removed += 1;
-        }
-        Ok(removed + self.prune_metadata_cache().await?)
+        Ok(())
     }
 
     async fn prune_metadata_cache(&self) -> Result<usize, ReaderError> {
-        // Scan only these two small namespaces, not thousands of item payloads.
-        // The six feed lists and versioned reader state cannot be evicted here.
+        let count = self.store.count_prefix("cache:user:").await?
+            + self.store.count_prefix("cache:search:").await?;
+        if count <= METADATA_CACHE_LIMIT {
+            return Ok(0);
+        }
         let mut records = self.store.scan_prefix("cache:user:").await?;
         records.extend(self.store.scan_prefix("cache:search:").await?);
         let remove = records.len().saturating_sub(METADATA_CACHE_LIMIT);
-        if remove == 0 {
-            return Ok(0);
-        }
         let mut candidates: Vec<_> = records
-            .iter()
-            .map(|(key, json)| (cache_record_time(json), key))
+            .into_iter()
+            .map(|(key, json)| (cache_record_time(&json), key))
             .collect();
         candidates.sort();
-        for (_, key) in candidates.into_iter().take(remove) {
-            self.store.remove(key).await?;
-        }
-        Ok(remove)
+        let keys: Vec<_> = candidates
+            .into_iter()
+            .take(remove)
+            .map(|(_, key)| key)
+            .collect();
+        self.remove_keys(&keys).await?;
+        Ok(keys.len())
     }
     pub async fn cache_stats(&self) -> Result<CacheStats, ReaderError> {
-        let entries = self.store.scan_prefix("cache:").await?;
+        let entries = self.store.scan_sizes("cache:").await?;
         Ok(CacheStats {
             records: entries.len(),
-            bytes: entries.iter().map(|(k, v)| k.len() + v.len()).sum(),
+            bytes: entries.iter().map(|(k, v)| k.len() + v).sum(),
             items: entries
                 .iter()
                 .filter(|(k, _)| k.starts_with("cache:item:"))
@@ -784,29 +959,28 @@ impl Repository {
         let mut pinned = state.pinned_items();
         pinned.extend(self.load_state().await?.pinned_items());
         let mut removed = CacheStats::default();
-        for (key, payload) in self.store.scan_prefix("cache:").await? {
+        let mut keys = Vec::new();
+        for (key, value_bytes) in self.store.scan_sizes("cache:").await? {
             let item = key.strip_prefix("cache:item:");
             let temporary = match item {
                 Some(id) => !id.parse::<ItemId>().is_ok_and(|id| pinned.contains(&id)),
                 None => key.starts_with("cache:user:") || key.starts_with("cache:search:"),
             };
             if temporary {
-                self.store.remove(&key).await?;
                 removed.records += 1;
                 removed.items += usize::from(item.is_some());
-                removed.bytes += key.len() + payload.len();
+                removed.bytes += key.len() + value_bytes;
+                keys.push(key);
             }
         }
+        self.remove_keys(&keys).await?;
         Ok(removed)
     }
 
     /// Deletes public cached payloads only. Preferences, bookmarks, history and
     /// collapse state remain intact; callers may explicitly clear state separately.
     pub async fn clear_cache(&self) -> Result<(), ReaderError> {
-        for (key, _) in self.store.scan_prefix("cache:").await? {
-            self.store.remove(&key).await?;
-        }
-        Ok(())
+        self.store.remove_prefix("cache:").await
     }
 }
 
@@ -817,10 +991,23 @@ pub struct CacheStats {
     pub bytes: usize,
 }
 
+fn decode_record<T: DeserializeOwned>(
+    raw: Result<Option<String>, ReaderError>,
+) -> Result<Option<CacheRecord<T>>, ReaderError> {
+    raw?.map(|json| {
+        serde_json::from_str(&json)
+            .map_err(|e| ReaderError::InvalidData(format!("Invalid cached record: {e}")))
+    })
+    .transpose()
+}
+
 fn cache_record_time(json: &str) -> u64 {
-    serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|value| value.get("fetched_at").and_then(|value| value.as_u64()))
+    #[derive(Deserialize)]
+    struct Timestamp {
+        fetched_at: u64,
+    }
+    serde_json::from_str::<Timestamp>(json)
+        .map(|r| r.fetched_at)
         .unwrap_or(0)
 }
 

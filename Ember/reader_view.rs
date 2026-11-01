@@ -911,13 +911,23 @@ impl ReaderView {
             return;
         };
         let weak = self.to_ref().downgrade();
-        drop(Dispatcher::ui_thread().invoke_async_task_local(move||async move{
+        drop(Dispatcher::ui_thread().invoke_async_task_local(move || async move {
             loop {
-                let Some(v)=weak.upgrade()else{return;};let revision=v.revision.get();let state=v.state.borrow().clone();drop(v);
-                let result=repo.save_state(&state).await;
-                let Some(v)=weak.upgrade()else{return;};
-                if let Err(error)=result {v.saving.set(false);v.status(&format!("Changes are not saved: {error}. Retry by changing the setting or bookmark again."));return;}
-                if revision==v.revision.get(){v.saving.set(false);return;}
+                let Some(view) = weak.upgrade() else { return };
+                let revision = view.revision.get();
+                let save = repo.save_state(&view.state.borrow());
+                drop(view);
+                let result = save.await;
+                let Some(view) = weak.upgrade() else { return };
+                if let Err(error) = result {
+                    view.saving.set(false);
+                    view.status(&format!("Changes are not saved: {error}. Retry by changing the setting or bookmark again."));
+                    return;
+                }
+                if revision == view.revision.get() {
+                    view.saving.set(false);
+                    return;
+                }
             }
         }));
     }
@@ -930,11 +940,13 @@ impl ReaderView {
             return false;
         };
         self.set_cache_work(CacheWork::Pruning);
-        let state = self.state.borrow().clone();
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-                let result = repo.prune_cache(&state).await;
+                let Some(view) = weak.upgrade() else { return };
+                let prune = repo.prune_cache(&view.state.borrow());
+                drop(view);
+                let result = prune.await;
                 if let Some(v) = weak.upgrade() {
                     v.set_cache_work(CacheWork::Idle);
                     if let Err(error) = result {

@@ -12,10 +12,20 @@ extern "C" {
     fn fetch_json(url: &str) -> JsValue;
     #[wasm_bindgen(js_name = databaseGet)]
     fn database_get(key: &str) -> JsValue;
+    #[wasm_bindgen(js_name = databaseGetMany)]
+    fn database_get_many(keys: js_sys::Array) -> JsValue;
+    #[wasm_bindgen(js_name = databaseRemoveMany)]
+    fn database_remove_many(keys: js_sys::Array) -> JsValue;
+    #[wasm_bindgen(js_name = databaseRemovePrefix)]
+    fn database_remove_prefix(prefix: &str) -> JsValue;
+    #[wasm_bindgen(js_name = databaseCount)]
+    fn database_count(prefix: &str) -> JsValue;
     #[wasm_bindgen(js_name = databasePut)]
     fn database_put(key: &str, value: &str) -> JsValue;
     #[wasm_bindgen(js_name = databaseRemove)]
     fn database_remove(key: &str) -> JsValue;
+    #[wasm_bindgen(js_name = databaseSizes)]
+    fn database_sizes(prefix: &str) -> JsValue;
     #[wasm_bindgen(js_name = databaseScan)]
     fn database_scan(prefix: &str) -> JsValue;
     #[wasm_bindgen(js_name = setLocation)]
@@ -72,6 +82,80 @@ impl Store for IndexedDbStore {
                 .await
                 .map(drop)
                 .map_err(|error| ReaderError::Storage(error.to_string()))
+        })
+    }
+
+    fn get_many<'a>(
+        &'a self,
+        keys: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<Option<String>>, ReaderError>> {
+        Box::pin(async move {
+            let value = await_promise(&database_get_many(
+                keys.iter().map(|k| JsValue::from_str(k)).collect(),
+            ))
+            .await
+            .map_err(|e| ReaderError::Storage(e.to_string()))?;
+            let array = value.dyn_into::<js_sys::Array>().map_err(|_| {
+                ReaderError::Storage("The browser returned an invalid record batch".into())
+            })?;
+            array
+                .iter()
+                .map(|value| {
+                    if value.is_null() {
+                        Ok(None)
+                    } else {
+                        value.as_string().map(Some).ok_or_else(|| {
+                            ReaderError::Storage("The stored value is invalid".into())
+                        })
+                    }
+                })
+                .collect()
+        })
+    }
+
+    fn remove_many<'a>(&'a self, keys: &'a [String]) -> BoxFuture<'a, Result<(), ReaderError>> {
+        Box::pin(async move {
+            await_promise(&database_remove_many(
+                keys.iter().map(|k| JsValue::from_str(k)).collect(),
+            ))
+            .await
+            .map(drop)
+            .map_err(|e| ReaderError::Storage(e.to_string()))
+        })
+    }
+
+    fn remove_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<(), ReaderError>> {
+        Box::pin(async move {
+            await_promise(&database_remove_prefix(prefix))
+                .await
+                .map(drop)
+                .map_err(|e| ReaderError::Storage(e.to_string()))
+        })
+    }
+
+    fn count_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<usize, ReaderError>> {
+        Box::pin(async move {
+            let count = await_promise(&database_count(prefix))
+                .await
+                .map_err(|e| ReaderError::Storage(e.to_string()))?;
+            count.as_f64().map(|n| n as usize).ok_or_else(|| {
+                ReaderError::Storage("The browser returned an invalid record count".into())
+            })
+        })
+    }
+
+    fn scan_sizes<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, usize)>, ReaderError>> {
+        Box::pin(async move {
+            let value = await_promise(&database_sizes(prefix))
+                .await
+                .map_err(|e| ReaderError::Storage(e.to_string()))?;
+            let json = value.as_string().ok_or_else(|| {
+                ReaderError::Storage("The browser returned invalid record sizes".into())
+            })?;
+            serde_json::from_str(&json).map_err(|e| ReaderError::Storage(e.to_string()))
         })
     }
 
