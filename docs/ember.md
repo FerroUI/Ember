@@ -29,14 +29,14 @@ The focus view keeps the discussion in a centered column as the window grows. Th
 | Area | Implemented behavior |
 | --- | --- |
 | Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. Recent searches keeps up to 20 terms. Select a term to edit it or use its search icon to run it with the current filters. Clearing advanced filters preserves the search scope and sort order. |
-| Discussion | Ranked, newest or oldest branches; branch and top-level collapse; local comment search with ancestor context; parent navigation; deleted/dead item handling; new-comment indicators and restored reading position. |
+| Search | Search stories, comments, all items, Ask HN, Show HN and polls through Algolia. Sort by relevance or date. Expand More filters for author, minimum points or comments, and UTC date ranges. The Recent searches list holds up to 20 terms. Select a term to edit it or use its search icon to run it with the current filters. Clearing advanced filters preserves the search scope and sort order. |
+| Discussion | Browse ranked, newest or oldest branches. Collapse individual branches or all top-level replies. Find highlights matching text in comments and keeps their ancestors visible for context. Jump between matching comments or return to your previous reading position. |
 | Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
 | Profiles | User biography, karma, account creation information and submissions through the public HN API. |
 | Local library | Saved stories, read history, hidden stories, domain/user/keyword mutes, and hide-read filtering. |
-| Offline reading | Cache fallback for visited content; an explicit Download discussion action verifies that the complete loaded discussion is persisted before reporting completion. |
+| Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to list and open saved discussions from the local cache. Select it again to see all bookmarks. |
 | Sharing and accounts | Copy the canonical discussion link, open the article or HN page, and open HN for sign-in, voting, replies and submission. |
-| Appearance | System, light, dark and custom themes, an accent color, and an optional custom background. Adjust reading size and line spacing in the live preview. Compact layout and reduced motion are independent preferences. |
+| Appearance | Choose system, light, dark or custom appearance. Select an Ember, Ocean, Forest or Plum accent, or type a hex color and inspect its swatch. Custom appearance also has a background preview. Try reading size and line spacing in the live text sample, then choose **Apply preferences**. |
 | Data controls | Versioned JSON export/import of local reading state, cache clearing and history clearing. |
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
@@ -84,6 +84,12 @@ application, and Back/Forward routes through the reader. A browser URL with
 `?item=8863` opens that discussion. The desktop host accepts an initial HN URL as
 its first argument.
 
+Search and reader settings mark invalid fields and announce the first error when
+you submit. Ember opens the relevant filter or settings section, scrolls its
+editor into view, and moves keyboard focus there. Your entries are preserved
+while you correct them. Accent presets have accessible names, a selected state,
+and a check mark.
+
 Page changes combine a 180 ms composition opacity animation with a 220 ms,
 12-pixel vertical entrance. Reduced motion skips both animations. Themes use
 dynamic resource brushes, so custom surfaces, code
@@ -127,9 +133,9 @@ In Settings, **Copy backup** generates the JSON, displays a selectable copy, and
 to the platform clipboard. Paste a backup into **Reading data JSON** and choose
 **Import this backup** to review its saved-story and history counts. Choose
 **Replace reading data** to restore that snapshot. Editing the pasted JSON
-dismisses the pending import. Cached article and comment payloads are stored
-separately. Clearing the cache or reading history also has an inline review.
-Clearing history removes recent searches.
+dismisses the pending import. The backup contains library metadata. Import keeps the
+download records already verified on this device and ignores the backup’s download
+claims. A restored bookmark from another device needs its own download here.
 
 Native hosts use a bundled SQLite database, schema version 1, with WAL enabled. A
 dedicated worker owns the connection. Operations resolve after their transaction
@@ -174,7 +180,10 @@ comments. **Download discussion** traverses the thread and poll options, then
 verifies the resulting item records in durable storage. Only a complete result
 is added to the downloaded manifest and Saved stories. Missing items, failed
 cache writes or an exhausted budget produce an explicit partial/error result
-and can be retried.
+and can be retried. The **Downloaded** filter lists the subset of current bookmarks
+with a completed local download. Opening one of these discussions and loading
+more of its cached replies works without a network request. Use **Refresh** to
+request the latest discussion explicitly.
 
 Interactive thread loading starts with 120 items, extends by 200 and is capped at
 10,000 items in the UI. Download uses a 10,000-item budget. The reusable core
@@ -182,9 +191,13 @@ supports budgets up to 20,000. Traversal is iterative and cycle-safe; missing an
 pending IDs are retained instead of pretending that an incomplete tree is
 complete. Local thread search matches decoded, visible text and authors, retains
 matching comments' ancestors, and does not overwrite stored collapse state.
-Entities and text split across formatting spans remain searchable; link
-attributes and removed active content do not produce matches. Input is debounced
-by 180 ms, and a bounded set of parsed search documents is reused for rendering.
+Entities and text split across formatting spans remain searchable. Find highlights
+up to 128 literal, case-insensitive occurrences in each rendered comment body,
+including code and link captions. Formatting, selection, and link activation
+are preserved. Find navigation counts matching comments, including author
+matches. Buttons and keyboard navigation announce the active comment’s position.
+Input is debounced by 180 ms, and a bounded set of parsed search documents is
+reused for rendering.
 
 The default item cache target is 5,000 records, configurable from 100 to 100,000.
 Pruning removes the oldest unpinned item records while preserving saved roots and
@@ -195,10 +208,12 @@ feed lists and local reading state are retained outside that budget. These are
 record-count targets, not a total byte quota. Browser site-data clearing,
 storage eviction and disk exhaustion still affect persistence.
 
-**Clear cache** removes public cached payloads and the UI's downloaded manifest;
-bookmarks and preferences remain, but the associated content needs fetching
-again. **Clear history** removes read/opened timestamps and seen-comment markers,
-while retaining bookmarks. Export a JSON backup before moving between devices.
+In Settings, expand **Clear local data** and review the scope of either operation.
+**Remove cached content** clears cached public payloads and the device’s offline
+download records. Bookmarks stay in Saved. Download a discussion again to make it
+available in **Downloaded**. **Remove reading history** clears read markers,
+reading positions, seen-comment markers, and recent search terms. **Cancel** or
+Escape dismisses either review and returns focus to the originating control.
 A failed initial state read pauses automatic writes to protect the existing data.
 A validated backup imported while that read is pending takes precedence over its
 late result. There is no cross-device or concurrent multi-tab state merge.
@@ -307,8 +322,8 @@ sandbox. Signing and installation follow the existing platform scripts.
 The [CI workflow](../.github/workflows/ci.yml) calls FerroUI's shared application
 workflow (`FerroUI/docs/apps.md`): on Linux it runs the core/parser tests, the actual
 control-tree/render tests, a desktop compile check and the browser service-provider
-tests, builds the browser site and publishes it to GitHub Pages from main. Android/iOS
-packaging needs its platform toolchains and is not part of CI.
+tests, builds the browser site and publishes it to GitHub Pages from main. The
+workflow also requests an Android APK and an iOS simulator app bundle as artifacts.
 
 ```sh
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
@@ -362,8 +377,8 @@ bounds and hit-test availability; it does not provide a second UI implementation
 | Linux desktop | Native host, SQLite/HTTP and shared reader controls | `cargo check -p ember-desktop` in CI; the shared UI tests exercise the actual control tree through Skia/HarfBuzz. |
 | Browser | WebAssembly reader, Fetch, IndexedDB, URL history and default offline shell | The JavaScript tests of the platform providers and the offline worker in CI. The Chrome smoke test (desktop and phone: touch gestures, themes, URL history, downloads, IndexedDB persistence, an offline reload through the offline shell) is run by hand; it is not part of CI. |
 | Windows/macOS | Shared desktop host with the existing FerroUI platform services | The shared UI tests run on Linux in CI; no interactive Windows or macOS session is claimed. |
-| Android | Native host and packaging-script integration | Physical-device layout, IME, lifecycle and signed-package behavior remain unverified. |
-| iOS | Native host and bundling-script integration | Physical-device layout, safe areas, lifecycle and signed-package behavior remain unverified. |
+| Android | Native host and Android APK packaging job | CI requests the `android-apk` artifact. Physical-device layout, IME and lifecycle still require device testing. |
+| iOS | Native host and iOS simulator bundle job | CI requests the `ios-app` artifact. Physical-device safe areas, lifecycle and signing still require device testing. |
 
 ## Current boundaries
 
