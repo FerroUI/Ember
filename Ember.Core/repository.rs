@@ -578,11 +578,11 @@ impl Repository {
         let mut snapshot = self
             .load_thread(id, budget, now, FetchMode::CacheFirst)
             .await?;
-        for id in snapshot.items.keys().copied().collect::<Vec<_>>() {
+        for (&id, expected) in &snapshot.items {
             let cached = self
                 .cached::<Option<HnItem>>(&format!("cache:item:{id}"))
                 .await;
-            if !matches!(cached, Ok(Some(CacheRecord { value: Some(ref item), .. })) if item.id == id)
+            if !matches!(cached, Ok(Some(CacheRecord { value: Some(ref item), .. })) if item == expected)
             {
                 if !snapshot.missing_ids.contains(&id) {
                     snapshot.missing_ids.push(id);

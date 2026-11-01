@@ -579,6 +579,22 @@ fn cache_write_failure_allows_reading_but_never_claims_offline_success() {
 }
 
 #[test]
+fn stale_payload_with_the_right_id_cannot_certify_a_failed_refresh() {
+    block_on(async {
+        let store = Rc::new(UnwritableStore(MemoryStore::default()));
+        store.0.put("cache:item:1", r#"{"fetched_at":0,"value":{"id":1,"text":"old"}}"#)
+            .await.unwrap();
+        let http = Rc::new(FakeHttp::default());
+        http.item(1, r#"{"id":1,"text":"updated"}"#);
+        let repo = Repository::new(http, store);
+        let result = repo.download_thread(1, 10, 86_400).await.unwrap();
+        assert_eq!(result.root.text.as_deref(), Some("updated"));
+        assert_eq!(result.missing_ids, [1]);
+        assert!(!result.complete);
+    });
+}
+
+#[test]
 fn completed_download_can_reopen_fully_offline() {
     block_on(async {
         let (repo, http, _) = repository();
