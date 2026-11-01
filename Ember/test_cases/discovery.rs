@@ -239,3 +239,109 @@ fn pending_settings_preserve_backup_edits_and_open_the_actual_saved_preferences(
     assert_eq!(input.text().as_deref(), Some("unfinished draft"));
     window.close();
 }
+
+#[test]
+fn discussion_search_keeps_its_scope_and_opens_the_exact_comment() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::{ComboBox, Expander, MenuFlyout, MenuItem};
+
+    let (shell, window, view) = start(
+        390.0,
+        844.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    click(&shell, &window, &first_story(&window));
+    let menu = action(&view, "More story actions")
+        .flyout()
+        .unwrap()
+        .cast::<MenuFlyout>()
+        .unwrap();
+    let entry = (0..menu.items().count())
+        .filter_map(|i| {
+            Control::from_boxed(&menu.items().get_at(i)?)
+                .and_then(|control| control.cast::<MenuItem>())
+        })
+        .find(|item| {
+            item.header()
+                .and_then(|value| value.downcast_ref::<String>().cloned())
+                .as_deref()
+                == Some("Search this discussion")
+        })
+        .unwrap();
+    entry.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+    shell.settle();
+    let named = |name: &str| {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<Control>())
+            .find(|c| AutomationProperties::get_name(c).as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    let input = || named("Search terms").cast::<TextBox>().unwrap();
+    let enter = || {
+        let mut event = KeyEventArgs::new();
+        event.key = Key::Enter;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        input().raise_event(&event);
+        for _ in 0..6 {
+            shell.settle();
+        }
+    };
+    assert!(view
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<TextBlock>())
+        .any(|v| v.text().as_deref() == Some("Discussion 1001")));
+    assert!(!named("Search in").is_enabled());
+    input().set_text(Some("predictable"));
+    if let Some(dir) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        shell.settle();
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&std::path::Path::new(&dir).join("phone-discussion-search.ppm"))
+            .unwrap();
+    }
+    enter();
+    assert!(view
+        .get_control::<TextBlock>("FeedSummary")
+        .text()
+        .unwrap()
+        .starts_with("Discussion 1001 · 1 result"));
+    click_in_view(&shell, &window, &first_story(&window));
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("Comment by ada")
+    );
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    click(
+        &shell,
+        &window,
+        &view.get_control::<Button>("EditFeedSearch"),
+    );
+    named("More filters")
+        .cast::<Expander>()
+        .unwrap()
+        .set_is_expanded(true);
+    shell.settle();
+    let scoped = named("Discussion").cast::<TextBox>().unwrap();
+    assert_eq!(scoped.text().as_deref(), Some("1001"));
+    scoped.set_text(Some("https://example.org/item?id=7"));
+    enter();
+    assert!(scoped.is_focused());
+    assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+        &scoped
+    ));
+    scoped.set_text(Some(""));
+    let kind = named("Search in").cast::<ComboBox>().unwrap();
+    assert!(kind.is_enabled());
+    kind.set_selected_index(0);
+    scoped.set_text(Some("https://news.ycombinator.com/item?id=1001"));
+    assert!(!kind.is_enabled());
+    assert_eq!(kind.selected_index(), 1);
+    scoped.set_text(Some(""));
+    assert_eq!(kind.selected_index(), 0);
+    window.close();
+}

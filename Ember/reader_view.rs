@@ -1054,8 +1054,13 @@ impl ReaderView {
             }
             _ => format!("{total} {noun}"),
         };
-        self.label("FeedSummary")
-            .set_text(Some(&format!("{count} · {origin}")));
+        let summary = match &*route {
+            FeedRoute::Search(SearchQuery {
+                story_id: Some(id), ..
+            }) => format!("Discussion {id} · {count} · {origin}"),
+            _ => format!("{count} · {origin}"),
+        };
+        self.label("FeedSummary").set_text(Some(&summary));
         drop(route);
         if let Some(warning) = warning {
             self.status(&warning);
