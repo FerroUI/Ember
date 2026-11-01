@@ -300,6 +300,45 @@ impl ReaderView {
             }
         });
         actions.children().add(copy);
+        let mute = ToggleButton::new();
+        mute.classes().add("feed-filter");
+        mute.set_content(Some(Control::boxed(&widgets::nav_content(
+            "eye_off",
+            "Mute in feeds",
+            false,
+        ))));
+        AutomationProperties::set_name(&mute, Some(&format!("Mute {} in feeds", user.id)));
+        AutomationProperties::set_help_text(
+            &mute,
+            Some("Hide this author's stories from feeds and search results."),
+        );
+        let weak = self.to_ref().downgrade();
+        let author = user.id.clone();
+        mute.click(move |_, _| {
+            let Some(view) = weak.upgrade().filter(|view| view.state_ready.get()) else {
+                return;
+            };
+            let muted = {
+                let mut state = view.state.borrow_mut();
+                if state.mutes.users.remove(&author) {
+                    false
+                } else {
+                    state.mutes.users.insert(author.clone());
+                    true
+                }
+            };
+            view.changed();
+            view.update_profile_mute();
+            view.render_stories();
+            view.status(&format!(
+                "{} {} in feeds.",
+                author,
+                if muted { "muted" } else { "unmuted" }
+            ));
+        });
+        self.profile_mute.replace(Some(mute.clone()));
+        self.update_profile_mute();
+        actions.children().add(mute);
         bio.children().add(actions);
 
         let activity = widgets::section(&panel, "Recent activity");
@@ -332,6 +371,22 @@ impl ReaderView {
         }
         self.show_content(widgets::scroll(panel.upcast()));
         list
+    }
+
+    pub(super) fn update_profile_mute(&self) {
+        let mute = self.profile_mute.borrow();
+        let route = self.detail.borrow();
+        if let (Some(button), DetailRoute::Profile(author)) = (mute.as_ref(), &*route) {
+            button.set_is_enabled(self.state_ready.get());
+            let muted = self.state.borrow().mutes.users.contains(author);
+            button.set_is_checked(Some(muted));
+            let hint = if muted {
+                "Show this author in feeds"
+            } else {
+                "Hide this author in feeds"
+            };
+            ToolTip::set_tip(button, Some(Rc::new(hint.to_owned()) as BoxedValue));
+        }
     }
 
     fn render_profile_activity(&self, list: &StackPanel, user: &str, batch: ember_core::ItemBatch) {

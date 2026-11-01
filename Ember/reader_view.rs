@@ -193,6 +193,7 @@ pub struct ReaderView {
     feed_load: Cell<FeedLoad>,
     empty_action: Cell<Option<EmptyAction>>,
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
+    profile_mute: RefCell<Option<Ref<ToggleButton>>>,
     downloaded_only: Cell<bool>,
     thread: RefCell<Option<ThreadSnapshot>>,
     library_find: RefCell<library_find::LibraryFind>,
@@ -265,6 +266,7 @@ impl ReaderView {
             feed_load: Cell::new(FeedLoad::Ready),
             empty_action: Cell::new(None),
             explore_counts: RefCell::new(Vec::new()),
+            profile_mute: RefCell::new(None),
             downloaded_only: Cell::new(false),
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
@@ -709,6 +711,7 @@ impl ReaderView {
                             *view.state.borrow_mut() = state;
                             view.state_ready.set(true);
                             view.update_explore_counts();
+                            view.update_profile_mute();
                         }
                         Err(error) => view.status(&format!(
                             "Reading state could not be restored: {error}. Saving is paused to protect your existing data. Import a backup in Settings to recover it."
@@ -2002,6 +2005,7 @@ impl ReaderView {
     }
     fn configure_detail(&self) {
         self.explore_counts.borrow_mut().clear();
+        self.profile_mute.borrow_mut().take();
         let welcome = *self.detail.borrow() == DetailRoute::Welcome;
         self.get_control::<ScrollViewer>("WelcomePane")
             .set_is_visible(welcome);

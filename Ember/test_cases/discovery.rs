@@ -122,3 +122,42 @@ fn explore_library_counts_update_when_storage_finishes_opening() {
     assert_eq!(view.get_control::<ListBox>("Stories").items().count(), 1);
     window.close();
 }
+
+#[test]
+fn an_author_can_be_muted_and_restored_without_losing_the_open_profile() {
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(1440.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
+    view.get_control::<TextBox>("SearchBox")
+        .set_text(Some("https://news.ycombinator.com/user?id=ada"));
+    click(&shell, &window, &view.get_control::<Button>("SearchButton"));
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("ada")
+    );
+    let mute = action(&view, "Mute ada in feeds")
+        .cast::<ferroui_controls::primitives::ToggleButton>()
+        .unwrap();
+    let stories = view.get_control::<ListBox>("Stories");
+    let count = stories.items().count();
+    assert_eq!(mute.is_checked(), Some(false));
+    click_in_view(&shell, &window, &mute);
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("ada")
+    );
+    assert_eq!(mute.is_checked(), Some(true));
+    assert!(stories.items().count() < count);
+    let persisted =
+        || ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert!(persisted().mutes.users.contains("ada"));
+    assert!(persisted().recent_searches.is_empty());
+    click_in_view(&shell, &window, &mute);
+    assert_eq!(mute.is_checked(), Some(false));
+    assert_eq!(stories.items().count(), count);
+    assert!(!persisted().mutes.users.contains("ada"));
+    window.close();
+}
