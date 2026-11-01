@@ -31,14 +31,14 @@ The focus view keeps the discussion in a centered column as the window grows. Th
 | --- | --- |
 | Feeds | Browse the front page, Latest, Best, Ask HN, Show HN and Jobs. Returning from a discussion preserves the loaded feed pages. In split view, the reading desk suggests an unread story from the current list, or the last opened item in History. |
 | Explore | Open **More** to browse feeds and see counts for downloaded discussions, reading history and hidden stories. Reader tools include Settings and a keyboard shortcut reference. |
-| Search | Search stories, comments, Ask HN, Show HN and polls by relevance or date. Filter by author, points, comments or a UTC date range. **Edit search** reopens the query from the results header. In **Recent searches**, edit, run or remove one of the last 20 terms. Replaying a term keeps the active filters. |
+| Search | Search stories, comments, Ask HN, Show HN and polls by relevance or date. Filter by author, points, comments or a UTC date range. Paste a Hacker News item or profile URL into either search field to open it directly. **Edit search** reopens the query from the results header. In **Recent searches**, edit, run or remove one of the last 20 terms. Replaying a term keeps the active filters. |
 | Discussion | Browse ranked, newest or oldest branches. Collapsed branches show their reply count. A comment’s menu offers jumps to its parent, neighboring top-level comments and the story. Find highlights matching text and keeps its ancestors visible for context. |
 | Long threads and polls | The footer counts loaded comments, pending items and unavailable items. Load the next batch or retry missing items directly. Polls retain HN option order and show vote shares once all counts are available and at least one vote has been cast. |
-| Profiles | Read the biography and preview up to five recent submissions in HN order. Open an item directly or choose **All stories** or **All comments** to search by that author. **Copy profile link** copies the HN profile URL. If lookup fails, **Edit username** selects the name for correction. |
+| Profiles | Read the biography and preview up to five recent submissions in HN order. Open an item directly or choose **All stories** or **All comments** to search by that author. **Mute in feeds** hides that author from feeds and search results until you turn it off, here or in Settings. **Copy profile link** copies the HN profile URL. If lookup fails, **Edit username** selects the name for correction. |
 | Local library | Browse saved stories, read history and hidden stories. In Settings, choose **Domains**, **Authors** or **Title keywords** to edit mute rules. Switching rule types keeps the draft. **Save filters** applies all three. Paste an article URL to mute its domain and subdomains, or enter an author with an optional leading @. |
 | Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to list and open saved discussions from the local cache. Select it again to see all bookmarks. |
 | Sharing and accounts | Copy the discussion link or open HN to sign in, vote, reply or submit. A comment permalink opens that comment and provides access to its parent. A poll option permalink links back to its poll. |
-| Appearance | Choose system, light, dark or custom appearance. Pick a named accent or preview a hex color and custom background. **Text presets** previews four combinations of type size and line spacing. Fine-tune either value, then choose **Apply preferences**. |
+| Appearance | Choose system, light, dark or custom appearance. Pick a named accent or preview a hex color and custom background. **Text presets** previews four combinations of type size and line spacing. Fine-tune either value, or use **Reset theme & type** to preview the default colors, type size and spacing. Choose **Apply preferences** to save. |
 | Data controls | Export or restore local reading state as versioned JSON. Review a backup replacement or clear operation before committing it. |
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
@@ -66,7 +66,7 @@ screens. Deep comments cap their visual indentation so text retains usable width
 | Input | Action |
 | --- | --- |
 | `Ctrl+K` / `Command+K` | Open search. |
-| `Enter` in a search field | Run the query with its filters. In the username field, open that profile. |
+| `Enter` in a search field | Open a pasted Hacker News permalink or run the query with its filters. The username field also accepts @names and profile links. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
 | `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
 | `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from the story menu. |
