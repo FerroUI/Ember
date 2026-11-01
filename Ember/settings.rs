@@ -39,14 +39,14 @@ pub enum SettingsAction {
     ClearHistory,
 }
 
-pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<Control> {
-    let root = StackPanel::new();
-    root.set_spacing(10.0);
-    root.set_margin(Thickness::uniform(16.0));
-    root.set_max_width(720.0);
-    root.set_horizontal_alignment(HorizontalAlignment::Stretch);
+pub(super) type RestorePreferences = Box<dyn FnOnce(&ReaderState)>;
 
-    let appearance = section(&root, "Appearance & reading");
+fn build_preferences(
+    root: &StackPanel,
+    state: &ReaderState,
+    on_action: Rc<dyn Fn(SettingsAction)>,
+) {
+    let appearance = section(root, "Appearance & reading");
     let (theme_field, accent_field) = field_pair(&appearance);
     let theme = combo(
         &theme_field,
@@ -256,8 +256,23 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         }
     });
 
-    mute_settings(&root, &state.mutes, &on_action);
+    mute_settings(root, &state.mutes, &on_action);
+}
 
+pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePreferences) {
+    let root = StackPanel::new();
+    root.set_spacing(10.0);
+    root.set_margin(Thickness::uniform(16.0));
+    root.set_max_width(720.0);
+    root.set_horizontal_alignment(HorizontalAlignment::Stretch);
+
+    let preferences = stack(10.0);
+    preferences.children().add(text(
+        "Waiting for saved preferences. You can restore a backup below.",
+        13.0,
+        true,
+    ));
+    root.children().add(preferences.clone());
     let data = section(&root, "Reading data");
     data.children().add(text(
         "Back up bookmarks, history, filters, and preferences on this device. Downloaded story content is stored separately.",
@@ -288,7 +303,8 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         })));
     });
     export.set_horizontal_alignment(HorizontalAlignment::Left);
-    data.children().add(export);
+    export.set_is_visible(false);
+    data.children().add(export.clone());
     data.children().add(backup);
     let json = crate::widgets::field(
         &data,
@@ -353,7 +369,10 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
         &on_action,
     );
 
-    let maintenance = disclosure(&root, "Clear local data", false);
+    let cleanup = stack(0.0);
+    cleanup.set_is_visible(false);
+    root.children().add(cleanup.clone());
+    let maintenance = disclosure(&cleanup, "Clear local data", false);
     reviewed_action(
         &maintenance,
         &review,
@@ -376,7 +395,13 @@ pub fn build(state: &ReaderState, on_action: Rc<dyn Fn(SettingsAction)>) -> Ref<
     );
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
-    scroll.upcast()
+    let restore = Box::new(move |state: &ReaderState| {
+        preferences.children().clear();
+        build_preferences(&preferences, state, on_action);
+        export.set_is_visible(true);
+        cleanup.set_is_visible(true);
+    });
+    (scroll.upcast(), restore)
 }
 
 struct PendingReview {
@@ -998,14 +1023,12 @@ mod tests {
         let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
         let applied = Rc::new(RefCell::new(Preferences::default()));
         let result = applied.clone();
-        let form = build(
-            &ReaderState::default(),
-            Rc::new(move |action| {
-                if let SettingsAction::Preferences(prefs) = action {
-                    result.replace(prefs);
-                }
-            }),
-        );
+        let (form, restore) = build(Rc::new(move |action| {
+            if let SettingsAction::Preferences(prefs) = action {
+                result.replace(prefs);
+            }
+        }));
+        restore(&ReaderState::default());
         let window = Window::new();
         window.set_width(720.0);
         window.set_height(1120.0);

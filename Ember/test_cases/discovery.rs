@@ -193,3 +193,49 @@ fn profile_mute_waits_for_saved_rules_before_accepting_changes() {
     assert_eq!(mute.is_checked(), Some(true));
     window.close();
 }
+
+#[test]
+fn pending_settings_preserve_backup_edits_and_open_the_actual_saved_preferences() {
+    let inner = Rc::new(MemoryStore::default());
+    let mut state = ReaderState::default();
+    state.preferences.font_size = 22.0;
+    state.toggle_saved(1001, 1);
+    ready(inner.put("reader:state", &state.export_json().unwrap())).unwrap();
+    let store = Rc::new(DelayedStartupStore {
+        inner,
+        started: Cell::new(false),
+        released: Cell::new(false),
+        waker: RefCell::new(None),
+        fail_read: false,
+    });
+    let (shell, window, view) = start(1440.0, 940.0, store.clone(), Rc::new(Cell::new(false)));
+    click(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    let visible = |label: &str| {
+        view.get_visual_descendants()
+            .filter_map(|c| c.cast::<Control>())
+            .find(|c| {
+                c.is_effectively_visible()
+                    && AutomationProperties::get_name(c).as_deref() == Some(label)
+            })
+    };
+    assert!(visible("Copy backup").is_none());
+    assert!(visible("Apply preferences").is_none());
+    let input = visible("Reading data JSON")
+        .unwrap()
+        .cast::<TextBox>()
+        .unwrap();
+    input.set_text(Some("unfinished draft"));
+    assert!(visible("Import this backup").is_some());
+    store.release();
+    for _ in 0..8 {
+        shell.settle();
+    }
+    let size = visible("Reading font size")
+        .unwrap()
+        .cast::<ferroui_controls::NumberBox>()
+        .unwrap();
+    assert_eq!(size.value(), 22.0);
+    assert!(visible("Copy backup").is_some());
+    assert_eq!(input.text().as_deref(), Some("unfinished draft"));
+    window.close();
+}

@@ -194,6 +194,7 @@ pub struct ReaderView {
     empty_action: Cell<Option<EmptyAction>>,
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     profile_mute: RefCell<Option<Ref<ToggleButton>>>,
+    pending_settings: RefCell<Option<crate::settings::RestorePreferences>>,
     downloaded_only: Cell<bool>,
     thread: RefCell<Option<ThreadSnapshot>>,
     library_find: RefCell<library_find::LibraryFind>,
@@ -268,6 +269,7 @@ impl ReaderView {
             empty_action: Cell::new(None),
             explore_counts: RefCell::new(Vec::new()),
             profile_mute: RefCell::new(None),
+            pending_settings: RefCell::new(None),
             downloaded_only: Cell::new(false),
             thread: RefCell::new(None),
             thread_control: RefCell::new(None),
@@ -710,6 +712,9 @@ impl ReaderView {
                             view.state_ready.set(true);
                             view.update_explore_counts();
                             view.update_profile_mute();
+                            if let Some(restore) = view.pending_settings.borrow_mut().take() {
+                                restore(&view.state.borrow());
+                            }
                         }
                         Err(error) => view.status(&format!(
                             "Reading state could not be restored: {error}. Saving is paused to protect your existing data. Import a backup in Settings to recover it."
@@ -2098,6 +2103,7 @@ impl ReaderView {
     fn configure_detail(&self) {
         self.explore_counts.borrow_mut().clear();
         self.profile_mute.borrow_mut().take();
+        self.pending_settings.borrow_mut().take();
         let welcome = *self.detail.borrow() == DetailRoute::Welcome;
         self.get_control::<ScrollViewer>("WelcomePane")
             .set_is_visible(welcome);
@@ -2320,14 +2326,17 @@ impl ReaderView {
         self.label("DetailEyebrow").set_text(Some("READER"));
         self.label("DetailTitle").set_text(Some("Settings"));
         let weak = self.to_ref().downgrade();
-        self.show_content(crate::settings::build(
-            &self.state.borrow(),
-            Rc::new(move |action| {
-                if let Some(v) = weak.upgrade() {
-                    v.setting_action(action);
-                }
-            }),
-        ));
+        let (content, restore) = crate::settings::build(Rc::new(move |action| {
+            if let Some(v) = weak.upgrade() {
+                v.setting_action(action);
+            }
+        }));
+        if self.state_ready.get() {
+            restore(&self.state.borrow());
+        } else {
+            self.pending_settings.replace(Some(restore));
+        }
+        self.show_content(content);
     }
     fn setting_action(&self, action: SettingsAction) {
         match action {
