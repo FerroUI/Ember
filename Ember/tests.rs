@@ -831,6 +831,9 @@ fn focus_reading_keeps_the_discussion_and_layers_back_navigation() {
     assert_eq!(count.text().as_deref(), Some("1 of 4 matching comments"));
     enter(KeyModifiers::SHIFT);
     assert_eq!(count.text().as_deref(), Some("4 of 4 matching comments"));
+    field.set_text(Some("idea"));
+    enter(KeyModifiers::NONE);
+    assert_eq!(count.text().as_deref(), Some("1 of 2 matching comments"));
     if let Some(path) = std::env::var_os("EMBER_CAPTURE_DIR") {
         let dir = std::path::PathBuf::from(path);
         std::fs::create_dir_all(&dir).unwrap();
@@ -935,21 +938,17 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
         let store = Rc::new(MemoryStore::default());
         let mut state = ReaderState::default();
         state.preferences.reduced_motion = true;
+        state.preferences.theme = if name == "tablet-custom" {
+            state.preferences.accent = "#2DD4BF".to_owned();
+            state.preferences.custom_background = Some("#092F2A".to_owned());
+            ember_core::ThemeMode::Custom
+        } else if dark {
+            ember_core::ThemeMode::Dark
+        } else {
+            ember_core::ThemeMode::Light
+        };
         ready(store.put("reader:state", &state.export_json().unwrap())).unwrap();
         let (shell, window, view) = start(width, height, store, Rc::new(Cell::new(false)));
-        if dark {
-            ferroui_controls::Application::current()
-                .unwrap()
-                .set_requested_theme_variant(Some(ferroui_base::styling::ThemeVariant::dark()));
-        }
-        if name == "tablet-custom" {
-            crate::theme::apply(&ember_core::Preferences {
-                theme: ember_core::ThemeMode::Custom,
-                accent: "#2DD4BF".to_owned(),
-                custom_background: Some("#092F2A".to_owned()),
-                ..Default::default()
-            });
-        }
         if width >= 760.0 {
             click(&shell, &window, &first_story(&window));
         }
