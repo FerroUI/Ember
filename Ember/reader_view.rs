@@ -22,7 +22,7 @@ use ferroui_base::{
     Ref, StyledElementImpl, Thickness, VisualImpl, WeakRef,
 };
 use ferroui_controls::automation::{AutomationLiveSetting, AutomationProperties};
-use ferroui_controls::primitives::TemplatedControlImpl;
+use ferroui_controls::primitives::{TemplatedControlImpl, ToggleButton};
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
     Border, Button, ColumnDefinitions, ContentControl, ContentControlImpl, ContextMenu, Control,
@@ -303,6 +303,7 @@ impl ReaderView {
         for (name, icon) in [
             ("SearchButton", "search"),
             ("CompactSearch", "search"),
+            ("EditFeedSearch", "search"),
             ("ThreadRefresh", "refresh"),
             ("FindButton", "search"),
             ("FocusButton", "focus_reading"),
@@ -337,6 +338,7 @@ impl ReaderView {
         self.on("NavHidden", |v| v.select_feed(FeedRoute::Hidden));
         self.on("NavMore", |v| v.show_more());
         self.on("CompactSearch", |v| v.show_search());
+        self.on("EditFeedSearch", |v| v.show_search());
         self.on("ThemeButton", |v| v.show_settings());
         self.on("MobileSearch", |v| v.show_search());
         self.on("MobileMore", |v| v.show_more());
@@ -366,7 +368,9 @@ impl ReaderView {
             None => {}
         });
         self.on("DownloadedOnly", |v| {
-            v.set_downloaded_only(!v.downloaded_only.get())
+            v.set_downloaded_only(
+                v.get_control::<ToggleButton>("DownloadedOnly").is_checked() == Some(true),
+            );
         });
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
@@ -386,8 +390,9 @@ impl ReaderView {
             v.get_control::<Border>("StatusBar").set_is_visible(false)
         });
         self.on("UnreadButton", |v| {
-            let enabled = !v.state.borrow().preferences.hide_read;
-            v.set_unread_only(enabled);
+            v.set_unread_only(
+                v.get_control::<ToggleButton>("UnreadButton").is_checked() == Some(true),
+            );
         });
         let weak = self.to_ref().downgrade();
         self.size_changed(move |_, event| {
@@ -758,12 +763,21 @@ impl ReaderView {
         true
     }
     fn select_feed(&self, route: FeedRoute) {
+        let current_collection =
+            route == *self.feed.borrow() && !matches!(route, FeedRoute::Search(_));
+        if current_collection && *self.detail.borrow() != DetailRoute::Welcome {
+            self.back_to_feed(true);
+            return;
+        }
         if let Some(scroll) = self
             .get_control::<ListBox>("Stories")
             .scroll()
             .and_then(|s| s.cast::<ScrollViewer>())
         {
             scroll.set_offset(ferroui_base::Vector::default());
+        }
+        if current_collection && !self.stories.borrow().is_empty() {
+            return;
         }
         self.feed.replace(route);
         self.stories.borrow_mut().clear();
@@ -1142,7 +1156,10 @@ impl ReaderView {
             };
             self.empty(title, message, action);
         }
-        let downloads = self.button("DownloadedOnly");
+        self.button("EditFeedSearch")
+            .set_is_visible(matches!(*route, FeedRoute::Search(_)));
+        let downloads = self.get_control::<ToggleButton>("DownloadedOnly");
+        downloads.set_is_checked(Some(self.downloaded_only.get()));
         downloads.set_is_visible(*route == FeedRoute::Saved);
         downloads
             .classes()
@@ -1157,7 +1174,8 @@ impl ReaderView {
             &downloads,
             Some(Rc::new(filter_label.to_owned()) as BoxedValue),
         );
-        let unread = self.button("UnreadButton");
+        let unread = self.get_control::<ToggleButton>("UnreadButton");
+        unread.set_is_checked(Some(state.preferences.hide_read));
         unread.set_is_visible(filterable);
         unread.classes().set("active", state.preferences.hide_read);
         let label = if state.preferences.hide_read {

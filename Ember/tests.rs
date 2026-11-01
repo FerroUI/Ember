@@ -1008,3 +1008,6 @@ fn capture_real_control_tree_in_desktop_and_phone_themes() {
 
 #[path = "test_cases/offline_recovery.rs"]
 mod offline_recovery;
+
+#[path = "test_cases/feed_navigation.rs"]
+mod feed_navigation;

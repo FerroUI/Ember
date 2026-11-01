@@ -49,10 +49,11 @@
         <Border x:Name="FeedPane" Grid.Column="1" Background="{DynamicResource EmberCard}" BorderBrush="{DynamicResource EmberBorder}" BorderThickness="0,0,1,0">
           <Grid RowDefinitions="Auto,*,Auto">
             <StackPanel x:Name="FeedHeader" Background="{DynamicResource EmberBackground}" Spacing="1" Margin="0">
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4" Margin="14,5,6,0">
+              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="2" Margin="14,5,6,0">
                 <TextBlock x:Name="FeedTitle" Text="Front page" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                <Button x:Name="DownloadedOnly" Grid.Column="1" Classes="quiet" Content="Downloaded" FontSize="12" IsVisible="False" AutomationProperties.Name="Show downloaded discussions only" />
-                <Button x:Name="UnreadButton" Grid.Column="1" Classes="quiet" Content="Unread" FontSize="12" ToolTip.Tip="Show unread only" AutomationProperties.Name="Show unread only" />
+                <Button x:Name="EditFeedSearch" Grid.Column="1" Classes="icon-button" IsVisible="False" ToolTip.Tip="Edit this search" AutomationProperties.Name="Edit this search" />
+                <ToggleButton x:Name="DownloadedOnly" Grid.Column="2" Classes="feed-filter" Content="Downloaded" IsVisible="False" AutomationProperties.Name="Show downloaded discussions only" />
+                <ToggleButton x:Name="UnreadButton" Grid.Column="2" Classes="feed-filter" Content="Unread" ToolTip.Tip="Show unread only" AutomationProperties.Name="Show unread only" />
               </Grid>
               <TextBlock x:Name="FeedSummary" Text="Loading stories…" Classes="muted" FontSize="12" Margin="15,0,10,9" TextTrimming="CharacterEllipsis" />
               <Border Height="1" Background="{DynamicResource EmberBorder}" />
