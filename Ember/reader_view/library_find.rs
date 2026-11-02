@@ -7,6 +7,7 @@ pub(super) struct LibraryFind {
     pub(super) query: String,
     revision: u64,
     missing: usize,
+    focus_results: bool,
     browse_window: Option<BrowseWindow>,
 }
 
@@ -25,6 +26,10 @@ impl ReaderView {
         self.on("LibraryFindButton", |v| v.set_library_find_open(true));
         self.on("CloseLibraryFind", |v| v.set_library_find_open(false));
         let field = self.textbox("LibraryFind");
+        AutomationProperties::set_help_text(
+            &field,
+            Some("Press Down Arrow to move to the first match."),
+        );
         let weak = self.to_ref().downgrade();
         field.property_changed(move |event| {
             if event.property() != TextBox::text_property().as_property() {
@@ -35,6 +40,7 @@ impl ReaderView {
             };
             let revision = {
                 let mut find = view.library_find.borrow_mut();
+                find.focus_results = false;
                 find.revision = find.revision.wrapping_add(1);
                 find.revision
             };
@@ -66,6 +72,17 @@ impl ReaderView {
                 }
                 match event.key {
                     Key::Enter => view.apply_library_query(),
+                    Key::Down => {
+                        view.apply_library_query();
+                        if view.library_find.borrow().query.is_empty() {
+                            return;
+                        }
+                        if view.feed_load.get() == FeedLoad::Loading {
+                            view.library_find.borrow_mut().focus_results = true;
+                        } else {
+                            view.focus_first_library_result();
+                        }
+                    }
                     Key::Escape => view.set_library_find_open(false),
                     _ => return,
                 }
@@ -74,9 +91,47 @@ impl ReaderView {
         );
     }
 
+    fn focus_first_library_result(&self) {
+        let list = self.get_control::<ListBox>("Stories");
+        if list.items().count() == 0 {
+            return;
+        }
+        let generation = self.feed_generation.get();
+        let target = self.to_ref().downgrade();
+        Dispatcher::ui_thread().post_local(
+            move || {
+                let Some(view) = target.upgrade().filter(|view| {
+                    view.feed_generation.get() == generation
+                        && view.textbox("LibraryFind").is_focused()
+                }) else {
+                    return;
+                };
+                let list = view.get_control::<ListBox>("Stories");
+                list.scroll_into_view(0);
+                if let Some(row) = list.container_from_index(0) {
+                    if let Some(card) = row
+                        .get_visual_descendants()
+                        .find_map(|v| v.cast::<StoryCard>())
+                    {
+                        card.focus();
+                    }
+                }
+            },
+            DispatcherPriority::LOADED,
+        );
+    }
+
     pub(super) fn set_library_find_open(&self, open: bool) {
         let panel = self.get_control::<Grid>("LibraryFindBar");
         panel.set_is_visible(open);
+        AutomationProperties::set_live_setting(
+            &self.label("FeedSummary"),
+            if open {
+                AutomationLiveSetting::Polite
+            } else {
+                AutomationLiveSetting::Off
+            },
+        );
         self.button("LibraryFindButton")
             .classes()
             .set("active", open);
@@ -90,6 +145,10 @@ impl ReaderView {
     }
 
     pub(super) fn reset_library_find(&self) {
+        AutomationProperties::set_live_setting(
+            &self.label("FeedSummary"),
+            AutomationLiveSetting::Off,
+        );
         self.get_control::<Grid>("LibraryFindBar")
             .set_is_visible(false);
         self.button("LibraryFindButton")
@@ -242,6 +301,9 @@ impl ReaderView {
                 };
                 view.label("FeedSummary")
                     .set_text(Some(&format!("{count_label} · {detail}")));
+                if std::mem::take(&mut view.library_find.borrow_mut().focus_results) {
+                    view.focus_first_library_result();
+                }
             }),
         );
     }

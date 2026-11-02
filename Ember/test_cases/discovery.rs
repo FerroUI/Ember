@@ -11,6 +11,70 @@ fn action(view: &ReaderView, name: &str) -> Ref<Button> {
 }
 
 #[test]
+fn retrying_profile_activity_recovers_only_missing_cards_in_submission_order() {
+    struct PartialProfile {
+        fixture: FixtureHttp,
+        fail: Cell<bool>,
+        requests: RefCell<Vec<String>>,
+    }
+    impl HttpClient for PartialProfile {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            if url.ends_with("/user/ada.json") {
+                self.requests.borrow_mut().push("profile".into());
+                return Box::pin(async {
+                    Ok(json!({"id":"ada","submitted":[6001,6002]}).to_string())
+                });
+            }
+            for id in [6001, 6002] {
+                if url.ends_with(&format!("/item/{id}.json")) {
+                    self.requests.borrow_mut().push(id.to_string());
+                    return Box::pin(async move {
+                        if id == 6001 && self.fail.get() {
+                            Err(ReaderError::Network("Transient activity failure".into()))
+                        } else {
+                            Ok(json!({"id":id,"type":"story","by":"ada","title":format!("Submission {id}")}).to_string())
+                        }
+                    });
+                }
+            }
+            self.fixture.get(url)
+        }
+    }
+    let http = Rc::new(PartialProfile {
+        fixture: FixtureHttp {
+            offline: Rc::new(Cell::new(false)),
+        },
+        fail: Cell::new(true),
+        requests: RefCell::new(Vec::new()),
+    });
+    let (shell, window, view) =
+        start_with_http(1280.0, 800.0, Rc::new(MemoryStore::default()), http.clone());
+    view.get_control::<TextBox>("SearchBox")
+        .set_text(Some("https://news.ycombinator.com/user?id=ada"));
+    click(&shell, &window, &view.get_control::<Button>("SearchButton"));
+    let cards = || {
+        view.get_control::<ferroui_controls::ContentControl>("DetailHost")
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<crate::controls::StoryCard>())
+            .collect::<Vec<_>>()
+    };
+    let before = cards().pop().unwrap();
+    assert_eq!(before.headline().as_deref(), Some("Submission 6002"));
+    http.requests.borrow_mut().clear();
+    click_in_view(&shell, &window, &action(&view, "Retry activity"));
+    assert!(action(&view, "Retry activity").is_focused());
+    http.fail.set(false);
+    click_in_view(&shell, &window, &action(&view, "Retry activity"));
+    assert_eq!(&*http.requests.borrow(), &["6001", "6001"]);
+    let after = cards();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].headline().as_deref(), Some("Submission 6001"));
+    assert!(after[0].is_focused());
+    assert!(std::ptr::eq(&*after[1], &*before));
+    window.close();
+}
+
+#[test]
 fn opening_author_activity_uses_the_permalink_even_when_the_feed_is_a_comment_search() {
     let (shell, window, view) = start(
         1440.0,

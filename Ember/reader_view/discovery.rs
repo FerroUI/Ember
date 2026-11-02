@@ -218,7 +218,7 @@ impl ReaderView {
                     .upgrade()
                     .filter(|v| v.detail_generation.get() == generation)
                 {
-                    view.render_profile_activity(&activity, &user.id, batch);
+                    view.render_profile_activity(&activity, &user.id, ids, batch);
                 }
             }),
         );
@@ -396,16 +396,53 @@ impl ReaderView {
         }
     }
 
-    fn render_profile_activity(&self, list: &StackPanel, user: &str, batch: ember_core::ItemBatch) {
+    fn render_profile_activity(
+        &self,
+        list: &StackPanel,
+        user: &str,
+        ids: &[u64],
+        batch: ember_core::ItemBatch,
+    ) {
         list.children().clear();
+        // Reserve each submission's place in HN order. A failed item can be filled
+        // later without replacing its siblings or scrolling a reader back to the bio.
+        let slots: Vec<_> = ids
+            .iter()
+            .map(|&id| {
+                let slot = widgets::stack(0.0);
+                list.children().add(slot.clone());
+                (id, slot)
+            })
+            .collect();
+        let footer = widgets::stack(4.0);
+        list.children().add(footer.clone());
+        self.update_profile_activity(Rc::new(slots), &footer, user, batch, false);
+    }
+
+    fn update_profile_activity(
+        &self,
+        slots: Rc<Vec<(u64, Ref<StackPanel>)>>,
+        footer: &StackPanel,
+        user: &str,
+        batch: ember_core::ItemBatch,
+        restore_focus: bool,
+    ) {
+        footer.children().clear();
         let state = self.state.borrow();
         let show_dead = state.preferences.show_dead;
+        let mut first_recovered = None;
         for item in batch.items.iter().filter(|item| {
             item.by.as_deref() == Some(user)
                 && !item.deleted
                 && (!item.dead || show_dead)
                 && !state.items.get(&item.id).is_some_and(|local| local.hidden)
         }) {
+            let Some((_, slot)) = slots
+                .iter()
+                .find(|(id, slot)| *id == item.id && slot.children().is_empty())
+            else {
+                continue;
+            };
             let card = StoryCard::new();
             card.classes().add("compact");
             card.set_item(item, services::now(), show_dead);
@@ -416,21 +453,69 @@ impl ReaderView {
                     view.open_item_internal(id, true);
                 }
             });
-            list.children().add(card);
+            first_recovered.get_or_insert_with(|| card.clone().upcast::<Control>());
+            slot.children().add(card);
         }
-        if batch.warning.is_some() && !batch.missing_ids.is_empty() {
-            list.children().add(widgets::muted(
-                "Some recent submissions could not be loaded.",
-            ));
+        drop(state);
+        let focus = if batch.warning.is_some() && !batch.missing_ids.is_empty() {
+            let missing = batch.missing_ids;
+            let message = widgets::muted(if missing.len() == 1 {
+                "One recent submission could not be loaded."
+            } else {
+                "Some recent submissions could not be loaded."
+            });
+            AutomationProperties::set_live_setting(&message, AutomationLiveSetting::Polite);
+            footer.children().add(message.clone());
+            let weak_footer = footer.to_ref().downgrade();
+            let weak_label = message.downgrade();
             let author = user.to_owned();
-            list.children().add(
-                self.discovery_action("Retry activity", "refresh", move |v| {
-                    v.fetch_profile(author.clone(), FetchMode::Refresh)
-                }),
-            );
-        } else if list.children().count() == 0 {
-            list.children()
+            let generation = self.detail_generation.get();
+            let busy = Cell::new(false);
+            let retry = self.discovery_action("Retry activity", "refresh", move |view| {
+                let Some(repo) = view.repo() else { return };
+                if busy.replace(true) {
+                    return;
+                }
+                if let Some(label) = weak_label.upgrade() {
+                    label.set_text(Some("Retrying recent activity…"));
+                }
+                let target = view.to_ref().downgrade();
+                let footer = weak_footer.clone();
+                let slots = slots.clone();
+                let author = author.clone();
+                let missing = missing.clone();
+                drop(
+                    Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                        let batch = repo
+                            .load_items(&missing, services::now(), FetchMode::Refresh)
+                            .await;
+                        if let (Some(view), Some(footer)) = (
+                            target
+                                .upgrade()
+                                .filter(|v| v.detail_generation.get() == generation),
+                            footer.upgrade(),
+                        ) {
+                            let focused = footer.is_keyboard_focus_within();
+                            view.update_profile_activity(slots, &footer, &author, batch, focused);
+                        }
+                    }),
+                );
+            });
+            footer.children().add(retry.clone());
+            retry.upcast()
+        } else if let Some(card) = first_recovered {
+            card
+        } else if let Some(entry) = slots.iter().find(|(_, slot)| !slot.children().is_empty()) {
+            entry.1.children().get(0)
+        } else {
+            footer
+                .children()
                 .add(widgets::muted("No recent submissions to show."));
+            self.button("BackButton").upcast()
+        };
+        if restore_focus {
+            focus.focus();
+            focus.bring_into_view();
         }
     }
 }

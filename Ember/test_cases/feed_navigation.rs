@@ -375,6 +375,16 @@ fn library_find_scans_beyond_loaded_pages_and_restores_browsing_without_network(
             .save_ppm(&std::path::Path::new(&dir).join("phone-library-find.ppm"))
             .unwrap();
     }
+    field.focus();
+    let mut down = KeyEventArgs::new();
+    down.key = Key::Down;
+    down.set_routed_event(Some(InputElement::key_down_event()));
+    field.raise_event(&down);
+    shell.settle();
+    assert!(down.handled());
+    assert!(first_story(&window).is_focused());
+    assert!(field.is_effectively_visible());
+    field.focus();
     query("no such title");
     assert_eq!(
         view.get_control::<TextBlock>("EmptyTitle")

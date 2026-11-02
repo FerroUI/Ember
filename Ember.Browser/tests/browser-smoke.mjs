@@ -766,4 +766,47 @@ await run([
         } catch (error) { await failure(page, "phone"); throw error; }
         finally { await page.close(); }
     }],
+    ["retrying profile activity preserves readable submissions and recovers a missing row", async () => {
+        const profileFixture = initScript + `(() => {
+            const existing = fetch.bind(globalThis);
+            const requests = globalThis.activityRequests = [];
+            globalThis.fetch = async (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                if (url.hostname === "hacker-news.firebaseio.com") {
+                    const file = url.pathname.split("/").pop();
+                    if (file === "maker.json") {
+                        requests.push(file);
+                        return Response.json({id:"maker", submitted:[6001,6002]});
+                    }
+                    if (file === "6001.json" || file === "6002.json") {
+                        requests.push(file);
+                        const id = parseInt(file, 10);
+                        if (id === 6001 && !globalThis.recoverActivity) throw new TypeError("Unavailable submission");
+                        return Response.json({id, type:"story", by:"maker", title:"Submission " + id});
+                    }
+                }
+                return existing(input, options);
+            };
+        })();`;
+        const page = await open(site, {width:1280, height:900, initScript:profileFixture});
+        try {
+            await page.waitForView();
+            await byName(page, "SearchBox");
+            await page.type("https://news.ycombinator.com/user?id=maker");
+            await page.press("Enter");
+            await waitText(page, "Submission 6002");
+            await reveal(page, e => e.automationName === "Retry activity");
+            await page.evaluate("activityRequests.length = 0; globalThis.recoverActivity = true;");
+            await byAutomation(page, "Retry activity");
+            await waitText(page, "Submission 6001");
+            assert(JSON.stringify(await page.evaluate("activityRequests.slice()")) === '["6001.json"]',
+                "Activity retry refetched part of the readable profile");
+            const cards = (await state(page)).elements.filter(e => e.automationName?.startsWith("Submission 600"));
+            assert(cards.length === 2 && cards[0].y < cards[1].y, "Recovered submissions are out of order");
+            await page.press("Enter");
+            await page.waitFor('new URL(location.href).searchParams.get("item") === "6001"');
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "profile-activity-retry"); throw error; }
+        finally { await page.close(); }
+    }],
 ].filter(([name]) => !process.env.EMBER_BROWSER_CASE || name.includes(process.env.EMBER_BROWSER_CASE)));
