@@ -307,7 +307,7 @@ impl ReaderView {
                         },
                         Duration::from_millis(180),
                         DispatcherPriority::BACKGROUND,
-                    );
+                    ).detach();
                 }
             }
         });
@@ -414,7 +414,7 @@ impl ReaderView {
                 },
                 DispatcherPriority::LOADED,
             );
-        });
+        }).detach();
     }
     fn connect_platform_back(&self) {
         if self.back_handler.borrow().is_some() {
