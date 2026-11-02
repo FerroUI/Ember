@@ -49,11 +49,11 @@ impl ApplicationImpl for App {
             // scaled screen (1440 x 940 is 2880 x 1880 pixels at 200 %): the window is then
             // fitted to the work area once it has been placed.
             let weak = window.downgrade();
-            let _ = window.opened(move || {
+            window.opened(move || {
                 if let Some(window) = weak.upgrade() {
                     fit_to_work_area(&window);
                 }
-            });
+            }).detach();
             desktop.set_main_window(Some(window));
         } else if let Some(activity) = lifetime
             .as_ref()
