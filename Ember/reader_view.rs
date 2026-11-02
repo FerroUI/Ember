@@ -1282,20 +1282,53 @@ impl ReaderView {
                     }
                 }
                 let result = match route {
-                    FeedRoute::Feed(kind) => repo
-                        .load_feed(kind, offset, 30, services::now(), mode)
-                        .await
-                        .map(|page| {
-                            (
-                                page.items,
-                                page.next_offset,
-                                page.total,
-                                page.source,
-                                page.warning,
-                                page.failed_slots,
-                                BTreeMap::new(),
-                            )
-                        }),
+                    FeedRoute::Feed(kind) => {
+                        let page = repo
+                            .load_feed(kind, offset, 30, services::now(), mode)
+                            .await;
+                        match page {
+                            Ok(page)
+                                if offset == 0
+                                    && mode == FetchMode::Refresh
+                                    && !needs_preview
+                                    && page.ranking_source == DataSource::StaleCache =>
+                            {
+                                if let Some(view) = weak
+                                    .upgrade()
+                                    .filter(|view| view.feed_generation.get() == generation)
+                                {
+                                    // A fallback index cannot replace a newer live ranking. Accept
+                                    // available payload updates, preserving the cursor and later pages.
+                                    view.stories.borrow_mut().reconcile(
+                                        page.items,
+                                        page.missing_ids,
+                                        &page.failed_slots,
+                                    );
+                                    view.feed_load.set(FeedLoad::Ready);
+                                    view.button("LoadMoreButton").set_is_enabled(true);
+                                    let summary = format!("{} stories · Offline copy", page.total);
+                                    view.label("FeedSummary").set_text(Some(&summary));
+                                    view.accepted_feed_summary.replace(Some(summary));
+                                    if let Some(warning) = page.warning {
+                                        view.status(&warning);
+                                    }
+                                    view.render_stories();
+                                }
+                                return;
+                            }
+                            result => result.map(|page| {
+                                (
+                                    page.items,
+                                    page.next_offset,
+                                    page.total,
+                                    page.source,
+                                    page.warning,
+                                    page.failed_slots,
+                                    BTreeMap::new(),
+                                )
+                            }),
+                        }
+                    }
                     FeedRoute::Search(mut query) => {
                         query.page = offset;
                         repo.search(&query, services::now(), mode)
@@ -1348,21 +1381,6 @@ impl ReaderView {
                 view.button("LoadMoreButton").set_is_enabled(true);
                 match result {
                     Ok((items, next, total, source, warning, failed_slots, story_ids)) => {
-                        // A stale first-page fallback must not truncate pages the reader already has open.
-                        if offset == 0 && mode == FetchMode::Refresh && !needs_preview
-                            && matches!(*view.feed.borrow(), FeedRoute::Feed(_))
-                            && source == DataSource::StaleCache && warning.is_some()
-                            && failed_slots.is_empty()
-                            && view.stories.borrow().len() > items.len()
-                            && items.iter().zip(view.stories.borrow().iter()).all(|(item, old)| item == old.as_ref())
-                        {
-                            let summary = format!("{total} stories · Offline copy");
-                            view.label("FeedSummary").set_text(Some(&summary));
-                            view.accepted_feed_summary.replace(Some(summary));
-                            view.status(warning.as_deref().unwrap_or_default());
-                            view.render_stories();
-                            return;
-                        }
                         if offset == 0 {
                             if items.is_empty() && total > 0 && warning.is_some() {
                                 view.feed_load.set(FeedLoad::Unavailable);

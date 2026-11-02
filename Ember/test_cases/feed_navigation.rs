@@ -620,10 +620,20 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
         fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
             Box::pin(async move {
                 if self.offline.get() {
+                    if url.ends_with("/item/3.json") {
+                        return Ok(
+                            json!({"id":3,"type":"story","title":"Updated online"}).to_string()
+                        );
+                    }
                     return Err(ReaderError::Network("offline".into()));
                 }
                 if url.ends_with("/topstories.json") {
-                    return Ok(json!((1..=65).collect::<Vec<_>>()).to_string());
+                    if self.phase.get() == 3 {
+                        return Ok("[2,999]".to_owned());
+                    }
+                    let mut ranking: Vec<_> = (1..=65).collect();
+                    ranking.swap(30, 31);
+                    return Ok(json!(ranking).to_string());
                 }
                 if url.ends_with("/newstories.json") {
                     return Ok("[901]".to_owned());
@@ -637,7 +647,7 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
                     .unwrap();
                 self.requested.borrow_mut().push(id);
                 match (self.phase.get(), id) {
-                    (0, 31 | 32 | 38) | (1, 31) => Err(ReaderError::Network("temporarily down".into())),
+                    (0, 31 | 32 | 37 | 38) | (1, 31 | 32) | (3, 2) => Err(ReaderError::Network("temporarily down".into())),
                     (_, 38) => Ok("null".to_owned()),
                     _ => Ok(json!({"id":id,"type":"story","by":"reader","title":format!("Article {id}")}).to_string()),
                 }
@@ -646,19 +656,19 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     }
 
     let http = Rc::new(InterruptedFeed::default());
-    let (shell, window, view) =
-        start_with_http(390.0, 844.0, Rc::new(MemoryStore::default()), http.clone());
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start_with_http(390.0, 844.0, store.clone(), http.clone());
     let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
     let list = view.get_control::<ListBox>("Stories");
     let retry = view.get_control::<Button>("RetryFeedItems");
     tap("LoadMoreButton");
-    assert_eq!(list.items().count(), 57);
+    assert_eq!(list.items().count(), 56);
     assert_eq!(
         AutomationProperties::get_name(&retry).as_deref(),
-        Some("Retry 3 unavailable stories")
+        Some("Retry 4 unavailable stories")
     );
     tap("LoadMoreButton");
-    assert_eq!(list.items().count(), 62);
+    assert_eq!(list.items().count(), 61);
     assert!(!view
         .get_control::<Button>("LoadMoreButton")
         .is_effectively_visible());
@@ -671,29 +681,64 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     shell.settle();
     let before = scroll.offset().y;
     assert!(before > 500.0);
+    // Pruning can evict a payload which is still visible in memory, and another
+    // visit can update a cached title without changing the saved feed ranking.
+    ready(store.remove("cache:item:1")).unwrap();
+    let changed = json!({"fetched_at": crate::services::now(), "value": {"id":2, "type":"story", "by":"reader", "title":"Revised title"}});
+    ready(store.put("cache:item:2", &changed.to_string())).unwrap();
     http.offline.set(true);
     tap("RefreshButton");
     assert_eq!(
         list.items().count(),
-        62,
+        61,
         "a first-page offline fallback must not discard subsequent pages"
     );
     assert!((scroll.offset().y - before).abs() < 2.0);
+    assert_eq!(
+        list.items()
+            .get_at(0)
+            .unwrap()
+            .downcast_ref::<ember_core::HnItem>()
+            .unwrap()
+            .id,
+        1
+    );
+    assert_eq!(
+        list.items()
+            .get_at(1)
+            .unwrap()
+            .downcast_ref::<ember_core::HnItem>()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Revised title")
+    );
+    assert_eq!(
+        list.items()
+            .get_at(2)
+            .unwrap()
+            .downcast_ref::<ember_core::HnItem>()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Updated online")
+    );
     http.offline.set(false);
     http.phase.set(1);
     http.requested.borrow_mut().clear();
     tap("RetryFeedItems");
-    assert_eq!(http.requested.borrow().as_slice(), [31, 32, 38]);
-    assert_eq!(list.items().count(), 63);
+    assert_eq!(http.requested.borrow().as_slice(), [32, 31, 37, 38]);
+    assert_eq!(list.items().count(), 62);
     assert_eq!(
         AutomationProperties::get_name(&retry).as_deref(),
-        Some("Retry 1 unavailable story")
+        Some("Retry 2 unavailable stories")
     );
 
+    retry.focus();
     http.phase.set(2);
     http.requested.borrow_mut().clear();
     tap("RetryFeedItems");
-    assert_eq!(http.requested.borrow().as_slice(), [31]);
+    assert_eq!(http.requested.borrow().as_slice(), [32, 31]);
     assert!(!retry.is_effectively_visible());
     let ids: Vec<_> = (0..list.items().count())
         .map(|i| {
@@ -705,6 +750,37 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
                 .id
         })
         .collect();
-    assert_eq!(ids, (1..=65).filter(|&id| id != 38).collect::<Vec<_>>());
+    let mut expected: Vec<_> = (1..=65).filter(|&id| id != 38).collect();
+    expected.swap(30, 31);
+    assert_eq!(ids, expected);
+    let focused = list
+        .get_visual_descendants()
+        .filter_map(|row| row.cast::<crate::controls::StoryCard>())
+        .find(|card| card.is_focused())
+        .expect("focused recovered story");
+    assert_eq!(focused.headline().as_deref(), Some("Article 32"));
+
+    // A genuinely new ranking still applies even if one item needs a cache fallback.
+    http.phase.set(3);
+    tap("RefreshButton");
+    assert_eq!(list.items().count(), 2);
+    assert_eq!(
+        list.items()
+            .get_at(0)
+            .unwrap()
+            .downcast_ref::<ember_core::HnItem>()
+            .unwrap()
+            .id,
+        2
+    );
+    assert_eq!(
+        list.items()
+            .get_at(1)
+            .unwrap()
+            .downcast_ref::<ember_core::HnItem>()
+            .unwrap()
+            .id,
+        999
+    );
     window.close();
 }

@@ -50,9 +50,16 @@ impl FeedRows {
     }
 
     pub(super) fn missing_ids(&self) -> Vec<u64> {
-        self.recovery
-            .as_ref()
-            .map_or_else(Vec::new, |r| r.missing.iter().copied().collect())
+        let Some(recovery) = &self.recovery else {
+            return Vec::new();
+        };
+        let mut missing = recovery.missing.clone();
+        recovery
+            .order
+            .iter()
+            .copied()
+            .filter(|id| missing.remove(id))
+            .collect()
     }
 
     pub(super) fn accept_page(
@@ -92,27 +99,48 @@ impl FeedRows {
         self.recovery = recovery.filter(|r| !r.missing.is_empty());
     }
 
-    pub(super) fn recover(&mut self, batch: ember_core::ItemBatch) -> usize {
-        let Some(mut recovery) = self.recovery.take() else {
-            return 0;
-        };
-        let count = batch.items.len();
-        // Successful null responses are final. Only actual transport/storage errors remain retryable.
-        recovery.missing = batch.failed_slots.into_iter().map(|(_, id)| id).collect();
-        if count != 0 {
-            let mut known: BTreeMap<_, _> =
-                self.ordered.drain(..).map(|item| (item.id, item)).collect();
-            known.extend(batch.items.into_iter().map(|item| (item.id, Rc::new(item))));
-            self.positions.clear();
-            for id in &recovery.order {
-                if let Some(item) = known.remove(id) {
-                    self.positions.insert(*id, self.ordered.len());
-                    self.ordered.push(item);
+    /// Refresh payloads by ID against the rank we already accepted. A transport
+    /// failure leaves a readable row intact; a confirmed null retires the row.
+    pub(super) fn reconcile(
+        &mut self,
+        items: Vec<HnItem>,
+        missing: Vec<u64>,
+        failed: &[(usize, u64)],
+    ) -> usize {
+        let mut recovery = self.recovery.take().unwrap_or_else(|| PageRecovery {
+            order: self.iter().map(|item| item.id).collect(),
+            missing: BTreeSet::new(),
+        });
+        let mut available: BTreeMap<_, _> =
+            self.ordered.drain(..).map(|item| (item.id, item)).collect();
+        let mut added = 0;
+        for item in items {
+            let was_missing = recovery.missing.remove(&item.id);
+            if let Some(row) = available.get_mut(&item.id) {
+                if **row != item {
+                    *row = Rc::new(item);
                 }
+            } else if was_missing {
+                available.insert(item.id, Rc::new(item));
+                added += 1;
+            }
+        }
+        let failed: BTreeSet<_> = failed.iter().map(|&(_, id)| id).collect();
+        for id in missing {
+            if !failed.contains(&id) {
+                available.remove(&id);
+                recovery.missing.remove(&id);
+            }
+        }
+        self.positions.clear();
+        for id in &recovery.order {
+            if let Some(item) = available.remove(id) {
+                self.positions.insert(*id, self.ordered.len());
+                self.ordered.push(item);
             }
         }
         self.recovery = (!recovery.missing.is_empty()).then_some(recovery);
-        count
+        added
     }
 
     pub(super) fn accept(&mut self, items: Vec<HnItem>, replace: bool) {
@@ -173,8 +201,22 @@ impl ReaderView {
                     return;
                 };
                 let focus = view.button("RetryFeedItems").is_focused();
-                let first = batch.items.first().map(|item| item.id);
-                let recovered = view.stories.borrow_mut().recover(batch);
+                let first = if focus {
+                    let state = view.state.borrow();
+                    let route = view.feed.borrow();
+                    batch
+                        .items
+                        .iter()
+                        .find(|item| route.includes(item, &state, view.downloaded_only.get()))
+                        .map(|item| item.id)
+                } else {
+                    None
+                };
+                let recovered = view.stories.borrow_mut().reconcile(
+                    batch.items,
+                    batch.missing_ids,
+                    &batch.failed_slots,
+                );
                 let missing = view.stories.borrow().missing_count();
                 view.feed_load
                     .set(if missing != 0 && view.stories.borrow().is_empty() {

@@ -239,6 +239,9 @@ pub struct FeedPage {
     /// An explicit null response is unavailable, but does not require another request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_slots: Vec<(usize, ItemId)>,
+    /// The ranked ID list can fall back to cache while individual stories load online.
+    #[serde(default)]
+    pub ranking_source: DataSource,
     pub source: DataSource,
     pub stale: bool,
     pub warning: Option<String>,
@@ -629,6 +632,7 @@ impl Repository {
             next_offset: (end < ids.value.len()).then_some(end),
             missing_ids: batch.missing_ids,
             failed_slots: batch.failed_slots,
+            ranking_source: ids.source,
             source,
             stale: ids.stale || batch.stale,
             warning: batch.warning.or(ids.warning),
