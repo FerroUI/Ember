@@ -18,6 +18,22 @@ use std::rc::Rc;
 /// The longest text of a search field.
 const FIELD_LENGTH: i32 = 2048;
 
+pub(super) fn validate_terms(terms: &str) -> Result<(), String> {
+    if terms.len() > FIELD_LENGTH as usize {
+        Err("Search terms exceed the 2,048-byte limit.".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn search_action(value: &str) -> (&'static str, &'static str) {
+    match HnDestination::from_link(value) {
+        Some(HnDestination::Discussion(_)) => ("Open discussion", "chat"),
+        Some(HnDestination::Profile(_)) => ("Open profile link", "person"),
+        None => ("Search", "search"),
+    }
+}
+
 fn field(parent: &StackPanel, label: &str, value: &str, placeholder: &str) -> Ref<TextBox> {
     crate::widgets::field(parent, label, value, placeholder, FIELD_LENGTH, false)
 }
@@ -205,11 +221,7 @@ pub(super) fn build(
         let Some(button) = trigger.upgrade() else {
             return;
         };
-        let label = match HnDestination::from_link(value.as_deref().unwrap_or_default()) {
-            Some(HnDestination::Discussion(_)) => "Open discussion",
-            Some(HnDestination::Profile(_)) => "Open profile link",
-            None => "Search",
-        };
+        let (label, _) = search_action(value.as_deref().unwrap_or_default());
         button.set_content(Some(Rc::new(label.to_owned())));
         AutomationProperties::set_name(&button, Some(label));
     };
@@ -322,14 +334,7 @@ pub(super) fn build(
             open_link(destination);
             return;
         }
-        check.check(
-            &words,
-            if q.query.len() <= FIELD_LENGTH as usize {
-                Ok(())
-            } else {
-                Err("Search terms exceed the 2,048-byte limit.".into())
-            },
-        );
+        check.check(&words, validate_terms(&q.query));
         q.kind = match kind.selected_index() {
             1 => SearchKind::Comments,
             2 => SearchKind::All,
@@ -510,7 +515,7 @@ pub(super) fn build(
         "Username, @name, or profile link",
     );
 
-    if profile_lookup.is_some() && draft.is_none() {
+    if profile_lookup.is_some() {
         focus_on_load(&username, true);
     }
     let message = text("", 13.0, false);
@@ -520,6 +525,7 @@ pub(super) fn build(
     let open = button("Open profile");
     people.children().add(open.clone());
     fields.push(username.clone());
+    let profile_editor = username.clone();
     let [kind, sort, period] = choices;
 
     bind_submit(
@@ -546,7 +552,11 @@ pub(super) fn build(
         .add(text("Search powered by Algolia", 12.0, true));
     let scroll = ScrollViewer::new();
     scroll.set_content(Some(Control::boxed(root)));
-    let sections = [Some(filters_toggle), recent_toggle, Some(people_toggle)];
+    let sections = [
+        Some(filters_toggle),
+        recent_toggle,
+        Some(people_toggle.clone()),
+    ];
     let focus_targets: Vec<_> = fields
         .iter()
         .map(|field| field.clone().upcast::<Control>())
@@ -575,20 +585,26 @@ pub(super) fn build(
                 section.set_is_expanded(expanded);
             }
         }
-        let target = draft
-            .focus
-            .and_then(|index| focus_targets.get(index))
-            .unwrap_or(&focus_targets[0])
-            .downgrade();
-        let viewer = scroll.downgrade();
-        scroll.loaded(move |_, _| {
-            if let Some(target) = target.upgrade().filter(|c| c.is_effectively_visible()) {
-                target.focus();
-            }
-            if let Some(viewer) = viewer.upgrade() {
-                viewer.set_offset(draft.offset);
-            }
-        });
+        if let Some(failed_name) = profile_lookup {
+            // Keep the source form's edits, but reveal the field being corrected.
+            people_toggle.set_is_expanded(true);
+            profile_editor.set_text(Some(failed_name));
+        } else {
+            let target = draft
+                .focus
+                .and_then(|index| focus_targets.get(index))
+                .unwrap_or(&focus_targets[0])
+                .downgrade();
+            let viewer = scroll.downgrade();
+            scroll.loaded(move |_, _| {
+                if let Some(target) = target.upgrade().filter(|c| c.is_effectively_visible()) {
+                    target.focus();
+                }
+                if let Some(viewer) = viewer.upgrade() {
+                    viewer.set_offset(draft.offset);
+                }
+            });
+        }
     }
     let control = scroll.clone().upcast();
     Form {

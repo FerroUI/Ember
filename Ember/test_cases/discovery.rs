@@ -119,6 +119,48 @@ fn opening_author_activity_uses_the_permalink_even_when_the_feed_is_a_comment_se
 }
 
 #[test]
+fn masthead_validates_utf8_budget_in_place_and_identifies_permalinks() {
+    let store = Rc::new(MemoryStore::default());
+    let (shell, window, view) = start(1280.0, 800.0, store.clone(), Rc::new(Cell::new(false)));
+    let field = view.get_control::<TextBox>("SearchBox");
+    let submit = view.get_control::<Button>("SearchButton");
+    let error = view.get_control::<TextBlock>("QuickSearchError");
+    field.set_text(Some(&"界".repeat(683)));
+    click_in_view(&shell, &window, &submit);
+    assert!(error.is_effectively_visible());
+    assert!(ferroui_controls::DataValidationErrors::get_has_errors(
+        &field
+    ));
+    assert!(field.is_focused());
+    assert_eq!(title(&view), "Front page");
+    field.set_text(Some("https://news.ycombinator.com/user?id=ada"));
+    assert!(!error.is_visible());
+    assert!(!ferroui_controls::DataValidationErrors::get_has_errors(
+        &field
+    ));
+    assert_eq!(
+        AutomationProperties::get_name(&submit).as_deref(),
+        Some("Open profile link")
+    );
+    field.set_text(Some("https://news.ycombinator.com/item?id=1001"));
+    assert_eq!(
+        AutomationProperties::get_name(&submit).as_deref(),
+        Some("Open discussion")
+    );
+    field.set_text(Some("systems"));
+    assert_eq!(
+        AutomationProperties::get_name(&submit).as_deref(),
+        Some("Search")
+    );
+    click_in_view(&shell, &window, &submit);
+    assert_eq!(title(&view), "Search results");
+    let state =
+        ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert_eq!(state.recent_searches, ["systems"]);
+    window.close();
+}
+
+#[test]
 fn missing_profile_can_reopen_and_correct_the_username_on_a_phone() {
     let (shell, window, view) = start(
         390.0,
@@ -127,6 +169,14 @@ fn missing_profile_can_reopen_and_correct_the_username_on_a_phone() {
         Rc::new(Cell::new(false)),
     );
     click(&shell, &window, &view.get_control::<Button>("MobileSearch"));
+    let terms = || {
+        view.get_control::<ferroui_controls::ContentControl>("DetailHost")
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<TextBox>())
+            .find(|c| c.name().as_deref() == Some("SearchTerms"))
+            .unwrap()
+    };
+    terms().set_text(Some("unfinished search"));
     let expander = view
         .get_visual_descendants()
         .filter_map(|v| v.cast::<ferroui_controls::Expander>())
@@ -143,7 +193,9 @@ fn missing_profile_can_reopen_and_correct_the_username_on_a_phone() {
     editor().set_text(Some("missing"));
     click_in_view(&shell, &window, &action(&view, "Open profile"));
     click_in_view(&shell, &window, &action(&view, "Edit username"));
-    assert_eq!(editor().text().as_deref(), Some("missing"));
+    assert_eq!(terms().text().as_deref(), Some("unfinished search"));
+    assert_eq!(editor().selected_text(), "missing");
+    assert!(editor().is_focused());
     editor().set_text(Some("ada"));
     click_in_view(&shell, &window, &action(&view, "Open profile"));
     assert_eq!(
@@ -153,6 +205,14 @@ fn missing_profile_can_reopen_and_correct_the_username_on_a_phone() {
         Some("ada")
     );
     assert!(action(&view, "All stories").is_effectively_visible());
+    let back = view.get_control::<Button>("BackButton");
+    click_in_view(&shell, &window, &back);
+    assert_eq!(terms().text().as_deref(), Some("unfinished search"));
+    assert_eq!(editor().text().as_deref(), Some("ada"));
+    click_in_view(&shell, &window, &back);
+    assert!(view
+        .get_control::<ferroui_controls::Border>("FeedPane")
+        .is_effectively_visible());
     window.close();
 }
 

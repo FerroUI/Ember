@@ -859,6 +859,61 @@ await run([
         } catch (error) { await failure(page, "phone"); throw error; }
         finally { await page.close(); }
     }],
+    ["search corrections retain the current feed and restore the source draft", async () => {
+        const missingUser = initScript + `(() => {
+            const get = fetch.bind(globalThis);
+            globalThis.fetch = (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                return url.hostname === "hacker-news.firebaseio.com" && url.pathname === "/v0/user/noone.json"
+                    ? Promise.resolve(Response.json(null)) : get(input, options);
+            };
+        })();`;
+        const page = await open(site, { width: 1280, height: 800, initScript: missingUser });
+        try {
+            await page.waitForView();
+            await waitText(page, title);
+            await byName(page, "SearchBox");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            await page.evaluate("navigator.clipboard.writeText('界'.repeat(683))");
+            await page.press("v", ["ctrl"]);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SearchBox' && e.text?.length === 683)");
+            await page.press("Enter");
+            await waitText(page, "Search terms exceed the 2,048-byte limit.");
+            assert((await state(page)).elements.some(e => e.name === "FeedTitle" && e.text === "Front page"),
+                "Invalid input replaced the feed");
+            await page.screenshot(path.join(captures, "desktop-search-validation.png"));
+            await page.press("a", ["ctrl"]);
+            await page.type("systems");
+            await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'QuickSearchError')");
+            await page.resize(390, 844);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'MobileSearch' && e.hit)");
+            await byName(page, "MobileSearch");
+            await byName(page, "SearchTerms");
+            await page.press("a", ["ctrl"]);
+            await page.type("systems draft");
+            await reveal(page, e => e.text === "Find a person");
+            await byText(page, "Find a person");
+            await reveal(page, e => e.automationName === "Hacker News username");
+            await byAutomation(page, "Hacker News username");
+            await page.type("@noone");
+            await page.press("Enter");
+            await waitText(page, "Profile unavailable");
+            await byAutomation(page, "Edit username");
+            await page.screenshot(path.join(captures, "phone-profile-correction.png"));
+            // The failed username is selected, so ordinary typing corrects it.
+            await page.type("maker");
+            await page.press("Enter");
+            await waitText(page, "Recent activity");
+            await byName(page, "BackButton");
+            await reveal(page, e => e.name === "SearchTerms", -1);
+            await waitText(page, "systems draft");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "search-corrections"); throw error; }
+        finally { await page.close(); }
+    }],
     ["retrying profile activity preserves readable submissions and recovers a missing row", async () => {
         const profileFixture = initScript + `(() => {
             const existing = fetch.bind(globalThis);

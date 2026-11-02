@@ -540,21 +540,7 @@ impl ReaderView {
                 DispatcherPriority::LOADED,
             );
         });
-        let weak = self.to_ref().downgrade();
-        self.textbox("SearchBox").add_handler(
-            InputElement::key_down_event(),
-            move |_, e: &KeyEventArgs| {
-                if e.key == Key::Enter && e.key_modifiers == KeyModifiers::NONE {
-                    if let Some(v) = weak
-                        .upgrade()
-                        .filter(|v| !v.textbox("SearchBox").is_composing_text())
-                    {
-                        v.submit_quick_search();
-                        e.set_handled(true);
-                    }
-                }
-            },
-        );
+        self.wire_quick_search();
         let weak = self.to_ref().downgrade();
         let find_field = self.textbox("ThreadFind");
         let find_help = "Enter for the next match, Shift+Enter for the previous match, Ctrl or Command+Enter to read the match in context.";
@@ -2275,7 +2261,7 @@ impl ReaderView {
                 self.open_url(&url);
             }
             ThreadAction::Profile(user) => self.show_profile(user),
-            ThreadAction::SearchDiscussion(id) => self.open_search_form(None, Some(id)),
+            ThreadAction::SearchDiscussion(id) => self.open_search_form(Some(id)),
             ThreadAction::ShowNewReplies(enabled) => {
                 if enabled {
                     let origin = self
@@ -2895,13 +2881,62 @@ impl ReaderView {
             }
         });
     }
+    fn wire_quick_search(&self) {
+        let error = self.label("QuickSearchError");
+        AutomationProperties::set_live_setting(&error, AutomationLiveSetting::Polite);
+        let field = self.textbox("SearchBox");
+        let input = field.downgrade();
+        let button = self.button("SearchButton");
+        field.property_changed(move |event| {
+            if event.property() != TextBox::text_property().as_property() {
+                return;
+            }
+            let Some(field) = input.upgrade() else { return };
+            let query = field.text().unwrap_or_default();
+            let (label, icon) = crate::search_panel::search_action(&query);
+            if AutomationProperties::get_name(&button).as_deref() != Some(label) {
+                button.set_content(Some(Control::boxed(crate::icons::icon(icon))));
+                AutomationProperties::set_name(&button, Some(label));
+                ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
+            }
+            if error.is_visible()
+                && (crate::search_panel::validate_terms(query.trim()).is_ok()
+                    || ember_core::HnDestination::from_link(&query).is_some())
+            {
+                widgets::FormValidation::default().check(&field, Ok(()));
+                error.set_is_visible(false);
+            }
+        });
+        let weak = self.to_ref().downgrade();
+        self.textbox("SearchBox").add_handler(
+            InputElement::key_down_event(),
+            move |_, e: &KeyEventArgs| {
+                if e.key == Key::Enter && e.key_modifiers == KeyModifiers::NONE {
+                    if let Some(v) = weak
+                        .upgrade()
+                        .filter(|v| !v.textbox("SearchBox").is_composing_text())
+                    {
+                        v.submit_quick_search();
+                        e.set_handled(true);
+                    }
+                }
+            },
+        );
+    }
+
     fn submit_quick_search(&self) {
-        let query = self.textbox("SearchBox").text().unwrap_or_default();
+        let field = self.textbox("SearchBox");
+        let query = field.text().unwrap_or_default();
         if let Some(link) = ember_core::HnDestination::from_link(&query) {
             self.open_hn_destination(link);
         } else if query.trim().is_empty() {
             self.show_search();
         } else {
+            let mut check = widgets::FormValidation::default();
+            check.check(&field, crate::search_panel::validate_terms(query.trim()));
+            if !check.finish(&self.label("QuickSearchError")) {
+                return;
+            }
             self.run_search(SearchQuery {
                 query,
                 ..Default::default()
@@ -2921,23 +2956,31 @@ impl ReaderView {
         }
     }
     fn show_search(&self) {
-        self.open_search_form(None, None);
+        self.open_search_form(None);
     }
     fn show_profile_lookup(&self, name: &str) {
-        self.open_search_form(Some(name), None);
+        // Correct the failed lookup in place. If Search opened it, restore that
+        // draft without leaving the unavailable profile on the Back stack.
+        let draft = self
+            .history
+            .borrow_mut()
+            .pop_if(|entry| matches!(entry, HistoryEntry::Search(_)));
+        let draft = match draft {
+            Some(HistoryEntry::Search(draft)) => Some(*draft),
+            _ => None,
+        };
+        self.detail.replace(DetailRoute::Welcome);
+        self.present_search_form(Some(name), None, draft);
     }
-    fn open_search_form(&self, profile_lookup: Option<&str>, discussion: Option<u64>) {
-        if profile_lookup.is_none()
-            && discussion.is_none()
-            && *self.detail.borrow() == DetailRoute::Search
-        {
+    fn open_search_form(&self, discussion: Option<u64>) {
+        if discussion.is_none() && *self.detail.borrow() == DetailRoute::Search {
             if let Some(form) = self.search_form.borrow().as_ref() {
                 form.terms.focus();
                 form.terms.bring_into_view();
                 return;
             }
         }
-        self.present_search_form(profile_lookup, discussion, None);
+        self.present_search_form(None, discussion, None);
     }
     fn present_search_form(
         &self,
