@@ -256,6 +256,19 @@ await run([
             assert(await page.evaluate("history.length") === detachedLength, "Returning to the feed duplicated a browser entry");
             assert(page.errors.length === 0, page.errors.join("\n"));
         } finally { await page.close(); }
+        const direct = await open(site, { width: 390, height: 844, query: "?id=101&RenderThread=false#note", initScript });
+        try {
+            await direct.waitForView();
+            await waitText(direct, title);
+            const length = await direct.evaluate("history.length");
+            await byName(direct, "BackButton");
+            await direct.waitFor("!new URL(location.href).searchParams.has('id')");
+            await waitText(direct, "Front page");
+            assert(await direct.evaluate("history.length") === length, "Leaving an initial permalink pushed another entry");
+            assert(await direct.evaluate("location.hash === '#note' && new URL(location.href).searchParams.get('RenderThread') === 'false'"),
+                "Leaving a permalink discarded unrelated address state");
+            assert(direct.errors.length === 0, direct.errors.join("\n"));
+        } finally { await direct.close(); }
     }],
     ["primary navigation follows the layout and the selected discussion keeps Find", async () => {
         const page = await open(site, { width: 390, height: 844, initScript });
@@ -322,6 +335,15 @@ await run([
             assert(!(await state(page)).elements.some(e => e.name === "LoadMoreButton" && e.hit),
                 "There is no page beyond this failed final page");
             await page.screenshot(path.join(captures, "phone-feed-recovery.png"));
+            for (const [width, height] of [[320, 568], [700, 360]]) {
+                await page.resize(width, height);
+                await page.waitFor(`JSON.parse(ember.emberState()).width === ${width}`);
+                const retry = (await state(page)).elements.find(e => e.name === "RetryFeedItems" && e.hit);
+                assert(retry && retry.x >= 0 && retry.y >= 0 && retry.x + retry.width <= width + 1 &&
+                    retry.y + retry.height <= height + 1 && retry.height >= 44, "Retry target is clipped or undersized");
+            }
+            await page.resize(390, 844);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 390");
             await page.evaluate("globalThis.feedOnline = true");
             await byName(page, "RetryFeedItems");
             await waitText(page, "Unread · 33");
