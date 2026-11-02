@@ -39,7 +39,7 @@ const initScript = `(() => {
             value = { hits: [hit], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
         } else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
         else if (/\\/item\\//.test(url.pathname)) value = items[Number(url.pathname.split("/").pop().replace(".json", ""))] ?? null;
-        else if (/\\/user\\//.test(url.pathname)) value = { id: "maker", karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
+        else if (/\\/user\\//.test(url.pathname)) value = { id: decodeURIComponent(url.pathname.split("/").pop().slice(0, -5)), karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
         return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
     };
 })();`;
@@ -383,6 +383,19 @@ await run([
                 await page.evaluate("location.hash = 'id=0101'");
                 await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton' && e.hit)");
                 await byName(page, "FindButton");
+                await page.type("DESIGN NOTES");
+                await waitText(page, "1 of 2 matching comments");
+                await page.press("Enter");
+                await waitText(page, "2 of 2 matching comments");
+                await reveal(page, e => e.automationName === "View engineer’s profile");
+                await byAutomation(page, "View engineer’s profile");
+                await waitText(page, "Recent activity");
+                await byName(page, "BackButton");
+                await waitText(page, "2 of 2 matching comments");
+                assert((await state(page)).elements.find(e => e.name === "ThreadFind")?.text === "DESIGN NOTES",
+                    "Back replaced or normalized the user's Find text");
+                await byName(page, "ThreadFind");
+                await page.press("a", ["ctrl"]);
                 await page.type("tiny core");
                 await waitText(page, "1 matching comment");
                 // Browsers may deliver both events when traversing a hash URL.
@@ -673,6 +686,12 @@ await run([
             await page.press("Enter");
             await waitText(page, "Comment link copied.");
             assert(await page.evaluate("navigator.clipboard.readText()") === "https://news.ycombinator.com/item?id=204", "The copy action used the wrong comment");
+            await reveal(page, e => e.automationName === "View visitor’s profile");
+            await byAutomation(page, "View visitor’s profile");
+            await waitText(page, "Recent activity");
+            await byName(page, "BackButton");
+            await waitText(page, "1 new reply");
+            await waitText(page, "Earlier reply");
             await byName(page, "NewReplyFilter");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Expand comment and 2 replies')");
             assert(!(await state(page)).elements.some(e => e.automationName === "View visitor’s profile"),

@@ -213,7 +213,7 @@ impl From<&ThreadSnapshot> for ThreadContext {
 /// Retain only the current thread's local state in the virtualized template.
 struct ReadingContext {
     hidden: bool,
-    seen: BTreeSet<u64>,
+    seen: Rc<BTreeSet<u64>>,
     new_count: Option<usize>,
     show_dead: bool,
     typography: RenderOptions,
@@ -231,6 +231,7 @@ impl PartialEq for ConversationRow {
 pub(crate) fn build_discussion(
     discussion: Rc<Discussion>,
     state: &ReaderState,
+    seen: Rc<BTreeSet<u64>>,
     query: &str,
     sort: ThreadSort,
     new_only: bool,
@@ -247,7 +248,6 @@ pub(crate) fn build_discussion(
         ..Default::default()
     };
     let mut matched_documents = BTreeMap::new();
-    let seen = local.map(|s| s.seen_comments.clone()).unwrap_or_default();
     // Find always searches the whole loaded discussion and restores the selected scope on close.
     let new_only = new_only && !seen.is_empty() && query.is_empty();
     let comments = if new_only {
@@ -1831,6 +1831,13 @@ mod tests {
         build_discussion(
             Rc::new(Discussion::new(snapshot.clone())),
             state,
+            Rc::new(
+                state
+                    .items
+                    .get(&snapshot.root.id)
+                    .map(|s| s.seen_comments.clone())
+                    .unwrap_or_default(),
+            ),
             query,
             sort,
             new_only,
@@ -1870,6 +1877,7 @@ mod tests {
             let control = build_discussion(
                 discussion.clone(),
                 &state,
+                Rc::default(),
                 query,
                 ThreadSort::Ranked,
                 false,
@@ -1957,6 +1965,7 @@ mod tests {
             let control = build_discussion(
                 discussion.clone(),
                 &state,
+                Rc::default(),
                 query,
                 ThreadSort::Ranked,
                 false,
@@ -2001,7 +2010,7 @@ mod tests {
         let reading = ReadingContext {
             hidden: true,
             show_dead: false,
-            seen: BTreeSet::new(),
+            seen: Rc::default(),
             new_count: None,
             typography: RenderOptions::default(),
             find_foreground: None,
@@ -2086,7 +2095,7 @@ mod tests {
             let reading = ReadingContext {
                 hidden: false,
                 show_dead,
-                seen: BTreeSet::new(),
+                seen: Rc::default(),
                 new_count: None,
                 typography: RenderOptions::default(),
                 find_foreground: None,
@@ -2147,7 +2156,7 @@ mod tests {
         });
         let reading = ReadingContext {
             hidden: false,
-            seen: BTreeSet::new(),
+            seen: Rc::default(),
             new_count: None,
             show_dead: false,
             typography: RenderOptions::default(),
@@ -2248,7 +2257,7 @@ mod tests {
         };
         let reading = ReadingContext {
             hidden: false,
-            seen: BTreeSet::new(),
+            seen: Rc::default(),
             new_count: None,
             show_dead: false,
             typography: RenderOptions::default(),
@@ -2494,7 +2503,7 @@ mod tests {
                 &root,
                 &ReadingContext {
                     hidden: false,
-                    seen: BTreeSet::new(),
+                    seen: Rc::default(),
                     new_count: None,
                     show_dead: false,
                     typography: render_options(&state),

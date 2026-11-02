@@ -36,7 +36,7 @@ use ferroui_controls::{
     TextBox, ToolTip, TopLevel, UserControl,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -86,13 +86,69 @@ enum DetailRoute {
 }
 
 const INITIAL_THREAD_BUDGET: usize = 120;
+const MAX_BROWSER_VISITS: usize = 24;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ThreadVisit {
     root: u64,
     source_row: u64,
     pending_comment: Option<u64>,
     budget: usize,
+    browser_entry: Option<u64>,
+    presentation: Option<Rc<ThreadPresentation>>,
+}
+
+impl ThreadVisit {
+    fn new(root: u64, source_row: u64, browser_entry: Option<u64>) -> Self {
+        Self {
+            root,
+            source_row,
+            pending_comment: (source_row != root).then_some(source_row),
+            budget: INITIAL_THREAD_BUDGET,
+            browser_entry,
+            presentation: None,
+        }
+    }
+}
+
+struct ThreadPresentation {
+    position: Option<ReadingPosition>,
+    seen: Rc<BTreeSet<u64>>,
+    find: Option<FindVisit>,
+    new_replies_origin: Option<ReadingPosition>,
+    sort: ThreadSort,
+    focus_reading: bool,
+}
+
+struct FindVisit {
+    text: String,
+    match_id: Option<u64>,
+    origin: Option<ReadingPosition>,
+}
+
+/// Entries popped from the app stack can still be visited via browser Forward.
+#[derive(Default)]
+struct BrowserVisits(VecDeque<ThreadVisit>);
+
+impl BrowserVisits {
+    fn remember(&mut self, visit: &ThreadVisit) {
+        let Some(entry) = visit.browser_entry else {
+            return;
+        };
+        self.0.retain(|old| old.browser_entry != Some(entry));
+        self.0.push_back(visit.clone());
+        if self.0.len() > MAX_BROWSER_VISITS {
+            self.0.pop_front();
+        }
+    }
+
+    fn get(&self, entry: u64, root: u64) -> Option<ThreadVisit> {
+        self.0
+            .iter()
+            .rev()
+            .find(|visit| visit.browser_entry == Some(entry) && visit.root == root)
+            .cloned()
+    }
 }
 
 enum HistoryEntry {
@@ -168,38 +224,83 @@ enum WorkspaceLayout {
 }
 
 ferroui_base::ferro_thread_local! {
+    static INITIAL_BROWSER_ENTRY: Cell<Option<u64>> = Cell::new(None);
     static ACTIVE: RefCell<Option<WeakRef<ReaderView>>> = RefCell::new(None);
     static LOCATION_CHANGED: RefCell<Option<Rc<dyn Fn(Option<u64>)>>> = RefCell::new(None);
 }
 pub fn set_location_changed(callback: Rc<dyn Fn(Option<u64>)>) {
     LOCATION_CHANGED.with(|v| *v.borrow_mut() = Some(callback));
 }
+/// Associate the already displayed reader with the host's committed history slot.
+pub fn set_browser_entry(entry: Option<u64>) {
+    ACTIVE.with(|active| {
+        if let Some(view) = active.borrow().as_ref().and_then(|view| view.upgrade()) {
+            view.browser_entry.set(entry);
+        } else {
+            INITIAL_BROWSER_ENTRY.with(|initial| initial.set(entry));
+        }
+    });
+}
+
+pub fn navigate_browser_entry(location: &str, entry: Option<u64>) {
+    visit_location(location, entry, false);
+}
+
 pub fn navigate_location(location: &str) {
-    ACTIVE.with(|v| {
-        if let Some(view) = v.borrow().as_ref().and_then(|v| v.upgrade()) {
-            if let Some(id) = item_from_location(location) {
-                let route = DetailRoute::Thread(id);
-                if *view.detail.borrow() == route {
-                    // Traversing a fragment can deliver both popstate and hashchange.
-                    return;
-                }
-                let previous = view.history.borrow().iter().enumerate().rev().find_map(
-                    |(index, entry)| match entry {
-                        HistoryEntry::Thread(visit) if visit.root == id => Some((index, *visit)),
-                        _ => None,
-                    },
-                );
-                if let Some((index, visit)) = previous {
-                    view.remember_thread();
-                    view.history.borrow_mut().truncate(index);
-                    view.detail.replace(DetailRoute::Welcome);
-                    view.present_discussion(visit, false);
-                } else {
-                    view.open_item_internal(id, false);
-                }
-            } else if *view.detail.borrow() != DetailRoute::Welcome {
+    visit_location(location, None, true);
+}
+
+fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool) {
+    ACTIVE.with(|active| {
+        let Some(view) = active.borrow().as_ref().and_then(|v| v.upgrade()) else {
+            return;
+        };
+        let Some(id) = item_from_location(location) else {
+            if *view.detail.borrow() != DetailRoute::Welcome {
                 view.return_to_feed(false);
             }
+            view.browser_entry.set(entry);
+            return;
+        };
+        let same_thread = *view.detail.borrow() == DetailRoute::Thread(id);
+        if same_thread && (match_by_item || (entry.is_some() && view.browser_entry.get() == entry))
+        {
+            return;
+        }
+        // A permalink can occur more than once in a browser's history, with
+        // different Find sessions and reading positions. External unmarked links
+        // start a fresh visit. Native item-only traversal retains its old behavior.
+        let matches = |visit: &ThreadVisit| {
+            visit.root == id && (match_by_item || (entry.is_some() && visit.browser_entry == entry))
+        };
+        let previous = view
+            .history
+            .borrow()
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, route)| match route {
+                HistoryEntry::Thread(visit) if matches(visit) => Some((index, visit.clone())),
+                _ => None,
+            });
+        if let Some((index, visit)) = previous {
+            view.remember_thread();
+            view.history.borrow_mut().truncate(index);
+            view.detail.replace(DetailRoute::Welcome);
+            view.present_discussion(visit, false);
+        } else {
+            let visit = entry
+                .and_then(|key| view.browser_visits.borrow().get(key, id))
+                .unwrap_or_else(|| ThreadVisit::new(id, id, entry));
+            if same_thread {
+                if let Some(outgoing) = view.remember_thread() {
+                    view.history
+                        .borrow_mut()
+                        .push(HistoryEntry::Thread(outgoing));
+                }
+                view.detail.replace(DetailRoute::Welcome);
+            }
+            view.present_discussion(visit, false);
         }
     });
 }
@@ -228,6 +329,8 @@ pub struct ReaderView {
     feed: RefCell<FeedRoute>,
     detail: RefCell<DetailRoute>,
     history: RefCell<Vec<HistoryEntry>>,
+    browser_entry: Cell<Option<u64>>,
+    browser_visits: RefCell<BrowserVisits>,
     search_form: RefCell<Option<crate::search_panel::Form>>,
     stories: RefCell<FeedRows>,
     feed_windows: RefCell<BTreeMap<FeedKind, FeedWindow>>,
@@ -264,6 +367,10 @@ pub struct ReaderView {
     library_generation: Cell<u64>,
     thread_budget: Cell<usize>,
     thread_sort: Cell<ThreadSort>,
+    // New badges are relative to entering the visit. Its immutable baseline is
+    // shared with virtual rows and history, even after durable seen IDs advance.
+    visit_seen: RefCell<Rc<BTreeSet<u64>>>,
+    resume_viewport: Cell<Option<ReadingPosition>>,
     find_revision: Cell<u64>,
     applied_find_query: RefCell<String>,
     find_match_id: Cell<Option<u64>>,
@@ -314,6 +421,8 @@ impl ReaderView {
             feed: RefCell::new(FeedRoute::Feed(FeedKind::Top)),
             detail: RefCell::new(DetailRoute::Welcome),
             history: RefCell::new(Vec::new()),
+            browser_entry: Cell::new(INITIAL_BROWSER_ENTRY.with(|initial| initial.take())),
+            browser_visits: RefCell::default(),
             search_form: RefCell::new(None),
             stories: RefCell::default(),
             feed_windows: RefCell::default(),
@@ -348,6 +457,8 @@ impl ReaderView {
             library_generation: Cell::new(0),
             thread_budget: Cell::new(INITIAL_THREAD_BUDGET),
             thread_sort: Cell::new(ThreadSort::Ranked),
+            visit_seen: RefCell::default(),
+            resume_viewport: Cell::new(None),
             find_revision: Cell::new(0),
             applied_find_query: RefCell::new(String::new()),
             find_match_id: Cell::new(None),
@@ -866,7 +977,7 @@ impl ReaderView {
                     // Give a permalink the network slots first. Single-pane readers
                     // need the feed only when they go Back or expand the window.
                     view.initial_feed_pending.set(true);
-                    view.open_item_internal(id, false);
+                    view.present_discussion(ThreadVisit::new(id, id, view.browser_entry.get()), false);
                 } else {
                     view.load_feed(0, FetchMode::CacheFirst);
                 }
@@ -1918,20 +2029,13 @@ impl ReaderView {
         self.open_discussion(id, id, publish);
     }
     fn open_discussion(&self, row: u64, id: u64, publish: bool) {
-        self.present_discussion(
-            ThreadVisit {
-                root: id,
-                source_row: row,
-                pending_comment: (row != id).then_some(row),
-                budget: INITIAL_THREAD_BUDGET,
-            },
-            publish,
-        );
+        self.present_discussion(ThreadVisit::new(id, row, None), publish);
     }
     fn present_discussion(&self, visit: ThreadVisit, publish: bool) {
         let id = visit.root;
         // Capture the outgoing visit before replacing its cursor or load window.
         self.navigate(DetailRoute::Thread(id));
+        self.browser_entry.set(visit.browser_entry);
         self.selected_row.set(Some(visit.source_row));
         self.pending_comment.set(visit.pending_comment);
         self.selected.set(Some(id));
@@ -1956,7 +2060,38 @@ impl ReaderView {
         self.update_thread_commands();
         self.label("DetailTitle")
             .set_text(Some("Opening the conversation…"));
-        self.textbox("ThreadFind").set_text(Some(""));
+        let field = self.textbox("ThreadFind");
+        if let Some(presentation) = visit.presentation {
+            self.visit_seen.replace(presentation.seen.clone());
+            self.resume_viewport.set(presentation.position);
+            self.thread_sort.set(presentation.sort);
+            self.new_replies_origin.set(presentation.new_replies_origin);
+            if self.focus_reading.replace(presentation.focus_reading) != presentation.focus_reading
+            {
+                self.apply_layout();
+            }
+            if let Some(find) = &presentation.find {
+                self.set_find_bar_visible(true);
+                field.set_text(Some(&find.text));
+                self.applied_find_query.replace(self.find_query());
+                self.find_match_id.set(find.match_id);
+                self.find_origin.set(find.origin);
+                field.focus();
+            } else {
+                field.set_text(Some(""));
+            }
+        } else {
+            field.set_text(Some(""));
+            self.resume_viewport.set(None);
+            self.visit_seen.replace(Rc::new(
+                self.state
+                    .borrow()
+                    .items
+                    .get(&id)
+                    .map(|local| local.seen_comments.clone())
+                    .unwrap_or_default(),
+            ));
+        }
         self.fetch_thread(id, self.thread_fetch_mode(id));
         self.refresh_story_cards(None, false);
         if publish {
@@ -2146,9 +2281,11 @@ impl ReaderView {
         if target.is_some() {
             self.pending_comment.set(None);
         }
+        let resumed = self.resume_viewport.take();
         let mut anchor = focus_comment
             .or(target)
             .map(ReadingPosition::start)
+            .or(resumed)
             .or_else(|| match self.thread_control.borrow().as_ref() {
                 Some(control) => crate::thread_view::viewport_position(control),
                 None => state.items.get(&thread.root.id).and_then(|local| {
@@ -2175,6 +2312,7 @@ impl ReaderView {
         let control = crate::thread_view::build_discussion(
             discussion.clone(),
             &state,
+            self.visit_seen.borrow().clone(),
             &query,
             self.thread_sort.get(),
             self.new_replies_origin.get().is_some(),
@@ -2191,6 +2329,9 @@ impl ReaderView {
             let result =
                 crate::thread_view::select_find_match(&control, self.find_match_id.get(), 0);
             self.show_find_result(result, true);
+            if let Some(position) = resumed {
+                crate::thread_view::restore_position(&control, position, false);
+            }
         } else {
             self.show_find_result(None, false);
             if let Some(position) = anchor {
@@ -2205,11 +2346,18 @@ impl ReaderView {
         self.update_thread_commands();
     }
     /// Keep the baseline stable while reading so newly fetched replies retain their NEW badge.
-    fn remember_thread(&self) {
-        let route = self.detail.borrow().clone();
-        let DetailRoute::Thread(id) = route else {
-            return;
+    fn remember_thread(&self) -> Option<ThreadVisit> {
+        let DetailRoute::Thread(id) = *self.detail.borrow() else {
+            return None;
         };
+        let visit = self.capture_thread_visit(id);
+        self.browser_visits.borrow_mut().remember(&visit);
+        let anchor = visit.presentation.as_ref().and_then(|p| p.position);
+        self.save_reading_position(id, anchor);
+        Some(visit)
+    }
+
+    fn save_reading_position(&self, id: u64, anchor: Option<ReadingPosition>) {
         let snapshot = self.thread.borrow();
         let Some(thread) = snapshot.as_ref().map(|discussion| &discussion.snapshot) else {
             return;
@@ -2217,11 +2365,6 @@ impl ReaderView {
         if thread.root.id != id {
             return;
         }
-        let anchor = self
-            .thread_control
-            .borrow()
-            .as_ref()
-            .and_then(|c| crate::thread_view::viewport_position(c));
         let mut state = self.state.borrow_mut();
         let local = state.items.entry(id).or_default();
         let seen_before = local.seen_comments.len();
@@ -2673,20 +2816,17 @@ impl ReaderView {
         }));
     }
     fn navigate(&self, route: DetailRoute) {
-        if *self.detail.borrow() != route {
-            self.remember_thread();
-        }
+        let visit = if *self.detail.borrow() != route {
+            self.remember_thread()
+        } else {
+            None
+        };
         let old = self.detail.replace(route.clone());
         if old != route && old != DetailRoute::Welcome {
-            let entry = match (old, self.search_form.borrow().as_ref()) {
-                (DetailRoute::Thread(id), _) => HistoryEntry::Thread(ThreadVisit {
-                    root: id,
-                    source_row: self.selected_row.get().unwrap_or(id),
-                    pending_comment: self.pending_comment.get(),
-                    budget: self.thread_budget.get(),
-                }),
-                (_, Some(form)) => HistoryEntry::Search(Box::new((form.capture)())),
-                (old, None) => HistoryEntry::Route(old),
+            let entry = match (visit, self.search_form.borrow().as_ref()) {
+                (Some(visit), _) => HistoryEntry::Thread(visit),
+                (None, Some(form)) => HistoryEntry::Search(Box::new((form.capture)())),
+                (None, None) => HistoryEntry::Route(old),
             };
             self.history.borrow_mut().push(entry);
         }
@@ -2696,6 +2836,51 @@ impl ReaderView {
         self.apply_layout();
         self.update_navigation();
         self.animate_detail();
+    }
+    fn capture_thread_visit(&self, id: u64) -> ThreadVisit {
+        let find = self
+            .get_control::<Border>("ThreadTools")
+            .is_visible()
+            .then(|| FindVisit {
+                text: self.textbox("ThreadFind").text().unwrap_or_default(),
+                // A draft can change immediately before navigating, during debounce.
+                match_id: self
+                    .find_match_id
+                    .get()
+                    .filter(|_| self.applied_find_query.borrow().as_str() == self.find_query()),
+                origin: self.find_origin.get(),
+            });
+        ThreadVisit {
+            root: id,
+            source_row: self.selected_row.get().unwrap_or(id),
+            pending_comment: self.pending_comment.get(),
+            budget: self.thread_budget.get(),
+            browser_entry: self.browser_entry.get(),
+            presentation: Some(Rc::new(ThreadPresentation {
+                seen: self.visit_seen.borrow().clone(),
+                position: self.resume_viewport.get().or_else(|| {
+                    self.thread_control
+                        .borrow()
+                        .as_ref()
+                        .and_then(|thread| crate::thread_view::viewport_position(thread))
+                }),
+                new_replies_origin: self.new_replies_origin.get(),
+                sort: self.thread_sort.get(),
+                focus_reading: self.focus_reading.get(),
+                find,
+            })),
+        }
+    }
+
+    fn forget_thread_presentations(&self) {
+        self.browser_visits.take();
+        self.visit_seen.replace(Rc::default());
+        self.resume_viewport.set(None);
+        for entry in self.history.borrow_mut().iter_mut() {
+            if let HistoryEntry::Thread(visit) = entry {
+                visit.presentation = None;
+            }
+        }
     }
     fn configure_detail(&self) {
         self.search_form.borrow_mut().take();
@@ -3109,6 +3294,7 @@ impl ReaderView {
             },
             SettingsAction::Import(state) => self.import_backup(state),
             SettingsAction::ClearHistory => {
+                self.forget_thread_presentations();
                 {
                     let mut state = self.state.borrow_mut();
                     state.recent_searches.clear();
@@ -3164,6 +3350,7 @@ impl ReaderView {
         );
     }
     fn finish_import(&self, mut state: ReaderState) {
+        self.forget_thread_presentations();
         if self.state_ready.get() {
             state.downloaded_threads =
                 std::mem::take(&mut self.state.borrow_mut().downloaded_threads);
@@ -3433,5 +3620,26 @@ impl ReaderView {
             translation.set_duration(Duration::from_millis(220));
             visual.start_animation("Translation", &*translation);
         }
+    }
+}
+
+#[cfg(test)]
+mod browser_visit_tests {
+    use super::*;
+
+    #[test]
+    fn recently_left_browser_slots_replace_their_own_state_and_evict_the_oldest() {
+        let mut cache = BrowserVisits::default();
+        for entry in 1..=MAX_BROWSER_VISITS as u64 {
+            cache.remember(&ThreadVisit::new(17, entry, Some(entry)));
+        }
+        cache.remember(&ThreadVisit::new(17, 123, Some(1)));
+        cache.remember(&ThreadVisit::new(17, 124, None));
+        cache.remember(&ThreadVisit::new(18, 18, Some(100)));
+        assert_eq!(cache.0.len(), MAX_BROWSER_VISITS);
+        assert_eq!(cache.get(1, 17).unwrap().source_row, 123);
+        assert!(cache.get(2, 17).is_none());
+        assert!(cache.get(100, 17).is_none());
+        assert_eq!(cache.get(100, 18).unwrap().root, 18);
     }
 }

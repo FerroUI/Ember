@@ -65,9 +65,44 @@ fn return_visit_shows_new_nested_replies_without_changing_folded_branches() {
         view.get_control::<TextBlock>("FindCount").text().as_deref(),
         Some("1 matching comment")
     );
+    // A profile detour advances the durable seen set when leaving the thread.
+    // Back must still return to this visit, including the original catch-up scope
+    // beneath Find and the selected match, rather than starting a fresh visit.
+    field.set_text(Some("IDEA "));
+    let submit = || {
+        let mut key = KeyEventArgs::new();
+        key.key = Key::Enter;
+        key.set_routed_event(Some(InputElement::key_down_event()));
+        field.raise_event(&key);
+        shell.settle();
+    };
+    submit();
+    submit();
+    let count = view.get_control::<TextBlock>("FindCount");
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
+    let author = list()
+        .get_visual_descendants()
+        .filter_map(|v| v.cast::<Button>())
+        .find(|button| {
+            AutomationProperties::get_name(button).as_deref() == Some("View ada’s profile")
+        })
+        .expect("second matching reply belongs to ada");
+    click_in_view(&shell, &window, &author);
+    assert_eq!(
+        view.get_control::<TextBlock>("DetailTitle")
+            .text()
+            .as_deref(),
+        Some("ada")
+    );
+    click_in_view(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert!(field.is_effectively_visible());
+    assert!(field.is_focused());
+    assert_eq!(field.text().as_deref(), Some("IDEA "));
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
     click(&shell, &window, &view.get_control::<Button>("CloseFind"));
     assert_eq!(scope().is_checked(), Some(true));
     assert_eq!(list().items().count(), 3);
+    assert!(has_comment("ada") && !has_comment("mira"));
     click_in_view(&shell, &window, &scope());
     assert_eq!(list().items().count(), 4);
     assert!(!has_comment("ada"));
@@ -231,4 +266,43 @@ fn reading_a_filtered_reply_in_context_opens_only_its_path_and_focuses_the_same_
         );
         window.close();
     }
+}
+
+#[test]
+fn browser_slots_for_the_same_item_restore_distinct_find_drafts_in_both_directions() {
+    let (shell, window, view) = start(
+        390.0,
+        844.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let field = view.get_control::<TextBox>("ThreadFind");
+    let route = |item: u64, entry| {
+        crate::reader_view::navigate_browser_entry(&format!("?item={item}"), entry);
+        for _ in 0..4 {
+            shell.settle();
+        }
+    };
+    let open_find = |text| {
+        click_in_view(&shell, &window, &view.get_control::<Button>("FindButton"));
+        field.set_text(Some(text));
+        shell.settle();
+    };
+    route(1001, Some(11));
+    open_find("First visit");
+    route(1002, Some(12));
+    route(1001, Some(13));
+    assert!(!field.is_effectively_visible());
+    open_find("Second visit");
+
+    // Back and Forward can each jump multiple browser entries with one event.
+    route(1001, Some(11));
+    assert!(field.is_effectively_visible());
+    assert_eq!(field.text().as_deref(), Some("First visit"));
+    route(1001, Some(13));
+    assert!(field.is_effectively_visible());
+    assert_eq!(field.text().as_deref(), Some("Second visit"));
+    route(1001, None);
+    assert!(!field.is_effectively_visible());
+    window.close();
 }
