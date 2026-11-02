@@ -457,6 +457,11 @@ pub(crate) fn select_find_match(
     Some(selected)
 }
 
+pub(crate) fn current_find_match(control: &Control) -> Option<FindMatch> {
+    let tag = conversation_list(control)?.tag()?;
+    tag.downcast_ref::<ThreadAnchors>()?.current_match.get()
+}
+
 fn update_realized_match(list: &ListBox, index: i32, result: Option<FindMatch>) {
     if let Some(container) = list.container_from_index(index) {
         if let Some(row) = container.get_visual_descendants().find_map(|node| {

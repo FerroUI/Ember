@@ -338,3 +338,71 @@ fn browser_slots_for_the_same_item_restore_distinct_find_drafts_in_both_directio
         .is_effectively_visible());
     window.close();
 }
+
+#[test]
+fn find_feedback_matches_the_current_text_during_debounce_and_ime_composition() {
+    use ferroui_base::input::text_input::TextInputMethodClientRequestedEventArgs;
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    let (shell, window, view) = start(
+        1280.0,
+        800.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    click_in_view(&shell, &window, &first_story(&window));
+    click_in_view(&shell, &window, &view.get_control::<Button>("FindButton"));
+    let field = view.get_control::<TextBox>("ThreadFind");
+    let count = view.get_control::<TextBlock>("FindCount");
+    let next = view.get_control::<Button>("FindNext");
+    let submit = || {
+        let mut key = KeyEventArgs::new();
+        key.key = Key::Enter;
+        key.set_routed_event(Some(InputElement::key_down_event()));
+        field.raise_event(&key);
+    };
+    field.set_text(Some("ide"));
+    submit();
+    submit();
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
+    let projection = || {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<ListBox>())
+            .find(|list| list.classes().contains("thread-list"))
+            .unwrap()
+    };
+    let original = projection();
+    field.set_text(Some("idea"));
+    assert_eq!(count.text().as_deref(), Some("Searching loaded comments…"));
+    assert!(!next.is_enabled());
+    assert!(std::ptr::eq(&*original, &*projection()));
+    field.set_text(Some(""));
+    assert!(!count.is_effectively_visible());
+    field.set_text(Some("IDE "));
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
+    assert!(next.is_enabled());
+    assert!(std::ptr::eq(&*original, &*projection()));
+
+    let request = TextInputMethodClientRequestedEventArgs::new();
+    request.set_routed_event(Some(
+        InputElement::text_input_method_client_requested_event(),
+    ));
+    field.raise_event(&request);
+    let ime = request.client().unwrap();
+    field.select_all();
+    ime.set_preedit_text(Some("世"));
+    assert!(field.is_composing_text());
+    assert_eq!(count.text().as_deref(), Some("Composing search…"));
+    assert!(!next.is_enabled());
+    submit();
+    assert!(std::ptr::eq(&*original, &*projection()));
+    ime.set_preedit_text(None);
+    shell.settle();
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
+    assert!(next.is_enabled());
+    field.set_text(Some("idea"));
+    submit();
+    assert_eq!(count.text().as_deref(), Some("1 of 2 matching comments"));
+    submit();
+    assert_eq!(count.text().as_deref(), Some("2 of 2 matching comments"));
+    window.close();
+}

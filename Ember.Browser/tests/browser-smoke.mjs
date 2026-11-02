@@ -466,8 +466,30 @@ await run([
             await page.waitFor("JSON.parse(ember.emberState()).width === 1440");
             await byName(page, "FindButton");
             await byAutomation(page, "Find in thread");
-            await page.type("design notes");
+            // Both the prefix and the completed query match the same two comments.
+            // Treat a settled count as belonging to the exact text visible beside it.
+            await page.type("design note");
             await waitText(page, "1 of 2 matching comments");
+            await page.press("Enter");
+            await waitText(page, "2 of 2 matching comments");
+            await page.evaluate(`(() => {
+                const check = globalThis.findFeedbackCheck = { stale: false, done: false };
+                function frame() {
+                    if (check.done) return;
+                    const {elements} = JSON.parse(ember.emberState());
+                    if (elements.some(e => e.name === "ThreadFind" && e.text === "design notes") &&
+                        elements.some(e => e.name === "FindCount" && e.text === "2 of 2 matching comments")) {
+                        check.stale = true;
+                    }
+                    requestAnimationFrame(frame);
+                }
+                requestAnimationFrame(frame);
+            })()`);
+            await page.type("s");
+            await waitText(page, "1 of 2 matching comments");
+            assert(await page.evaluate("findFeedbackCheck.done = true; !findFeedbackCheck.stale"),
+                "The visible Find count described a previous query");
+
             await page.press("Enter");
             await waitText(page, "2 of 2 matching comments");
             await page.press("Enter", ["shift"]);

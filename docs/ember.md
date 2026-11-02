@@ -75,7 +75,7 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 | `Enter` in a search field | Open a pasted Hacker News permalink or run the query with its filters. The username field also accepts @names and profile links. |
 | `Ctrl+F` / `Command+F` in a library feed | Find in Saved, Downloaded, History or Hidden. Press `Escape` to close Find and return to the list. |
 | `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
-| `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. The count excludes ancestors shown for context. |
+| `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. Enter commits a pending edit at its first match. While typing or composing text, the arrows pause and the reading position stays in place. The count excludes ancestors shown for context. |
 | `Ctrl+Enter` / `Command+Enter` in discussion Find | Read the selected reply in the full thread. The matching row also offers **Read in context**, including in the New replies view. |
 | `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from **Discussion options**. |
 | `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |

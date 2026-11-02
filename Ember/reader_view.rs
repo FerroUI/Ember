@@ -745,28 +745,30 @@ impl ReaderView {
                 e.set_handled(true);
             },
         );
+        let field = self.textbox("ThreadFind");
         let weak = self.to_ref().downgrade();
-        self.textbox("ThreadFind").property_changed(move |e| {
+        field.property_changed(move |e| {
             if e.property() == TextBox::text_property().as_property() {
-                if let Some(v) = weak.upgrade() {
-                    let revision = v.find_revision.get().wrapping_add(1);
-                    v.find_revision.set(revision);
-                    let weak = v.to_ref().downgrade();
-                    DispatcherTimer::run_once(
-                        move || {
-                            if let Some(view) = weak
-                                .upgrade()
-                                .filter(|view| view.find_revision.get() == revision)
-                            {
-                                if view.applied_find_query.borrow().as_str() != view.find_query() {
-                                    view.render_thread();
-                                }
-                            }
-                        },
-                        Duration::from_millis(180),
-                        DispatcherPriority::BACKGROUND,
-                    );
+                if let Some(view) = weak.upgrade() {
+                    view.find_draft_changed();
                 }
+            }
+        });
+        let weak = self.to_ref().downgrade();
+        field.template_applied(move |_, args| {
+            use ferroui_controls::presenters::TextPresenter;
+            if let Some(presenter) = args
+                .name_scope()
+                .find_as::<TextPresenter>("PART_TextPresenter")
+            {
+                let weak = weak.clone();
+                presenter.property_changed(move |e| {
+                    if e.property() == TextPresenter::preedit_text_property().as_property() {
+                        if let Some(view) = weak.upgrade() {
+                            view.find_draft_changed();
+                        }
+                    }
+                });
             }
         });
         let weak = self.to_ref().downgrade();
@@ -2367,7 +2369,11 @@ impl ReaderView {
             return;
         }
         let state = self.state.borrow();
-        let query = self.find_query();
+        let query = if self.textbox("ThreadFind").is_composing_text() {
+            self.applied_find_query.borrow().clone()
+        } else {
+            self.find_query()
+        };
         let target = self
             .pending_comment
             .get()
@@ -3042,6 +3048,75 @@ impl ReaderView {
             .trim()
             .to_lowercase()
     }
+    fn find_draft_changed(&self) {
+        let revision = self.find_revision.get().wrapping_add(1);
+        self.find_revision.set(revision);
+        if !self.get_control::<Border>("ThreadTools").is_visible() {
+            return;
+        }
+        let field = self.textbox("ThreadFind");
+        let query = self.find_query();
+        let composing = field.is_composing_text();
+        if !composing && query.as_str() == self.applied_find_query.borrow().as_str() {
+            // A reverted edit still has a valid projection and selected match.
+            let result = self
+                .thread_control
+                .borrow()
+                .as_ref()
+                .and_then(|control| crate::thread_view::current_find_match(control));
+            self.display_find_result(result, !query.is_empty());
+            return;
+        }
+        self.display_pending_find(composing, !query.is_empty());
+        let weak = self.to_ref().downgrade();
+        if composing {
+            // Cancellation restores selected text while TextBox still reports a
+            // pending IME. Recheck after that synchronous transaction finishes.
+            Dispatcher::ui_thread().post_local(
+                move || {
+                    if let Some(view) = weak.upgrade().filter(|v| v.find_revision.get() == revision)
+                    {
+                        if !view.textbox("ThreadFind").is_composing_text() {
+                            view.find_draft_changed();
+                        }
+                    }
+                },
+                DispatcherPriority::LOADED,
+            );
+            return;
+        }
+        DispatcherTimer::run_once(
+            move || {
+                if let Some(view) = weak
+                    .upgrade()
+                    .filter(|view| view.find_revision.get() == revision)
+                {
+                    if view.applied_find_query.borrow().as_str() != view.find_query()
+                        && !view.textbox("ThreadFind").is_composing_text()
+                    {
+                        view.render_thread();
+                    }
+                }
+            },
+            Duration::from_millis(180),
+            DispatcherPriority::BACKGROUND,
+        );
+    }
+
+    fn display_pending_find(&self, composing: bool, has_text: bool) {
+        self.button("FindPrevious").set_is_enabled(false);
+        self.button("FindNext").set_is_enabled(false);
+        let label = self.label("FindCount");
+        label.set_is_visible(composing || has_text);
+        label.set_text(if composing {
+            Some("Composing search…")
+        } else if has_text {
+            Some("Searching loaded comments…")
+        } else {
+            None
+        });
+    }
+
     fn step_find(&self, direction: i32) {
         let query = self.find_query();
         if query.is_empty() {
@@ -3061,6 +3136,16 @@ impl ReaderView {
     }
     fn show_find_result(&self, result: Option<crate::thread_view::FindMatch>, searching: bool) {
         self.find_match_id.set(result.map(|m| m.id));
+        if self.get_control::<Border>("ThreadTools").is_visible()
+            && self.textbox("ThreadFind").is_composing_text()
+        {
+            self.display_pending_find(true, true);
+            return;
+        }
+        self.display_find_result(result, searching);
+    }
+
+    fn display_find_result(&self, result: Option<crate::thread_view::FindMatch>, searching: bool) {
         for name in ["FindPrevious", "FindNext"] {
             self.button(name)
                 .set_is_enabled(result.is_some_and(|m| m.total > 1));
