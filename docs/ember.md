@@ -83,6 +83,8 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 | `U` in a feed or search results | Toggle the unread filter. |
 | `R` | Refresh the active feed or discussion. |
 | `S` | Toggle the focused feed row’s saved state, or the open discussion’s bookmark when using the discussion pane. |
+| `Ctrl+Z` / `Command+Z` outside a text editor | Undo the most recent story change while the notification offers Undo. |
+| Arrow keys, `Home`, `End` on navigation buttons | Move keyboard focus along the rail or tab bar. Enter or Space opens the focused destination. |
 | `O` | Open the focused feed row’s article, or the active article from the discussion pane. Stories without an article open their HN page. |
 | Swipe a story left | Reveal **Save** or **Unsave**. Release after the checkmark appears to apply it. |
 | Swipe a story right | Reveal **Hide** or **Restore**. Drag back before releasing to cancel. |
@@ -91,6 +93,10 @@ a 44-pixel touch area. Action rows wrap and deep comments limit their indentatio
 Open a story’s context menu by right-clicking, pressing the keyboard menu key, or holding the row on a touch screen. From there you can save, hide, mark read or unread, or copy its HN link. **Undo** in the status bar restores the latest story edit, including a removed bookmark’s original position in Saved. Marking a story unread keeps its visit in History.
 
 Compact story rows combine the source, author and age beneath the headline. Points, replies and reading-state icons remain visible.
+
+In split view, choosing the open story again returns focus to its reader and preserves the loaded replies, reading position and Find query. Reopening Explore keeps its expanded sections. A short accent mark identifies the current destination independently of keyboard focus on both the rail and the phone tab bar.
+
+A reply timestamp opens its standalone discussion in Ember. The reply menu can copy the comment as plain text, copy its HN link, open the original on Hacker News, or fold an individual reply. Expanding a folded reply returns keyboard focus to its controls.
 
 Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Browser story navigation updates the URL without reloading the
 application, and Back/Forward routes through the reader. A browser URL with

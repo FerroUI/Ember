@@ -31,6 +31,9 @@ impl ReaderView {
     }
 
     pub(super) fn show_more(&self) {
+        if *self.detail.borrow() == DetailRoute::More {
+            return;
+        }
         self.navigate(DetailRoute::More);
         self.label("DetailEyebrow").set_text(Some("NAVIGATION"));
         self.label("DetailTitle").set_text(Some("Explore Ember"));
@@ -110,6 +113,7 @@ impl ReaderView {
             ("Next / previous story", "J / K"),
             ("Unread filter in feeds", "U"),
             ("Save story", "S"),
+            ("Undo last story change", "Ctrl / ⌘ + Z"),
             ("Open article", "O"),
             ("Focus reading", "F"),
             ("Refresh", "R"),

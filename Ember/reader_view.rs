@@ -1,6 +1,7 @@
 mod discovery;
 mod feed_rows;
 mod library_find;
+mod navigation;
 mod offline;
 
 use crate::controls::{StoryCard, StorySummary};
@@ -628,6 +629,18 @@ impl ReaderView {
                         .filter_map(|v| v.cast::<TextBox>())
                         .any(|field| field.is_composing_text())
                 }) {
+                    return;
+                }
+                if ctrl && e.key == Key::Z && v.undo_story.get().is_some() {
+                    let editor = source.as_ref().is_some_and(|source| {
+                        std::iter::once(source.clone())
+                            .chain(source.get_visual_ancestors())
+                            .any(|node| node.cast::<TextBox>().is_some())
+                    });
+                    if !editor {
+                        v.undo_story_edit();
+                        e.set_handled(true);
+                    }
                     return;
                 }
                 if ctrl && e.key == Key::K {
@@ -1835,6 +1848,20 @@ impl ReaderView {
             .map(|v| v.snapshot.root.clone())
     }
     fn open_item(&self, row: u64) {
+        // A split-view row can be invoked again while its discussion is open.
+        // Keep its loaded pages, reading position and any active Find session.
+        if self.selected.get() == Some(row)
+            && self.selected_row.get() == Some(row)
+            && matches!(*self.detail.borrow(), DetailRoute::Thread(_))
+            && self.thread.borrow().is_some()
+        {
+            if self.get_control::<Border>("ThreadTools").is_visible() {
+                self.textbox("ThreadFind").focus();
+            } else {
+                self.button("BackButton").focus();
+            }
+            return;
+        }
         // A scoped hit can be far beyond the locally loaded part of its thread.
         if matches!(&*self.feed.borrow(), FeedRoute::Search(query) if query.story_id.is_some()) {
             self.open_item_internal(row, true);
@@ -3186,6 +3213,11 @@ impl ReaderView {
         let phone = mode == WorkspaceLayout::Phone || landscape;
         let reading = mode == WorkspaceLayout::Reading;
         let split = !phone && !reading;
+        let navigation_focus = if self.layout_mode.get() != Some(mode) {
+            self.navigation_focus_after_resize(mode)
+        } else {
+            None
+        };
         let detail = *self.detail.borrow() != DetailRoute::Welcome;
         let thread = matches!(*self.detail.borrow(), DetailRoute::Thread(_));
         self.get_control::<Border>("NavigationRail")
@@ -3238,6 +3270,7 @@ impl ReaderView {
         Grid::set_column(&tabs, if landscape { 0 } else { 1 });
         Grid::set_row(&tabs, if landscape { 0 } else { 3 });
         Grid::set_row_span(&tabs, if landscape { 4 } else { 1 });
+        tabs.classes().set("bottom-tabs", !landscape);
         tabs.set_border_thickness(if landscape {
             Thickness::new(0.0, 0.0, 1.0, 0.0)
         } else {
@@ -3280,96 +3313,10 @@ impl ReaderView {
             self.label(name).set_is_visible(!compact);
         }
         self.update_navigation();
-    }
-    fn update_navigation(&self) {
-        let feed = self.feed.borrow().clone();
-        let detail = self.detail.borrow().clone();
-        for (name, route) in [
-            ("NavTop", FeedRoute::Feed(FeedKind::Top)),
-            ("MobileHome", FeedRoute::Feed(FeedKind::Top)),
-            ("NavNew", FeedRoute::Feed(FeedKind::New)),
-            ("MobileNew", FeedRoute::Feed(FeedKind::New)),
-            ("NavBest", FeedRoute::Feed(FeedKind::Best)),
-            ("NavAsk", FeedRoute::Feed(FeedKind::Ask)),
-            ("NavShow", FeedRoute::Feed(FeedKind::Show)),
-            ("NavJobs", FeedRoute::Feed(FeedKind::Jobs)),
-            ("NavSaved", FeedRoute::Saved),
-            ("MobileSaved", FeedRoute::Saved),
-            ("NavHistory", FeedRoute::History),
-            ("NavHidden", FeedRoute::Hidden),
-        ] {
-            self.button(name).classes().set(
-                "active",
-                feed == route
-                    && !matches!(
-                        detail,
-                        DetailRoute::Search | DetailRoute::Settings | DetailRoute::More
-                    ),
-            );
-        }
-        self.button("MobileSearch").classes().set(
-            "active",
-            detail == DetailRoute::Search
-                || (matches!(feed, FeedRoute::Search(_))
-                    && !matches!(detail, DetailRoute::Settings | DetailRoute::More)),
-        );
-        self.button("NavMore")
-            .classes()
-            .set("active", detail == DetailRoute::More);
-        self.button("MobileMore").classes().set(
-            "active",
-            matches!(detail, DetailRoute::Settings | DetailRoute::More)
-                || (!matches!(detail, DetailRoute::Search)
-                    && matches!(
-                        feed,
-                        FeedRoute::Feed(
-                            FeedKind::Ask | FeedKind::Show | FeedKind::Jobs | FeedKind::Best
-                        ) | FeedRoute::History
-                            | FeedRoute::Hidden
-                    )),
-        );
-    }
-    fn populate_navigation(&self) {
-        for (name, icon, label) in [
-            ("WelcomeSearch", "search", "Search"),
-            ("WelcomeSaved", "bookmark", "Saved stories"),
-        ] {
-            self.button(name)
-                .set_content(Some(Control::boxed(&widgets::nav_content(
-                    icon, label, false,
-                ))));
-        }
-        for (name, icon, label) in [
-            ("NavTop", "home", "Front page"),
-            ("NavNew", "clock", "Latest"),
-            ("NavBest", "star", "Best"),
-            ("NavAsk", "chat", "Ask HN"),
-            ("NavShow", "lightbulb", "Show HN"),
-            ("NavJobs", "briefcase", "Jobs"),
-            ("NavSaved", "bookmark", "Saved for later"),
-            ("NavHistory", "history", "History"),
-            ("NavHidden", "eye_off", "Hidden stories"),
-            ("NavMore", "more", "More"),
-        ] {
-            let button = self.button(name);
-            ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
-            button.set_content(Some(Control::boxed(&widgets::nav_content(
-                icon, label, false,
-            ))));
-        }
-        for (name, icon, label) in [
-            ("MobileHome", "home", "Home"),
-            ("MobileNew", "clock", "Latest"),
-            ("MobileSearch", "search", "Search"),
-            ("MobileSaved", "bookmark", "Saved"),
-            ("MobileMore", "more", "More"),
-        ] {
-            let b = self.button(name);
-            b.set_padding(Thickness::symmetric(2.0, 2.0));
-            b.set_horizontal_content_alignment(ferroui_base::layout::HorizontalAlignment::Center);
-            b.set_content(Some(Control::boxed(&widgets::nav_content(
-                icon, label, true,
-            ))));
+        if let Some(name) = navigation_focus {
+            let target = self.get_control::<Control>(name);
+            target.focus();
+            target.bring_into_view();
         }
     }
     fn animate_detail(&self) {

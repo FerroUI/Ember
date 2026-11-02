@@ -369,3 +369,102 @@ fn a_cached_permalink_reads_its_fresh_window_once_and_refreshes_a_stale_one() {
         window.close();
     }
 }
+
+#[test]
+fn primary_navigation_moves_focus_without_opening_pages_and_tracks_rotation() {
+    use ferroui_base::input::{InputElement, Key, KeyEventArgs};
+    let (shell, window, view) = start(
+        390.0,
+        844.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let button = |name| view.get_control::<Button>(name);
+    let key = |target: &Button, key| {
+        let mut event = KeyEventArgs::new();
+        event.key = key;
+        event.set_routed_event(Some(InputElement::key_down_event()));
+        target.raise_event(&event);
+        shell.settle();
+        assert!(event.handled());
+    };
+    let home = button("MobileHome");
+    let new = button("MobileNew");
+    let current = |button: &Button| AutomationProperties::get_item_status(button);
+    let marker = |button: &Button| {
+        button
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<Border>())
+            .find(|b| b.name().as_deref() == Some("DestinationMark"))
+            .unwrap()
+    };
+    assert_eq!(current(&home).as_deref(), Some("Current destination"));
+    assert!(marker(&home).is_effectively_visible());
+    assert_eq!(marker(&home).bounds().height, 3.0);
+    home.focus();
+    key(&home, Key::Right);
+    assert!(new.is_focused());
+    assert!(current(&new).is_none());
+    key(&new, Key::End);
+    assert!(button("MobileMore").is_focused());
+    key(&button("MobileMore"), Key::Home);
+    click_in_view(&shell, &window, &new);
+    assert_eq!(current(&new).as_deref(), Some("Current destination"));
+    assert!(!marker(&home).is_effectively_visible());
+
+    window.set_width(844.0);
+    window.set_height(390.0);
+    for _ in 0..4 {
+        shell.settle();
+    }
+    new.focus();
+    assert_eq!(marker(&new).bounds().width, 3.0);
+    key(&new, Key::Down);
+    assert!(button("MobileSearch").is_focused());
+    key(&button("MobileSearch"), Key::Down);
+    assert!(button("MobileSaved").is_focused());
+    window.set_width(1280.0);
+    window.set_height(800.0);
+    for _ in 0..4 {
+        shell.settle();
+    }
+    assert!(button("NavSaved").is_focused());
+    assert_eq!(
+        current(&button("NavNew")).as_deref(),
+        Some("Current destination")
+    );
+    key(&button("NavSaved"), Key::Home);
+    assert!(button("NavTop").is_focused());
+    window.close();
+}
+
+#[test]
+fn repeated_story_and_explore_commands_preserve_the_live_reader_and_disclosures() {
+    use ferroui_controls::Expander;
+    let (shell, window, view) = start(
+        1280.0,
+        800.0,
+        Rc::new(MemoryStore::default()),
+        Rc::new(Cell::new(false)),
+    );
+    let click_named = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
+    click(&shell, &window, &first_story(&window));
+    click_named("FindButton");
+    let find = view.get_control::<TextBox>("ThreadFind");
+    find.set_text(Some("test"));
+    click(&shell, &window, &first_story(&window));
+    assert!(find.is_effectively_visible());
+    assert_eq!(find.text().as_deref(), Some("test"));
+    assert!(find.is_focused());
+    click_named("NavMore");
+    let panel = view.get_control::<ContentControl>("DetailHost");
+    let disclosure = panel
+        .get_visual_descendants()
+        .find_map(|v| v.cast::<Expander>())
+        .unwrap();
+    disclosure.set_is_expanded(true);
+    click_named("NavMore");
+    assert!(disclosure.is_attached_to_visual_tree());
+    assert!(disclosure.is_expanded());
+    window.close();
+}

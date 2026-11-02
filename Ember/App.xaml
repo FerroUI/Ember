@@ -204,6 +204,25 @@
           <Setter Property="Opacity" Value="0.5" />
         </Style>
       </ControlTheme>
+      <ControlTheme x:Key="EmberNavigationButton" TargetType="Button" BasedOn="{StaticResource EmberQuietButton}">
+        <Setter Property="Template">
+          <ControlTemplate>
+            <Grid>
+              <ContentPresenter Name="PART_ContentPresenter" Background="{TemplateBinding Background}"
+                                Foreground="{TemplateBinding Foreground}" BorderThickness="2" BorderBrush="Transparent"
+                                CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}"
+                                Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                RecognizesAccessKey="True" />
+              <Border Name="DestinationMark" Width="3" Height="16" CornerRadius="2"
+                      HorizontalAlignment="Left" VerticalAlignment="Center" IsHitTestVisible="False"
+                      IsVisible="False" Background="{DynamicResource EmberAccentInk}" />
+            </Grid>
+          </ControlTemplate>
+        </Setter>
+        <Style Selector="^.active /template/ Border#DestinationMark"><Setter Property="IsVisible" Value="True" /></Style>
+      </ControlTheme>
     </ResourceDictionary>
   </Application.Resources>
   <Application.Styles>
@@ -222,8 +241,12 @@
       <Setter Property="Padding" Value="6,3" /><Setter Property="FontSize" Value="12" />
     </Style>
     <Style Selector="Button.nav">
-      <Setter Property="Theme" Value="{StaticResource EmberQuietButton}" />
+      <Setter Property="Theme" Value="{StaticResource EmberNavigationButton}" />
       <Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Border.bottom-tabs Button.nav /template/ Border#DestinationMark">
+      <Setter Property="Width" Value="18" /><Setter Property="Height" Value="3" />
+      <Setter Property="HorizontalAlignment" Value="Center" /><Setter Property="VerticalAlignment" Value="Top" />
     </Style>
     <Style Selector="Border#NavigationRail Button.nav"><Setter Property="Padding" Value="10,2" /></Style>
     <Style Selector="Border.compact-rail Button.nav"><Setter Property="Padding" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Center" /></Style>

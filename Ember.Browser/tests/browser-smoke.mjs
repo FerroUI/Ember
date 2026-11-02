@@ -171,6 +171,47 @@ async function failure(page, name) {
 }
 
 await run([
+    ["primary navigation follows the layout and the selected discussion keeps Find", async () => {
+        const page = await open(site, { width: 390, height: 844, initScript });
+        try {
+            await page.waitForView();
+            await waitText(page, title);
+            await byName(page, "MobileHome");
+            await page.press("End");
+            assert((await state(page)).elements.some(e => e.name === "FeedTitle" && e.text === "Front page"),
+                "Moving navigation focus activated a destination");
+            await page.press("Enter");
+            await waitText(page, "Explore Ember");
+            await page.screenshot(path.join(captures, "phone-primary-navigation.png"));
+            await byName(page, "MobileHome");
+            await page.resize(844, 390);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 844");
+            await byName(page, "MobileNew");
+            await page.press("ArrowDown");
+            await page.press("Enter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Search terms' && e.hit)");
+            await page.resize(1280, 800);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop' && e.hit)");
+            await byName(page, "NavTop");
+            await byText(page, title);
+            await byName(page, "FindButton");
+            await page.type("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            const row = (await state(page)).elements.find(e => e.hit && e.automationName?.startsWith(title + ","));
+            assert(row, "Selected story is missing from the feed");
+            await page.click(row.x + row.width / 2, row.y + row.height / 2);
+            await waitText(page, "1 of 2 matching comments");
+            await byName(page, "SaveButton");
+            await byAutomation(page, "Remove saved story");
+            // Undo the second edit while focus is on a reader command.
+            await page.press("z", ["ctrl"]);
+            await waitText(page, "Change undone.");
+            assert((await state(page)).elements.some(e => e.name === "SaveButton" && e.automationName === "Remove saved story"),
+                "Undo did not restore the story bookmark");
+            await page.screenshot(path.join(captures, "desktop-selected-discussion.png"));
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } finally { await page.close(); }
+    }],
     ["feed tabs resume their paged viewport and shortcuts target the focused story", async () => {
         const feeds = initScript + `(() => {
             const original = globalThis.fetch;
