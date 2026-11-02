@@ -169,8 +169,9 @@ test("reader Back reuses owned entries, queues rapid actions and replaces an ini
         events.dispatchEvent(new Event("popstate"));
         events.dispatchEvent(new Event("hashchange"));
     };
-    const original = new Map(["location", "history", "addEventListener"].map(key => [key, globalThis[key]]));
-    Object.assign(globalThis, { location, history, addEventListener: events.addEventListener.bind(events) });
+    const original = new Map(["location", "history", "navigation", "addEventListener"].map(key => [key, globalThis[key]]));
+    Object.assign(globalThis, { location, history, navigation: { currentEntry: { index: -1 } },
+        addEventListener: events.addEventListener.bind(events) });
     t.after(() => {
         for (const [key, value] of original) {
             if (value === undefined) delete globalThis[key]; else globalThis[key] = value;

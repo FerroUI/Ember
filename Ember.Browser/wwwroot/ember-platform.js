@@ -296,7 +296,8 @@ function rememberAddress() {
     lastAddress = globalThis.location.href;
     lastEntry = currentEntry();
     const state = globalThis.history.state;
-    lastPosition = globalThis.navigation?.currentEntry?.index ?? state.emberPosition;
+    const index = globalThis.navigation?.currentEntry?.index;
+    lastPosition = Number.isInteger(index) && index >= 0 ? index : state.emberPosition;
     previousAddress = state.emberPreviousHref;
 }
 
