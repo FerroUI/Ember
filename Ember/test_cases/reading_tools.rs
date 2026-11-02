@@ -129,8 +129,32 @@ fn nested_reply_actions_skip_descendants_and_open_an_independent_comment_thread(
         .unwrap()
         .is_keyboard_focus_within());
     assert!(has_op(2));
-    invoke(1, "Open comment thread");
+    // The final reply to this parent has no children. Fold it through the
+    // overflow, then expand from its disclosure and keep focus in the same row.
+    invoke(4, "Fold comment");
+    let row_tool = |index, name: &str| {
+        conversation()
+            .container_from_index(index)
+            .unwrap()
+            .get_visual_descendants()
+            .filter_map(|v| v.cast::<Button>())
+            .find(|b| b.name().as_deref() == Some(name))
+            .unwrap()
+    };
+    let expand = row_tool(4, "FoldReply");
+    assert!(expand.is_focused());
+    assert_eq!(
+        AutomationProperties::get_name(&expand).as_deref(),
+        Some("Expand comment")
+    );
+    click_in_view(&shell, &window, &expand);
+    assert!(row_tool(4, "CommentMenu").is_focused());
+    click_in_view(&shell, &window, &row_tool(4, "CommentPermalink"));
     let title = view.get_control::<TextBlock>("DetailTitle");
+    assert_eq!(title.text().as_deref(), Some("Comment by lin"));
+    click(&shell, &window, &view.get_control::<Button>("BackButton"));
+    assert_eq!(title.text().as_deref(), Some("Small tools, carefully made"));
+    invoke(1, "Open comment thread");
     assert_eq!(title.text().as_deref(), Some("Comment by ada"));
     assert!(
         !has_op(1),

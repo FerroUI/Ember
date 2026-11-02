@@ -35,6 +35,7 @@ pub enum ThreadAction {
     ReadInContext(u64),
     Share,
     CopyCommentLink(u64),
+    CopyCommentText(u64),
     CopyCode(String),
     OpenContentLink(String),
     FocusReading,
@@ -97,6 +98,12 @@ impl Discussion {
             parents: OnceCell::new(),
             header: OnceCell::new(),
         }
+    }
+
+    pub(crate) fn comment_text(&self, id: u64, show_dead: bool) -> Option<String> {
+        let item = self.snapshot.items.get(&id)?;
+        let text = HtmlDocument::parse(visible_comment_html(item, show_dead)?).plain_text();
+        (!text.is_empty()).then_some(text)
     }
 
     fn parents(&self) -> Rc<BTreeMap<u64, u64>> {
@@ -635,11 +642,17 @@ pub(crate) fn focus_thread_tool(control: &Control, item: Option<u64>, name: &'st
                 list.scroll_into_view(index);
             }
             if let Some(row) = list.container_from_index(index) {
-                if let Some(tool) = row
-                    .get_visual_descendants()
-                    .filter_map(|v| v.cast::<Control>())
-                    .find(|tool| tool.name().as_deref() == Some(name))
-                {
+                let find = |name: &str| {
+                    row.get_visual_descendants()
+                        .filter_map(|v| v.cast::<Control>())
+                        .find(|tool| tool.name().as_deref() == Some(name))
+                };
+                // An expanded leaf keeps its fold action in the overflow.
+                let tool = find(name).or_else(|| match name {
+                    "FoldReply" => find("CommentMenu"),
+                    _ => None,
+                });
+                if let Some(tool) = tool {
                     tool.focus();
                 }
             }
@@ -1092,7 +1105,13 @@ impl ReplyNeighbors {
 fn visible_author(item: &HnItem, show_dead: bool) -> Option<&str> {
     item.by
         .as_deref()
-        .filter(|name| !name.is_empty() && !item.deleted && (!item.dead || show_dead))
+        .filter(|name| !name.is_empty() && item.content_visible(show_dead))
+}
+
+fn visible_comment_html(item: &HnItem, show_dead: bool) -> Option<&str> {
+    item.text
+        .as_deref()
+        .filter(|text| item.content_visible(show_dead) && !text.trim().is_empty())
 }
 
 fn is_new_reply(
@@ -1156,12 +1175,16 @@ fn comment_row(
         } else {
             "Link".to_owned()
         };
+        let link_name = item
+            .time
+            .map(|_| format!("Open comment thread · {caption}"));
         let permalink = text_action(
             &caption,
-            "Permalink",
-            ThreadAction::OpenUrl(ember_core::item_url(row.id)),
+            link_name.as_deref().unwrap_or("Open comment thread"),
+            ThreadAction::OpenComment(row.id),
             actions,
         );
+        permalink.set_name(Some("CommentPermalink".to_owned()));
         byline.children().add(permalink);
         if is_new_reply(row, &reading.seen, reading.show_dead) {
             byline.children().add(badge("NEW"));
@@ -1224,9 +1247,17 @@ fn comment_row(
         context.set_name(Some("ReadInContext".to_owned()));
         commands.children().add(context);
     }
-    commands
-        .children()
-        .add(comment_menu(row, root, neighbors, actions));
+    let has_text = row
+        .item
+        .is_some_and(|item| visible_comment_html(item, reading.show_dead).is_some());
+    let fold_leaf = has_text
+        && row.child_count == 0
+        && !row.collapsed
+        && !searching
+        && reading.new_count.is_none();
+    commands.children().add(comment_menu(
+        row, root, neighbors, has_text, fold_leaf, actions,
+    ));
     line.children().add(commands);
     body.children().add(line);
 
@@ -1343,9 +1374,12 @@ fn comment_menu(
     row: &ThreadRow<Option<&HnItem>>,
     root: &HnItem,
     neighbors: ReplyNeighbors,
+    has_text: bool,
+    fold_leaf: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Button> {
     let more = widgets::icon_button("More comment actions", "more");
+    more.set_name(Some("CommentMenu".to_owned()));
     let menu = MenuFlyout::new();
     let weak = menu.downgrade();
     let actions = actions.clone();
@@ -1382,6 +1416,24 @@ fn comment_menu(
             ThreadAction::OpenComment(id),
             &actions,
         );
+        if has_text {
+            menu_action(
+                &menu,
+                "Copy comment text",
+                "copy",
+                ThreadAction::CopyCommentText(id),
+                &actions,
+            );
+        }
+        if fold_leaf {
+            menu_action(
+                &menu,
+                "Fold comment",
+                "chevron_up",
+                ThreadAction::ToggleCollapse(id),
+                &actions,
+            );
+        }
         if can_reply {
             menu_action(
                 &menu,
@@ -1439,6 +1491,13 @@ fn comment_menu(
             back_label,
             "back",
             ThreadAction::GoToItem(root_id),
+            &actions,
+        );
+        menu_action(
+            &menu,
+            "Open comment on HN",
+            "open",
+            ThreadAction::OpenUrl(ember_core::item_url(id)),
             &actions,
         );
     });
@@ -2646,6 +2705,46 @@ mod tests {
     }
 
     #[test]
+    fn comment_copy_uses_visible_decoded_text_from_the_requested_row() {
+        let mut snapshot = ThreadSnapshot::default();
+        for (id, deleted, dead, html) in [
+            (
+                2,
+                false,
+                false,
+                "<p>A &amp; B</p><p><b>Next</b> <a href='/'>line</a></p>",
+            ),
+            (3, true, false, "Retained deleted text"),
+            (4, false, true, "Retained dead text"),
+            (5, false, false, " <script>hidden()</script> "),
+        ] {
+            snapshot.items.insert(
+                id,
+                HnItem {
+                    id,
+                    deleted,
+                    dead,
+                    text: Some(html.into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let discussion = Discussion::new(snapshot);
+        assert_eq!(
+            discussion.comment_text(2, false).as_deref(),
+            Some("A & B\nNext line")
+        );
+        assert_eq!(discussion.comment_text(3, true), None);
+        assert_eq!(discussion.comment_text(4, false), None);
+        assert_eq!(
+            discussion.comment_text(4, true).as_deref(),
+            Some("Retained dead text")
+        );
+        assert_eq!(discussion.comment_text(5, false), None);
+        assert_eq!(discussion.comment_text(99, true), None);
+    }
+
+    #[test]
     fn long_threads_virtualize_rows_and_keep_scrolled_actions_attached_to_their_item() {
         let shell = Shell::start(&crate::SAMPLE, 390.0, 620.0, || crate::App::new().upcast());
         let root = HnItem {
@@ -2719,14 +2818,11 @@ mod tests {
             let permalink = row
                 .get_visual_descendants()
                 .filter_map(|node| node.cast::<Button>())
-                .find(|button| {
-                    AutomationProperties::get_name(button).as_deref() == Some("Permalink")
-                })
+                .find(|button| button.name().as_deref() == Some("CommentPermalink"))
                 .expect("realized comment has an accessible permalink action");
             permalink.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
-            let expected = ember_core::item_url(2000 + index as u64);
             assert!(
-                matches!(calls.borrow().last(), Some(ThreadAction::OpenUrl(url)) if url == &expected)
+                matches!(calls.borrow().last(), Some(ThreadAction::OpenComment(id)) if *id == 2000 + index as u64)
             );
         }
         // The overflow follows the realized row after recycling. Exercise the actual
@@ -2790,21 +2886,31 @@ mod tests {
         menu.show_at(&more);
         shell.settle();
         let entries = menu.items();
-        let copy = (0..entries.count())
-            .filter_map(|i| Control::from_boxed(&entries.get_at(i)?))
-            .filter_map(|v| v.cast::<MenuItem>())
-            .find(|item| {
-                item.header()
-                    .and_then(|v| v.downcast_ref::<String>().cloned())
-                    .as_deref()
-                    == Some("Copy comment link")
-            })
-            .unwrap();
-        copy.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        let entry = |label: &str| {
+            (0..entries.count())
+                .filter_map(|i| Control::from_boxed(&entries.get_at(i)?))
+                .filter_map(|v| v.cast::<MenuItem>())
+                .find(|item| {
+                    item.header()
+                        .and_then(|v| v.downcast_ref::<String>().cloned())
+                        .as_deref()
+                        == Some(label)
+                })
+                .unwrap()
+        };
+        for name in [
+            "Copy comment link",
+            "Copy comment text",
+            "Fold comment",
+            "Open comment on HN",
+        ] {
+            entry(name).raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        }
         menu.hide();
         assert!(matches!(
-            calls.borrow().last(),
-            Some(ThreadAction::CopyCommentLink(2001))
+            &calls.borrow()[3..],
+            [ThreadAction::CopyCommentLink(2001), ThreadAction::CopyCommentText(2001), ThreadAction::ToggleCollapse(2001), ThreadAction::OpenUrl(url)]
+            if url == &ember_core::item_url(2001)
         ));
         let replacement = build(
             &snapshot,

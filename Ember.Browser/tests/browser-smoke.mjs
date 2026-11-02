@@ -507,34 +507,47 @@ await run([
                 items[202].kids = [205];
                 items[202].by = "designer";
                 items[204] = { id: 204, parent: 201, type: "comment", by: "visitor",
-                    text: "<p>I kept the same reading position after following the discussion.</p>" };
+                    text: "<p>I kept my <b>reading position</b> &amp; context.</p><p>Even across pages.</p>" };
                 items[205] = { id: 205, parent: 202, type: "comment", by: "typesetter",
                     text: "<p>A longer exchange about the details of the implementation.</p>".repeat(20) };
             })()`);
             await byText(page, title);
-            const menuAt = async author => {
+            const rowTool = async (author, name) => {
                 const byline = e => e.hit && e.automationName === `View ${author}’s profile`;
                 await reveal(page, byline);
                 const { elements } = await state(page);
                 const row = elements.filter(byline).at(-1);
-                const menu = elements.find(e => e.hit && e.automationName === "More comment actions"
+                const tool = elements.find(e => e.hit && e.name === name
                     && Math.abs((e.y + e.height / 2) - (row.y + row.height / 2)) < 12);
-                assert(menu, `Missing actions for the reply by ${author}`);
-                await page.click(menu.x + menu.width / 2, menu.y + menu.height / 2);
+                assert(tool, `Missing ${name} for the reply by ${author}`);
+                await page.click(tool.x + tool.width / 2, tool.y + tool.height / 2);
             };
             // The flyout has its own popup root. Use its native keyboard navigation.
-            await menuAt("designer");
+            await rowTool("designer", "CommentMenu");
             await page.press("Home");
-            for (let i = 0; i < 4; ++i) await page.press("ArrowDown");
+            for (let i = 0; i < 5; ++i) await page.press("ArrowDown");
             await page.screenshot(path.join(captures, "phone-reply-navigation.png"));
             await page.press("Enter");
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.automationName === 'View visitor’s profile')");
             assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "101",
                 "Jumping to another reply should keep the containing discussion open");
-            await menuAt("visitor");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            await rowTool("visitor", "CommentMenu");
             await page.press("Home");
             await page.press("ArrowDown");
+            await page.press("ArrowDown");
             await page.press("Enter");
+            await waitText(page, "Comment text copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === "I kept my reading position & context.\nEven across pages.",
+                "Copied reply text lost its paragraph boundary or contained markup");
+            await byName(page, "DismissStatus");
+            await rowTool("visitor", "CommentMenu");
+            await page.press("Home");
+            for (let i = 0; i < 3; ++i) await page.press("ArrowDown");
+            await page.press("Enter");
+            await byAutomation(page, "Expand comment");
+            await rowTool("visitor", "CommentPermalink");
             await waitText(page, "Comment by visitor");
             assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "204",
                 "The standalone thread must use the selected comment's permalink");

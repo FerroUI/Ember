@@ -2240,6 +2240,19 @@ impl ReaderView {
             ThreadAction::FocusReading => self.set_focus_reading(true),
             ThreadAction::CopyCode(source) => self.copy_text(&source, "Code copied."),
             ThreadAction::OpenContentLink(url) => self.open_content_link(&url),
+            ThreadAction::CopyCommentText(id) => {
+                let show_dead = self.state.borrow().preferences.show_dead;
+                let text = self
+                    .thread
+                    .borrow()
+                    .as_ref()
+                    .and_then(|discussion| discussion.comment_text(id, show_dead));
+                if let Some(text) = text {
+                    self.copy_text(&text, "Comment text copied.");
+                } else {
+                    self.status("No comment text to copy.");
+                }
+            }
             ThreadAction::CopyCommentLink(id) => {
                 self.copy_text(&ember_core::item_url(id), "Comment link copied.");
             }
