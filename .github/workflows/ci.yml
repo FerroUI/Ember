@@ -37,6 +37,9 @@ jobs:
       browser-package: ember-browser
       # The offline application shell of the default site.
       browser-script: node Ember.Browser/write-offline-manifest.mjs . --package-font --out "$SITE"
+      # The packaged interactions reuse this site's artifact and the runner's Chrome.
+      browser-tests-setup: ''
+      browser-tests: node Ember.Browser/tests/browser-smoke.mjs "$SITE"
       # The Android and iOS hosts, packaged as in docs/ember.md (artifacts android-apk and ios-app).
       android: >-
         --package ember-android --label Ember --application-id org.ferroui.ember

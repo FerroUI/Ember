@@ -2,6 +2,7 @@
 // Usage: CHROME=/path/to/chrome node Ember.Browser/tests/browser-smoke.mjs [site]
 // Only the HTTP boundary is deterministic; rendering, navigation, DB and controls are real.
 import fs from "node:fs";
+import { verifyCjkFallback } from "./browser-font.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { open, run, assert, sleep, colours } from "../../FerroUI/scripts/browser/harness.mjs";
@@ -270,6 +271,7 @@ await run([
             assert(direct.errors.length === 0, direct.errors.join("\n"));
         } finally { await direct.close(); }
     }],
+    ["optional CJK glyphs shape in place and remain available offline", () => verifyCjkFallback(site, captures)],
     ["primary navigation follows the layout and the selected discussion keeps Find", async () => {
         const page = await open(site, { width: 390, height: 844, initScript });
         try {

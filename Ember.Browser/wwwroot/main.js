@@ -57,6 +57,7 @@ async function startReader() {
         observeLocation((href, entry, backward) => runtime.emberNavigate(href, entry, backward),
             entry => runtime.emberSetBrowserEntry?.(entry));
         runtime.runMain(globalThis.location.href);
+        globalThis.addEventListener("online", () => runtime.emberRetryCjkFont?.());
         if ("serviceWorker" in navigator && isSecureContext && navigator.onLine !== false && !globalThis.ferrouiModule?.threads) {
             // The offline shell and FerroUI file picker share one worker registration.
             navigator.serviceWorker.register("./ferroui-sw.js", { updateViaCache: "none" })
