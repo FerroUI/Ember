@@ -6,6 +6,15 @@ use std::ops::Deref;
 pub(super) struct FeedRows {
     ordered: Vec<Rc<HnItem>>,
     positions: BTreeMap<u64, usize>,
+    recovery: Option<PageRecovery>,
+}
+
+/// Allocate the provider order only when a page actually has recoverable gaps.
+/// Ordinary paging keeps its existing zero-copy append path.
+#[derive(Default)]
+struct PageRecovery {
+    order: Vec<u64>,
+    missing: BTreeSet<u64>,
 }
 
 /// Incremental totals and the reading-desk recommendation for the active window.
@@ -33,6 +42,77 @@ impl FeedRows {
     pub(super) fn clear(&mut self) {
         self.ordered.clear();
         self.positions.clear();
+        self.recovery = None;
+    }
+
+    pub(super) fn missing_count(&self) -> usize {
+        self.recovery.as_ref().map_or(0, |r| r.missing.len())
+    }
+
+    pub(super) fn missing_ids(&self) -> Vec<u64> {
+        self.recovery
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.missing.iter().copied().collect())
+    }
+
+    pub(super) fn accept_page(
+        &mut self,
+        items: Vec<HnItem>,
+        failed: &[(usize, u64)],
+        replace: bool,
+    ) {
+        let mut recovery = if replace { None } else { self.recovery.take() };
+        if !failed.is_empty() && recovery.is_none() {
+            recovery = Some(PageRecovery {
+                order: if replace {
+                    Vec::new()
+                } else {
+                    self.iter().map(|item| item.id).collect()
+                },
+                missing: BTreeSet::new(),
+            });
+        }
+        if let Some(recovery) = &mut recovery {
+            let mut slots = failed.iter().peekable();
+            for position in 0..=items.len() {
+                while let Some(&&(_, id)) = slots.peek().filter(|slot| slot.0 == position) {
+                    if (replace || !self.positions.contains_key(&id)) && recovery.missing.insert(id)
+                    {
+                        recovery.order.push(id);
+                    }
+                    slots.next();
+                }
+                if let Some(item) = items.get(position) {
+                    recovery.order.push(item.id);
+                    recovery.missing.remove(&item.id);
+                }
+            }
+        }
+        self.accept(items, replace);
+        self.recovery = recovery.filter(|r| !r.missing.is_empty());
+    }
+
+    pub(super) fn recover(&mut self, batch: ember_core::ItemBatch) -> usize {
+        let Some(mut recovery) = self.recovery.take() else {
+            return 0;
+        };
+        let count = batch.items.len();
+        // Successful null responses are final. Only actual transport/storage errors remain retryable.
+        recovery.missing = batch.failed_slots.into_iter().map(|(_, id)| id).collect();
+        if count != 0 {
+            let mut known: BTreeMap<_, _> =
+                self.ordered.drain(..).map(|item| (item.id, item)).collect();
+            known.extend(batch.items.into_iter().map(|item| (item.id, Rc::new(item))));
+            self.positions.clear();
+            for id in &recovery.order {
+                if let Some(item) = known.remove(id) {
+                    self.positions.insert(*id, self.ordered.len());
+                    self.ordered.push(item);
+                }
+            }
+        }
+        self.recovery = (!recovery.missing.is_empty()).then_some(recovery);
+        count
     }
 
     pub(super) fn accept(&mut self, items: Vec<HnItem>, replace: bool) {
@@ -56,6 +136,110 @@ impl FeedRows {
                     self.ordered.push(Rc::new(item));
                 }
             }
+        }
+    }
+}
+
+impl ReaderView {
+    pub(super) fn retry_feed_items(&self) {
+        if self.feed_load.get() == FeedLoad::Loading {
+            return;
+        }
+        let Some(repo) = self.repo() else { return };
+        let ids = self.stories.borrow().missing_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let mode = if self.downloaded_shelf() {
+            FetchMode::Offline
+        } else {
+            FetchMode::CacheFirst
+        };
+        let generation = self.feed_generation.get().wrapping_add(1);
+        self.feed_generation.set(generation);
+        self.feed_load.set(FeedLoad::Loading);
+        self.button("LoadMoreButton").set_is_enabled(false);
+        let retry = self.button("RetryFeedItems");
+        retry.set_content(Some(Rc::new("Retrying unavailable stories…".to_owned())));
+        AutomationProperties::set_name(&retry, Some("Retrying unavailable stories"));
+        let owner = self.to_ref().downgrade();
+        drop(
+            Dispatcher::ui_thread().invoke_async_task_local(move || async move {
+                let batch = repo.load_items(&ids, services::now(), mode).await;
+                let Some(view) = owner
+                    .upgrade()
+                    .filter(|v| v.feed_generation.get() == generation)
+                else {
+                    return;
+                };
+                let focus = view.button("RetryFeedItems").is_focused();
+                let first = batch.items.first().map(|item| item.id);
+                let recovered = view.stories.borrow_mut().recover(batch);
+                let missing = view.stories.borrow().missing_count();
+                view.feed_load
+                    .set(if missing != 0 && view.stories.borrow().is_empty() {
+                        FeedLoad::Unavailable
+                    } else {
+                        FeedLoad::Ready
+                    });
+                view.button("LoadMoreButton").set_is_enabled(true);
+                view.render_stories();
+                let message = match (recovered, missing) {
+                    (0, 0) => "These stories are no longer available.".to_owned(),
+                    (0, _) if mode == FetchMode::Offline => {
+                        "Still unavailable on this device.".to_owned()
+                    }
+                    (0, _) => "Stories are still unavailable. Try again when connected.".to_owned(),
+                    (1, _) => "Recovered 1 story.".to_owned(),
+                    (n, _) => format!("Recovered {n} stories."),
+                };
+                view.status(&message);
+                if focus && missing == 0 {
+                    // Row reconciliation restores the old viewport at Loaded priority.
+                    // Move to the recovered keyboard target after that restoration.
+                    let target = view.downgrade();
+                    Dispatcher::ui_thread().post_local(
+                        move || {
+                            if let Some(view) = target.upgrade().filter(|v| {
+                                v.feed_generation.get() == generation
+                                    && v.get_control::<Border>("FeedPane").is_effectively_visible()
+                            }) {
+                                view.focus_recovered_story(first);
+                            }
+                        },
+                        DispatcherPriority::LOADED,
+                    );
+                }
+            }),
+        );
+    }
+
+    fn focus_recovered_story(&self, first: Option<u64>) {
+        let list = self.get_control::<ListBox>("Stories");
+        let row = first.and_then(|id| {
+            self.rendered_stories.snapshot().iter().position(|value| {
+                value
+                    .as_ref()
+                    .and_then(|v| v.downcast_ref::<HnItem>())
+                    .is_some_and(|item| item.id == id)
+            })
+        });
+        if let Some(index) = row {
+            list.scroll_into_view(index as i32);
+            if let Some(card) = list.container_from_index(index as i32).and_then(|r| {
+                r.get_visual_descendants()
+                    .find_map(|v| v.cast::<StoryCard>())
+            }) {
+                card.focus();
+                return;
+            }
+        }
+        if list.items().count() != 0 {
+            list.focus();
+        } else if self.button("LoadMoreButton").is_effectively_visible() {
+            self.button("LoadMoreButton").focus();
+        } else if self.button("RetryButton").is_effectively_visible() {
+            self.button("RetryButton").focus();
         }
     }
 }

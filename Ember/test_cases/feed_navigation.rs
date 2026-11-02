@@ -607,3 +607,104 @@ fn paginating_and_hiding_a_story_only_notify_the_affected_rows() {
     assert!(Rc::ptr_eq(&second, &list.items().get_at(0).unwrap()));
     window.close();
 }
+
+#[test]
+fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_viewport() {
+    #[derive(Default)]
+    struct InterruptedFeed {
+        phase: Cell<u8>,
+        offline: Cell<bool>,
+        requested: RefCell<Vec<u64>>,
+    }
+    impl HttpClient for InterruptedFeed {
+        fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<String, ReaderError>> {
+            Box::pin(async move {
+                if self.offline.get() {
+                    return Err(ReaderError::Network("offline".into()));
+                }
+                if url.ends_with("/topstories.json") {
+                    return Ok(json!((1..=65).collect::<Vec<_>>()).to_string());
+                }
+                if url.ends_with("/newstories.json") {
+                    return Ok("[901]".to_owned());
+                }
+                let id: u64 = url
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .trim_end_matches(".json")
+                    .parse()
+                    .unwrap();
+                self.requested.borrow_mut().push(id);
+                match (self.phase.get(), id) {
+                    (0, 31 | 32 | 38) | (1, 31) => Err(ReaderError::Network("temporarily down".into())),
+                    (_, 38) => Ok("null".to_owned()),
+                    _ => Ok(json!({"id":id,"type":"story","by":"reader","title":format!("Article {id}")}).to_string()),
+                }
+            })
+        }
+    }
+
+    let http = Rc::new(InterruptedFeed::default());
+    let (shell, window, view) =
+        start_with_http(390.0, 844.0, Rc::new(MemoryStore::default()), http.clone());
+    let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
+    let list = view.get_control::<ListBox>("Stories");
+    let retry = view.get_control::<Button>("RetryFeedItems");
+    tap("LoadMoreButton");
+    assert_eq!(list.items().count(), 57);
+    assert_eq!(
+        AutomationProperties::get_name(&retry).as_deref(),
+        Some("Retry 3 unavailable stories")
+    );
+    tap("LoadMoreButton");
+    assert_eq!(list.items().count(), 62);
+    assert!(!view
+        .get_control::<Button>("LoadMoreButton")
+        .is_effectively_visible());
+    tap("MobileNew");
+    assert!(!retry.is_effectively_visible());
+    tap("MobileHome");
+    assert!(retry.is_effectively_visible());
+    let scroll = list.scroll().unwrap().cast::<ScrollViewer>().unwrap();
+    scroll.set_offset(ferroui_base::Vector::new(0.0, 1050.0));
+    shell.settle();
+    let before = scroll.offset().y;
+    assert!(before > 500.0);
+    http.offline.set(true);
+    tap("RefreshButton");
+    assert_eq!(
+        list.items().count(),
+        62,
+        "a first-page offline fallback must not discard subsequent pages"
+    );
+    assert!((scroll.offset().y - before).abs() < 2.0);
+    http.offline.set(false);
+    http.phase.set(1);
+    http.requested.borrow_mut().clear();
+    tap("RetryFeedItems");
+    assert_eq!(http.requested.borrow().as_slice(), [31, 32, 38]);
+    assert_eq!(list.items().count(), 63);
+    assert_eq!(
+        AutomationProperties::get_name(&retry).as_deref(),
+        Some("Retry 1 unavailable story")
+    );
+
+    http.phase.set(2);
+    http.requested.borrow_mut().clear();
+    tap("RetryFeedItems");
+    assert_eq!(http.requested.borrow().as_slice(), [31]);
+    assert!(!retry.is_effectively_visible());
+    let ids: Vec<_> = (0..list.items().count())
+        .map(|i| {
+            list.items()
+                .get_at(i)
+                .unwrap()
+                .downcast_ref::<ember_core::HnItem>()
+                .unwrap()
+                .id
+        })
+        .collect();
+    assert_eq!(ids, (1..=65).filter(|&id| id != 38).collect::<Vec<_>>());
+    window.close();
+}

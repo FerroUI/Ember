@@ -212,6 +212,45 @@ await run([
             assert(page.errors.length === 0, page.errors.join("\n"));
         } finally { await page.close(); }
     }],
+    ["a failed final feed page retries only its missing stories and keeps their rank", async () => {
+        const testFeed = initScript + `(() => {
+            const original = fetch.bind(globalThis);
+            const ids = Array.from({length: 33}, (_, index) => index + 1);
+            globalThis.retryRequests = [];
+            globalThis.fetch = async (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                if (url.hostname !== "hacker-news.firebaseio.com") return original(input, options);
+                if (url.pathname.endsWith("/topstories.json")) return Response.json(ids);
+                const id = Number(url.pathname.match(/item\\/(\\d+)/)?.[1]);
+                if (globalThis.feedOnline) retryRequests.push(id);
+                if (id > 30 && !globalThis.feedOnline) throw new TypeError("Page unavailable");
+                return Response.json({id, type:"story", by:"reader", title:"Ranked story " + id});
+            };
+        })();`;
+        const page = await open(site, {width:390, height:844, initScript:testFeed});
+        try {
+            await page.waitForView();
+            await waitText(page, "Unread · 30");
+            await byName(page, "LoadMoreButton");
+            await waitText(page, "Retry 3 unavailable stories");
+            assert(!(await state(page)).elements.some(e => e.name === "LoadMoreButton" && e.hit),
+                "There is no page beyond this failed final page");
+            await page.screenshot(path.join(captures, "phone-feed-recovery.png"));
+            await page.evaluate("globalThis.feedOnline = true");
+            await byName(page, "RetryFeedItems");
+            await waitText(page, "Unread · 33");
+            assert(JSON.stringify(await page.evaluate("retryRequests.slice().sort((a,b) => a-b)")) === "[31,32,33]",
+                "Retry requested stories already present in the feed");
+            await reveal(page, e => e.hit && e.automationName?.startsWith("Ranked story 33,"));
+            const rows = (await state(page)).elements.filter(e => e.hit && /^Ranked story 3[123],/.test(e.automationName ?? ""));
+            assert(rows.length === 3 && rows[0].y < rows[1].y && rows[1].y < rows[2].y,
+                "Recovered stories should be visible in provider order");
+            assert(!(await state(page)).elements.some(e => e.name === "RetryFeedItems" && e.hit),
+                "Successful recovery left a stale retry action");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "feed-page-recovery"); throw error; }
+        finally { await page.close(); }
+    }],
     ["feed tabs resume their paged viewport and shortcuts target the focused story", async () => {
         const feeds = initScript + `(() => {
             const original = globalThis.fetch;

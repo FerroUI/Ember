@@ -286,7 +286,7 @@ impl ReaderView {
                 view.feed_load.set(FeedLoad::Ready);
                 view.button("LoadMoreButton").set_is_enabled(true);
                 let next = (cursor < ids.len()).then_some(cursor);
-                view.accept_items(found, offset, next, ids.len(), DataSource::Cache, None);
+                view.accept_items(found, offset, next, ids.len(), DataSource::Cache, None, &[]);
                 let count = view.stories.borrow().len();
                 let count_label = match (count, next.is_some()) {
                     (_, true) => format!("{count}+ matches"),

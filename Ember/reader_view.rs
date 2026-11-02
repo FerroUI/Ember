@@ -115,6 +115,7 @@ enum FeedLoad {
     Ready,
     Loading,
     Unavailable,
+    PageUnavailable,
     StorageUnavailable,
 }
 
@@ -479,6 +480,7 @@ impl ReaderView {
                 v.get_control::<ToggleButton>("DownloadedOnly").is_checked() == Some(true),
             );
         });
+        self.on("RetryFeedItems", Self::retry_feed_items);
         self.on("LoadMoreButton", |v| {
             if let Some(offset) = v.next.get() {
                 // A deliberate unread search can cross fully read or muted pages.
@@ -1140,6 +1142,8 @@ impl ReaderView {
                 .collect(),
             _ => Vec::new(),
         };
+        let needs_preview = self.stories.borrow().is_empty();
+        self.button("RetryFeedItems").set_is_enabled(false);
         if route.is_library() && !self.library_find.borrow().query.is_empty() {
             self.scan_library(repo, local_ids, offset, local_page_size, generation);
             return;
@@ -1147,7 +1151,7 @@ impl ReaderView {
         let weak = self.to_ref().downgrade();
         drop(
             Dispatcher::ui_thread().invoke_async_task_local(move || async move {
-                if offset == 0 && mode != FetchMode::Offline {
+                if needs_preview && offset == 0 && mode != FetchMode::Offline {
                     if let FeedRoute::Feed(kind) = route {
                         if let Ok(cached) = repo
                             .load_feed(kind, 0, 30, services::now(), FetchMode::Offline)
@@ -1163,6 +1167,7 @@ impl ReaderView {
                                     cached.total,
                                     cached.source,
                                     None,
+                                    &[],
                                 );
                             }
                         }
@@ -1179,6 +1184,7 @@ impl ReaderView {
                                 page.total,
                                 page.source,
                                 page.warning,
+                                page.failed_slots,
                                 BTreeMap::new(),
                             )
                         }),
@@ -1194,6 +1200,7 @@ impl ReaderView {
                                     page.total,
                                     page.source,
                                     page.warning,
+                                    Vec::new(),
                                     page.story_ids,
                                 )
                             })
@@ -1218,6 +1225,7 @@ impl ReaderView {
                             ids.len(),
                             batch.source,
                             batch.warning,
+                            batch.failed_slots,
                             BTreeMap::new(),
                         ))
                     }
@@ -1231,7 +1239,22 @@ impl ReaderView {
                 view.feed_load.set(FeedLoad::Ready);
                 view.button("LoadMoreButton").set_is_enabled(true);
                 match result {
-                    Ok((items, next, total, source, warning, story_ids)) => {
+                    Ok((items, next, total, source, warning, failed_slots, story_ids)) => {
+                        // A stale first-page fallback must not truncate pages the reader already has open.
+                        if offset == 0 && mode == FetchMode::Refresh && !needs_preview
+                            && matches!(*view.feed.borrow(), FeedRoute::Feed(_))
+                            && source == DataSource::StaleCache && warning.is_some()
+                            && failed_slots.is_empty()
+                            && view.stories.borrow().len() > items.len()
+                            && items.iter().zip(view.stories.borrow().iter()).all(|(item, old)| item == old.as_ref())
+                        {
+                            let summary = format!("{total} stories · Offline copy");
+                            view.label("FeedSummary").set_text(Some(&summary));
+                            view.accepted_feed_summary.replace(Some(summary));
+                            view.status(warning.as_deref().unwrap_or_default());
+                            view.render_stories();
+                            return;
+                        }
                         if offset == 0 {
                             if items.is_empty() && total > 0 && warning.is_some() {
                                 view.feed_load.set(FeedLoad::Unavailable);
@@ -1243,7 +1266,7 @@ impl ReaderView {
                         let continue_at = next.filter(|&cursor| {
                             pages_left > 1 && cursor > offset && warning.is_none()
                         });
-                        view.accept_items(items, offset, next, total, source, warning);
+                        view.accept_items(items, offset, next, total, source, warning, &failed_slots);
                         if let Some(cursor) = continue_at {
                             let no_new_unread = {
                                 let state = view.state.borrow();
@@ -1258,12 +1281,16 @@ impl ReaderView {
                         }
                     }
                     Err(error) => {
-                        view.label("FeedSummary")
-                            .set_text(Some("Update unavailable"));
-                        view.feed_load.set(FeedLoad::Unavailable);
+                        let (state, message) = if offset == 0 {
+                            (FeedLoad::Unavailable, "Update unavailable")
+                        } else {
+                            (FeedLoad::PageUnavailable, "Couldn’t load the next page")
+                        };
+                        view.label("FeedSummary").set_text(Some(message));
+                        view.feed_load.set(state);
                         view.button("LoadMoreButton")
                             .set_is_visible(view.next.get().is_some());
-                        view.status(&format!("Could not refresh: {error}"));
+                        view.status(&format!("{message}: {error}"));
                         view.render_stories();
                     }
                 }
@@ -1278,9 +1305,10 @@ impl ReaderView {
         total: usize,
         source: DataSource,
         warning: Option<String>,
+        failed_slots: &[(usize, u64)],
     ) {
         let append_at = (offset != 0).then(|| self.stories.borrow().len());
-        self.stories.borrow_mut().accept(items, offset == 0);
+        self.stories.borrow_mut().accept_page(items, failed_slots, offset == 0);
         self.next.set(next);
         self.button("LoadMoreButton").set_is_visible(next.is_some());
         let route = self.feed.borrow();
@@ -1316,7 +1344,7 @@ impl ReaderView {
         if matches!(*route, FeedRoute::Feed(_)) {
             // Keep the last accepted summary while a subsequent page is still in flight.
             self.accepted_feed_summary
-                .replace((!self.stories.borrow().is_empty()).then_some(summary));
+                .replace((!self.stories.borrow().is_empty() || !failed_slots.is_empty()).then_some(summary));
         }
         drop(route);
         if let Some(warning) = warning {
@@ -1393,6 +1421,19 @@ impl ReaderView {
             self.sync_story_items(&list, &visible);
             self.refresh_story_cards(None, visibility_changed);
         }
+        let missing = loaded.missing_count();
+        let retry = self.button("RetryFeedItems");
+        retry.set_is_visible(missing != 0);
+        if missing != 0 {
+            let label = if missing == 1 {
+                "Retry 1 unavailable story".to_owned()
+            } else {
+                format!("Retry {missing} unavailable stories")
+            };
+            retry.set_content(Some(Rc::new(label.clone())));
+            AutomationProperties::set_name(&retry, Some(&label));
+            retry.set_is_enabled(self.feed_load.get() != FeedLoad::Loading);
+        }
         let empty = list.items().count() == 0;
         self.get_control::<StackPanel>("FeedEmpty")
             .set_is_visible(empty);
@@ -1413,6 +1454,16 @@ impl ReaderView {
                     "Offline copy unavailable",
                     "Open the saved story while connected to download its discussion again.",
                     Some(AllSaved),
+                ),
+                FeedLoad::PageUnavailable => (
+                    "Couldn’t load the next page",
+                    "Your place is saved. Retry this page below.",
+                    None,
+                ),
+                _ if missing != 0 => (
+                    "Stories unavailable",
+                    "Retry the unavailable stories below.",
+                    None,
                 ),
                 FeedLoad::Unavailable => (
                     "Couldn’t load stories",
@@ -1523,7 +1574,9 @@ impl ReaderView {
             );
         }
         let more = self.button("LoadMoreButton");
-        let action = if filterable && state.preferences.hide_read {
+        let action = if self.feed_load.get() == FeedLoad::PageUnavailable {
+            "Retry page"
+        } else if filterable && state.preferences.hide_read {
             "Find more unread"
         } else {
             "Load more"

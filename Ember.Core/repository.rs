@@ -235,6 +235,10 @@ pub struct FeedPage {
     pub offset: usize,
     pub next_offset: Option<usize>,
     pub missing_ids: Vec<ItemId>,
+    /// Transient failures and the number of successful rows preceding each one.
+    /// An explicit null response is unavailable, but does not require another request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_slots: Vec<(usize, ItemId)>,
     pub source: DataSource,
     pub stale: bool,
     pub warning: Option<String>,
@@ -244,6 +248,10 @@ pub struct FeedPage {
 pub struct ItemBatch {
     pub items: Vec<HnItem>,
     pub missing_ids: Vec<ItemId>,
+    /// Transient failures and the number of successful rows preceding each one.
+    /// An explicit null response is unavailable, but does not require another request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_slots: Vec<(usize, ItemId)>,
     pub source: DataSource,
     pub stale: bool,
     pub warning: Option<String>,
@@ -577,6 +585,7 @@ impl Repository {
                         }
                     }
                     Err(error) => {
+                        batch.failed_slots.push((batch.items.len(), id));
                         batch.missing_ids.push(id);
                         if batch.warning.is_none() {
                             batch.warning = Some(error.to_string());
@@ -619,6 +628,7 @@ impl Repository {
             offset,
             next_offset: (end < ids.value.len()).then_some(end),
             missing_ids: batch.missing_ids,
+            failed_slots: batch.failed_slots,
             source,
             stale: ids.stale || batch.stale,
             warning: batch.warning.or(ids.warning),

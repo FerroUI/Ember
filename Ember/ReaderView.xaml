@@ -71,7 +71,10 @@
                 <Button x:Name="RetryButton" Classes="quiet" Content="Try again" HorizontalAlignment="Left" IsVisible="False" />
               </StackPanel>
             </Grid>
-            <Button x:Name="LoadMoreButton" Grid.Row="2" Classes="quiet" Content="Load more" HorizontalAlignment="Stretch" IsVisible="False" />
+            <StackPanel Grid.Row="2">
+              <Button x:Name="RetryFeedItems" Classes="quiet" HorizontalAlignment="Stretch" IsVisible="False" />
+              <Button x:Name="LoadMoreButton" Classes="quiet" Content="Load more" HorizontalAlignment="Stretch" IsVisible="False" />
+            </StackPanel>
           </Grid>
         </Border>
         <Border x:Name="DetailPane" Grid.Column="2" Background="{DynamicResource EmberSurface}">
