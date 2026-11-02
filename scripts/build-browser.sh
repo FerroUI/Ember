@@ -29,4 +29,4 @@ if [[ "${EMBER_LOW_MEMORY:-0}" == 1 ]]; then
     export EMCC_CFLAGS="${EMCC_CFLAGS:+$EMCC_CFLAGS }-Wl,--strip-all"
 fi
 FERROUI_BROWSER_WORKSPACE="$ROOT" "$ROOT/FerroUI/scripts/build-browser.sh" ember-browser "$@"
-node "$ROOT/Ember.Browser/write-offline-manifest.mjs" "$ROOT" "$@"
+node "$ROOT/Ember.Browser/write-offline-manifest.mjs" "$ROOT" --package-font "$@"

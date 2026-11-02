@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { prepareCjkFont } from "./prepare-cjk-font.mjs";
 
 const [root, ...args] = process.argv.slice(2);
 let out;
@@ -15,6 +16,7 @@ for (let index = 0; index < args.length; ++index) {
 }
 const target = process.env.CARGO_TARGET_DIR ?? path.join(root, "target");
 out = path.resolve(out ?? path.join(target, mode + (features ? "-" + features.replaceAll(",", "-") : ""), "ember-browser"));
+if (args.includes("--package-font")) await prepareCjkFont(out);
 if (mode !== "browser") {
     console.log("Ember IndexedDB offline data is enabled. Shell precaching is available in the default non-threaded build.");
     process.exit(0);
@@ -23,7 +25,9 @@ const files = [];
 function visit(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         const absolute = path.join(directory, entry.name);
-        if (entry.isDirectory()) visit(absolute);
+        if (entry.isDirectory()) {
+            if (absolute !== path.join(out, "optional-fonts")) visit(absolute);
+        }
         else if (!entry.name.endsWith(".map") && !["offline-manifest.json", "ferroui-sw.js"].includes(entry.name)) files.push(path.relative(out, absolute).replaceAll(path.sep, "/"));
     }
 }

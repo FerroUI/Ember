@@ -343,6 +343,8 @@ scripts/build-browser.sh
 python3 -m http.server 8080 --directory "${CARGO_TARGET_DIR:-target}/browser/ember-browser"
 ```
 
+The browser packager includes the unmodified Noto Sans CJK SC Regular 2.004 face (16,437,364 bytes) as a separate, same-origin fallback. Opening an ordinary Latin feed and installing the offline shell transfer no font payload. When the renderer requests the fallback, Ember verifies the SHA-256 digest before displaying or caching it. A later visit can reuse the verified face offline. For a network-free packaging step, set `EMBER_CJK_FONT` to a local copy of the pinned upstream OTF. [Font source and license](../NOTICE.md)
+
 Open `http://localhost:8080/`. The build uses FerroUI's
 `wasm32-unknown-emscripten` toolchain. The wrapper accepts `--out`, `--debug`,
 `--features vello`, `--threads` and `--both`. The default renderer is Skia;

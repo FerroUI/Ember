@@ -399,3 +399,85 @@ export function setLocation(item, back = false) {
         reportEntry(key);
     }
 }
+
+// This face is fetched only when the reader needs a glyph from its CJK fallback.
+// The packager uses the same immutable identity. No text enters an asset request.
+export const cjkFontAsset = Object.freeze({
+    path: "optional-fonts/NotoSansCJKsc-Regular.2c76254f6fc379fd.otf",
+    size: 16437364,
+    sha256: "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+});
+
+async function readVerifiedFont(response, asset) {
+    if (response.status !== 200 || !response.body) throw new Error("The optional reader font is unavailable.");
+    const bytes = new Uint8Array(asset.size);
+    const reader = response.body.getReader();
+    let offset = 0;
+    try {
+        for (;;) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            if (value.byteLength > bytes.length - offset) {
+                await reader.cancel();
+                throw new Error("The optional reader font exceeds its expected size.");
+            }
+            bytes.set(value, offset);
+            offset += value.byteLength;
+        }
+    } finally {
+        reader.releaseLock();
+    }
+    if (offset !== bytes.length || bytes[0] !== 0x4f || bytes[1] !== 0x54 || bytes[2] !== 0x54 || bytes[3] !== 0x4f) {
+        throw new Error("The optional reader font is incomplete or invalid.");
+    }
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const digest = Array.from(hash, byte => byte.toString(16).padStart(2, "0")).join("");
+    if (digest !== asset.sha256) throw new Error("The optional reader font failed its integrity check.");
+    return bytes;
+}
+
+export function createFontLoader(asset, moduleUrl) {
+    const root = new URL("./", moduleUrl);
+    const url = new URL(asset.path, root).href;
+    const name = "ember-fonts:" + root.href;
+    let pending;
+    async function read() {
+        let cache;
+        try {
+            cache = await globalThis.caches?.open(name);
+            const cached = await cache?.match(url);
+            if (cached) {
+                try {
+                    return await readVerifiedFont(cached, asset);
+                } catch {
+                    await cache.delete(url);
+                }
+            }
+        } catch {
+            // CacheStorage may be blocked in private browsing. Rendering can still proceed.
+        }
+        const response = await fetch(url, {
+            mode: "same-origin", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
+        });
+        const bytes = await readVerifiedFont(response, asset);
+        if (cache) {
+            try {
+                await cache.put(url, new Response(bytes, {headers: {"Content-Type": "font/otf"}}));
+                for (const key of await cache.keys()) {
+                    if (key.url !== url) await cache.delete(key);
+                }
+            } catch {
+                // Quota failures must not prevent use of the verified font in this session.
+            }
+        }
+        return bytes;
+    }
+    return () => {
+        // Coalesce concurrent glyph misses, then release the JS buffer after the native copy.
+        // A failed attempt can be retried after connectivity or storage access changes.
+        pending ??= read().finally(() => { pending = undefined; });
+        return pending;
+    };
+}
+
+export const loadCjkFallbackFont = createFontLoader(cjkFontAsset, import.meta.url);
