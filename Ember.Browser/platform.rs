@@ -8,6 +8,8 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(raw_module = "./ember-platform.js")]
 extern "C" {
+    #[wasm_bindgen(js_name = loadCjkFallbackFont)]
+    fn load_cjk_fallback_font() -> JsValue;
     #[wasm_bindgen(js_name = fetchJson)]
     fn fetch_json(url: &str) -> JsValue;
     #[wasm_bindgen(js_name = databaseGet)]
@@ -32,6 +34,17 @@ extern "C" {
     pub fn set_location(item: Option<String>, back: bool);
     #[wasm_bindgen(js_name = requestBrowserBack)]
     pub fn request_browser_back() -> bool;
+}
+
+pub(super) fn load_cjk_font() -> BoxFuture<'static, Option<Vec<u8>>> {
+    Box::pin(async {
+        let bytes = await_promise(&load_cjk_fallback_font())
+            .await
+            .ok()?
+            .dyn_into::<js_sys::Uint8Array>()
+            .ok()?;
+        Some(bytes.to_vec())
+    })
 }
 
 pub struct BrowserHttpClient;
