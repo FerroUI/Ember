@@ -12,14 +12,14 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-All previews use deterministic Hacker News data. Chromium captured the release WebAssembly reading and swipe interactions, discussion search, code tools, Downloads, and storage and mute controls. The native test host rendered the other views with Skia and HarfBuzz.
+All previews use deterministic Hacker News data. Chromium captured the release WebAssembly reading and swipe interactions, partial feed recovery, search corrections, multilingual text, code tools, Downloads, and storage and mute controls. The native test host rendered the other views with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
 | View | Previews |
 | --- | --- |
 | Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Compact feed](images/ember-compact-feed.png) · [Retry unavailable stories](images/ember-feed-recovery.png) · [Swipe preview](images/ember-swipe-preview.png) · [Landscape reader](images/ember-landscape-reader.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
-| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Sibling reply navigation](images/ember-reply-navigation.png) · [Focus reading with Find](images/ember-focus-find.png) · [Read in context on phone](images/ember-find-context-phone.png) · [Read in context on desktop](images/ember-find-context-desktop.png) · [New replies](images/ember-new-replies.png) · [Code tools](images/ember-code-tools.png) · [Search this discussion](images/ember-discussion-search.png) |
+| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Multilingual discussion and editor](images/ember-multilingual-reader.png) · [Sibling reply navigation](images/ember-reply-navigation.png) · [Focus reading with Find](images/ember-focus-find.png) · [Read in context on phone](images/ember-find-context-phone.png) · [Read in context on desktop](images/ember-find-context-desktop.png) · [New replies](images/ember-new-replies.png) · [Code tools](images/ember-code-tools.png) · [Search this discussion](images/ember-discussion-search.png) |
 | Discovery and library | [Open a permalink](images/ember-open-link.png) · [Author profile](images/ember-desktop-profile.png) · [Correct a username](images/ember-profile-correction.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) · [Find in a collection](images/ember-library-find.png) |
 | Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Preference draft](images/ember-preference-draft.png) · [Domain mute on a phone](images/ember-domain-mute.png) · [Discard mute edits](images/ember-mute-drafts.png) · [Offline storage](images/ember-offline-storage.png) · [Background download](images/ember-offline-progress.png) |
 
