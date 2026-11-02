@@ -268,6 +268,11 @@ fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool) {
         };
         let Some(id) = item_from_location(location) else {
             if *view.detail.borrow() != DetailRoute::Welcome {
+                if entry.is_some() {
+                    let outgoing = view.current_history_entry();
+                    view.prepend_forward(view.history.take().into_iter().chain(outgoing));
+                    view.detail.replace(DetailRoute::Welcome);
+                }
                 view.return_to_feed(false);
             }
             view.browser_entry.set(entry);
@@ -284,35 +289,49 @@ fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool) {
         let matches = |visit: &ThreadVisit| {
             visit.root == id && (match_by_item || (entry.is_some() && visit.browser_entry == entry))
         };
-        let previous = view
-            .history
-            .borrow()
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, route)| match route {
-                HistoryEntry::Thread(visit) if matches(visit) => Some((index, visit.clone())),
-                _ => None,
-            });
-        if let Some((index, visit)) = previous {
-            view.remember_thread();
-            view.history.borrow_mut().truncate(index);
+        let target =
+            |route: &HistoryEntry| matches!(route, HistoryEntry::Thread(visit) if matches(visit));
+        let previous = view.history.borrow().iter().rposition(target);
+        let next = entry.and_then(|_| view.forward.borrow().iter().position(target));
+        let visit = if let Some(index) = previous {
+            let outgoing = view.current_history_entry();
+            let mut popped = view.history.borrow_mut().split_off(index).into_iter();
+            let Some(HistoryEntry::Thread(visit)) = popped.next() else {
+                unreachable!()
+            };
+            if entry.is_some() {
+                view.prepend_forward(popped.chain(outgoing));
+            } else {
+                view.forward.borrow_mut().clear();
+            }
             view.detail.replace(DetailRoute::Welcome);
-            view.present_discussion(visit, false);
+            visit
+        } else if let Some(index) = next {
+            let outgoing = view.current_history_entry();
+            let mut future = view.forward.borrow_mut();
+            // Restore every skipped form, profile and discussion before arriving
+            // at the destination. A single history.go(n) emits one browser event.
+            view.history
+                .borrow_mut()
+                .extend(outgoing.into_iter().chain(future.drain(..index)));
+            let Some(HistoryEntry::Thread(visit)) = future.pop_front() else {
+                unreachable!()
+            };
+            view.detail.replace(DetailRoute::Welcome);
+            visit
         } else {
+            view.forward.borrow_mut().clear();
             let visit = entry
                 .and_then(|key| view.browser_visits.borrow().get(key, id))
                 .unwrap_or_else(|| ThreadVisit::new(id, id, entry));
             if same_thread {
-                if let Some(outgoing) = view.remember_thread() {
-                    view.history
-                        .borrow_mut()
-                        .push(HistoryEntry::Thread(outgoing));
-                }
+                let outgoing = view.current_history_entry();
+                view.history.borrow_mut().extend(outgoing);
                 view.detail.replace(DetailRoute::Welcome);
             }
-            view.present_discussion(visit, false);
-        }
+            visit
+        };
+        view.present_discussion(visit, false);
     });
 }
 fn item_from_location(location: &str) -> Option<u64> {
@@ -342,6 +361,7 @@ pub struct ReaderView {
     history: RefCell<Vec<HistoryEntry>>,
     browser_entry: Cell<Option<u64>>,
     browser_visits: RefCell<BrowserVisits>,
+    forward: RefCell<VecDeque<HistoryEntry>>,
     search_form: RefCell<Option<crate::search_panel::Form>>,
     stories: RefCell<FeedRows>,
     feed_windows: RefCell<BTreeMap<FeedKind, FeedWindow>>,
@@ -434,6 +454,7 @@ impl ReaderView {
             history: RefCell::new(Vec::new()),
             browser_entry: Cell::new(INITIAL_BROWSER_ENTRY.with(|initial| initial.take())),
             browser_visits: RefCell::default(),
+            forward: RefCell::default(),
             search_form: RefCell::new(None),
             stories: RefCell::default(),
             feed_windows: RefCell::default(),
@@ -2058,6 +2079,9 @@ impl ReaderView {
         self.open_discussion(id, id, publish);
     }
     fn open_discussion(&self, row: u64, id: u64, publish: bool) {
+        if publish && self.address_item() != Some(id) {
+            self.forward.borrow_mut().clear();
+        }
         self.present_discussion(ThreadVisit::new(id, row, None), publish);
     }
     fn present_discussion(&self, visit: ThreadVisit, publish: bool) {
@@ -2845,20 +2869,11 @@ impl ReaderView {
         }));
     }
     fn navigate(&self, route: DetailRoute) {
-        let visit = if *self.detail.borrow() != route {
-            self.remember_thread()
-        } else {
-            None
-        };
-        let old = self.detail.replace(route.clone());
-        if old != route && old != DetailRoute::Welcome {
-            let entry = match (visit, self.search_form.borrow().as_ref()) {
-                (Some(visit), _) => HistoryEntry::Thread(visit),
-                (None, Some(form)) => HistoryEntry::Search(Box::new((form.capture)())),
-                (None, None) => HistoryEntry::Route(old),
-            };
-            self.history.borrow_mut().push(entry);
+        if *self.detail.borrow() != route {
+            let outgoing = self.current_history_entry();
+            self.history.borrow_mut().extend(outgoing);
         }
+        self.detail.replace(route);
         self.detail_generation
             .set(self.detail_generation.get().wrapping_add(1));
         self.configure_detail();
@@ -2866,6 +2881,43 @@ impl ReaderView {
         self.update_navigation();
         self.animate_detail();
     }
+    fn current_history_entry(&self) -> Option<HistoryEntry> {
+        match self.detail.borrow().clone() {
+            DetailRoute::Welcome => None,
+            DetailRoute::Thread(_) => self.remember_thread().map(HistoryEntry::Thread),
+            route => Some(match self.search_form.borrow().as_ref() {
+                Some(form) => HistoryEntry::Search(Box::new((form.capture)())),
+                None => HistoryEntry::Route(route),
+            }),
+        }
+    }
+
+    fn prepend_forward(&self, entries: impl DoubleEndedIterator<Item = HistoryEntry>) {
+        let mut future = self.forward.borrow_mut();
+        for route in entries.rev() {
+            future.push_front(route);
+            if future.len() > MAX_BROWSER_VISITS {
+                future.pop_back();
+            }
+        }
+    }
+
+    fn address_item(&self) -> Option<u64> {
+        match *self.detail.borrow() {
+            DetailRoute::Thread(id) => Some(id),
+            _ => self
+                .history
+                .borrow()
+                .iter()
+                .rev()
+                .find_map(|entry| match entry {
+                    HistoryEntry::Thread(visit) => Some(visit.root),
+                    HistoryEntry::Route(DetailRoute::Thread(id)) => Some(*id),
+                    _ => None,
+                }),
+        }
+    }
+
     fn capture_thread_visit(&self, id: u64) -> ThreadVisit {
         let find = self
             .get_control::<Border>("ThreadTools")
@@ -2902,6 +2954,7 @@ impl ReaderView {
     }
 
     fn forget_thread_presentations(&self) {
+        self.forward.borrow_mut().clear();
         self.browser_visits.take();
         self.visit_seen.replace(Rc::default());
         self.resume_viewport.set(None);
@@ -3004,6 +3057,9 @@ impl ReaderView {
             .set_content(Some(Control::boxed(&control)));
     }
     fn back_to_feed(&self, publish: bool) {
+        if publish && self.address_item().is_some() {
+            self.forward.borrow_mut().clear();
+        }
         self.remember_thread();
         self.history.borrow_mut().clear();
         self.selected.set(None);
@@ -3042,8 +3098,10 @@ impl ReaderView {
             self.set_focus_reading(false);
             return;
         }
+        let source = self.address_item();
+        let source_key = self.browser_entry.get();
+        let outgoing = self.current_history_entry();
         let route = self.history.borrow_mut().pop();
-        self.remember_thread();
         // Restoring a route must not put the outgoing page back onto the history stack.
         self.detail.replace(DetailRoute::Welcome);
         match route {
@@ -3057,14 +3115,10 @@ impl ReaderView {
             _ => self.return_to_feed(false),
         }
         // Forms and profiles keep the address of their underlying discussion.
-        let item = match *self.detail.borrow() {
-            DetailRoute::Thread(id) => Some(id),
-            _ => self.history.borrow().iter().rev().find_map(|entry| match entry {
-                HistoryEntry::Thread(visit) => Some(visit.root),
-                HistoryEntry::Route(DetailRoute::Thread(id)) => Some(*id),
-                _ => None,
-            }),
-        };
+        let item = self.address_item();
+        if source_key.is_some() && source != item {
+            self.prepend_forward(outgoing.into_iter());
+        }
         self.publish_location(item, LocationNavigation::Back);
     }
     fn return_to_feed(&self, publish: bool) {

@@ -302,6 +302,25 @@ fn browser_slots_for_the_same_item_restore_distinct_find_drafts_in_both_directio
     route(1001, Some(13));
     assert!(field.is_effectively_visible());
     assert_eq!(field.text().as_deref(), Some("Second visit"));
+    let back = view.get_control::<Button>("BackButton");
+    click_in_view(&shell, &window, &back); // close Find
+    click_in_view(&shell, &window, &back);
+    let title = view.get_control::<TextBlock>("DetailTitle");
+    assert_eq!(
+        title.text().as_deref(),
+        Some("Ask HN: What changed the way you think about programming?")
+    );
+    route(1001, Some(13));
+    assert_eq!(title.text().as_deref(), Some("Small tools, carefully made"));
+    route(1002, Some(12));
+    route(1003, Some(14)); // fresh branch from B
+    route(1001, Some(11));
+    route(1003, Some(14));
+    click_in_view(&shell, &window, &back);
+    assert_eq!(
+        title.text().as_deref(),
+        Some("Ask HN: What changed the way you think about programming?")
+    );
     route(1001, None);
     assert!(!field.is_effectively_visible());
     window.close();

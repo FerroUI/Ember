@@ -215,6 +215,29 @@ await run([
             await waitText(page, "1 of 2 matching comments");
             await page.evaluate("history.go(2)");
             await expectFind("wonderful");
+            await byName(page, "BackButton"); // close Find before leaving the discussion
+            await byName(page, "BackButton");
+            await at("102", second);
+            await page.evaluate("history.forward()");
+            await at("101", title);
+            await page.evaluate("history.back()");
+            await at("102", second);
+            const third = fixtures[103].title;
+            await byText(page, third);
+            await at("103", third);
+            // Opening C at B replaces the former Forward branch to the second A.
+            const tail = await page.evaluate("history.state.emberEntry");
+            await page.evaluate("history.forward()");
+            await sleep(200);
+            assert(await page.evaluate("history.state.emberEntry") === tail, "An abandoned Forward branch survived");
+            await page.evaluate("history.go(-2)");
+            await expectFind("design notes");
+            await page.evaluate("history.go(2)");
+            await at("103", third);
+            await byName(page, "BackButton");
+            await at("102", second);
+            await page.evaluate("history.forward()");
+            await at("103", third);
             assert(page.errors.length === 0, page.errors.join("\n"));
         } finally { await page.close(); }
     }],
