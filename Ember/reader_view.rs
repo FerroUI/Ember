@@ -228,8 +228,10 @@ enum WorkspaceLayout {
 pub enum LocationNavigation {
     Open,
     Back,
+    /// Ask whether the host can traverse an existing reader entry.
+    RequestBack,
 }
-type LocationHandler = Rc<dyn Fn(Option<u64>, LocationNavigation)>;
+type LocationHandler = Rc<dyn Fn(Option<u64>, LocationNavigation) -> bool>;
 
 ferroui_base::ferro_thread_local! {
     static INITIAL_BROWSER_ENTRY: Cell<Option<u64>> = Cell::new(None);
@@ -237,7 +239,13 @@ ferroui_base::ferro_thread_local! {
     static LOCATION_CHANGED: RefCell<Option<LocationHandler>> = RefCell::new(None);
 }
 pub fn set_location_changed(callback: Rc<dyn Fn(Option<u64>)>) {
-    set_location_navigation(Rc::new(move |item, _| callback(item)));
+    set_location_navigation(Rc::new(move |item, action| {
+        if action == LocationNavigation::RequestBack {
+            return false;
+        }
+        callback(item);
+        true
+    }));
 }
 pub fn set_location_navigation(callback: LocationHandler) {
     LOCATION_CHANGED.with(|v| *v.borrow_mut() = Some(callback));
@@ -3117,6 +3125,17 @@ impl ReaderView {
         let source = self.address_item();
         let source_key = self.browser_entry.get();
         let outgoing = self.current_history_entry();
+        // An explicit tab switch can clear local routes while the browser still
+        // has an earlier discussion in this document. Let that entry supply Back.
+        let detached = match *self.detail.borrow() {
+            DetailRoute::Thread(id) if self.history.borrow().is_empty() => Some(id),
+            _ => None,
+        };
+        if let Some(id) = detached {
+            if self.publish_location(Some(id), LocationNavigation::RequestBack) {
+                return;
+            }
+        }
         let route = self.history.borrow_mut().pop();
         // Restoring a route must not put the outgoing page back onto the history stack.
         self.detail.replace(DetailRoute::Welcome);
@@ -3156,11 +3175,9 @@ impl ReaderView {
             self.button("RetryButton").focus();
         }
     }
-    fn publish_location(&self, id: Option<u64>, action: LocationNavigation) {
+    fn publish_location(&self, id: Option<u64>, action: LocationNavigation) -> bool {
         let callback = LOCATION_CHANGED.with(|slot| slot.borrow().clone());
-        if let Some(callback) = callback {
-            callback(id, action);
-        }
+        callback.is_some_and(|callback| callback(id, action))
     }
     fn wire_quick_search(&self) {
         let error = self.label("QuickSearchError");

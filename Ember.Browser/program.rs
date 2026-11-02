@@ -29,10 +29,14 @@ pub fn run_main(href: &str) {
     }));
     ember::set_initial_location(href.to_owned());
     ember::set_location_navigation(Rc::new(|item, action| {
+        if action == ember::LocationNavigation::RequestBack {
+            return platform::request_browser_back();
+        }
         platform::set_location(
             item.map(|id| id.to_string()),
             action == ember::LocationNavigation::Back,
-        )
+        );
+        true
     }));
     let mut options = BrowserPlatformOptions::default();
     if href.contains("RenderingMode=Software2D") {
@@ -56,8 +60,8 @@ pub fn run_main(href: &str) {
 
 #[cfg(target_os = "emscripten")]
 #[wasm_bindgen(js_name = emberNavigate)]
-pub fn navigate(href: &str, entry: u32) {
-    ember::navigate_browser_entry(href, (entry != 0).then_some(u64::from(entry)));
+pub fn navigate(href: &str, entry: u32, backward: bool) {
+    ember::navigate_browser_entry(href, (entry != 0).then_some(u64::from(entry)), backward);
 }
 
 #[cfg(target_os = "emscripten")]

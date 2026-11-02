@@ -54,8 +54,8 @@ async function startReader() {
         const runtime = await loaded.createRuntime();
         FerroExports.attach(runtime);
         globalThis.ember = runtime;
-        observeLocation((href, entry) => runtime.emberNavigate(href, entry),
-            entry => runtime.emberSetBrowserEntry(entry));
+        observeLocation((href, entry, backward) => runtime.emberNavigate(href, entry, backward),
+            entry => runtime.emberSetBrowserEntry?.(entry));
         runtime.runMain(globalThis.location.href);
         if ("serviceWorker" in navigator && isSecureContext && navigator.onLine !== false && !globalThis.ferrouiModule?.threads) {
             // The offline shell and FerroUI file picker share one worker registration.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import "fake-indexeddb/auto";
-import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, observeLocation, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
+import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, observeLocation, requestBrowserBack, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
 
 const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
@@ -176,8 +176,9 @@ test("reader Back reuses owned entries, queues rapid actions and replaces an ini
             if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
         }
     });
-    const visits = [];
-    observeLocation(href => visits.push(locationItem(href)));
+    const visits = [], directions = [];
+    observeLocation((href, _, backward) => { visits.push(locationItem(href)); directions.push(backward); });
+    assert.equal(requestBrowserBack(), false);
     setLocation(null, true);
     assert.equal(entries.length, 1);
     assert.equal(location.href, "https://example.test/read/?theme=dark#debug");
@@ -197,6 +198,15 @@ test("reader Back reuses owned entries, queues rapid actions and replaces an ini
     traverse(-1);
     traverse(1);
     assert.deepEqual(visits, [null, "30"]);
+    assert.deepEqual(directions, [true, false]);
+    assert.equal(requestBrowserBack(), true);
+    traverse(-1);
+    assert.deepEqual(visits, [null, "30", null], "A delegated toolbar Back must navigate the reader");
+    assert.equal(requestBrowserBack(), false);
+    for (const address of ["not a URL", "https://unrelated.test/read/?item=4"]) {
+        entries[position].state.emberPreviousHref = address;
+        assert.equal(requestBrowserBack(), false);
+    }
 });
 
 test("ordered batch reads use one transaction and range cleanup preserves neighboring keys", async () => {

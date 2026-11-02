@@ -273,6 +273,8 @@ const historySession = Array.from(crypto.getRandomValues(new Uint32Array(4))).jo
 let nextEntry = 1;
 let lastAddress;
 let lastEntry = 0;
+let lastPosition;
+let previousAddress;
 let reportEntry;
 let pendingBack = null;
 const queuedChanges = [];
@@ -290,24 +292,60 @@ function currentEntry() {
     return id;
 }
 
+function rememberAddress() {
+    lastAddress = globalThis.location.href;
+    lastEntry = currentEntry();
+    const state = globalThis.history.state;
+    lastPosition = globalThis.navigation?.currentEntry?.index ?? state.emberPosition;
+    previousAddress = state.emberPreviousHref;
+}
+
+function ownedPredecessor() {
+    const href = globalThis.location.href, state = globalThis.history.state;
+    if (state?.emberHref !== href || typeof state.emberPreviousHref !== "string") return null;
+    try {
+        const previous = new URL(state.emberPreviousHref), current = new URL(href);
+        if (previous.origin === current.origin && previous.pathname === current.pathname) {
+            return { href: previous.href, entry: state.emberPreviousEntry || 0 };
+        }
+    } catch {
+        // An old or foreign history.state can have an unusable predecessor.
+    }
+    return null;
+}
+
+// A tab switch can discard the native route stack. Only traverse a predecessor
+// written by this reader; a direct permalink must not send the user off-site.
+export function requestBrowserBack() {
+    if (!reportEntry) return false;
+    if (pendingBack) return pendingBack.navigate;
+    const previous = ownedPredecessor();
+    if (!previous) return false;
+    pendingBack = { ...previous, navigate: true };
+    globalThis.history.back();
+    return true;
+}
+
 // popstate and hashchange can both describe the same traversal. When Ember
 // initiated Back, its restored view can be a profile or an unfinished form.
 export function observeLocation(navigate, committed = () => {}) {
     reportEntry = committed;
-    lastAddress = globalThis.location.href;
-    lastEntry = currentEntry();
+    rememberAddress();
     committed(lastEntry);
     const changed = () => {
         const href = globalThis.location.href;
         const entry = currentEntry();
         if (href === lastAddress && entry === lastEntry) return;
-        lastAddress = href;
-        lastEntry = entry;
-        const restored = pendingBack?.href === href && (!pendingBack.entry || pendingBack.entry === entry);
+        const from = lastPosition, previous = previousAddress;
+        rememberAddress();
+        const backward = Number.isInteger(from) && Number.isInteger(lastPosition)
+            ? lastPosition < from : href === previous;
+        const pending = pendingBack;
+        const restored = pending?.href === href && (!pending.entry || pending.entry === entry);
         pendingBack = null;
-        if (!restored) {
+        if (!restored || (pending.navigate && !queuedChanges.length)) {
             queuedChanges.length = 0;
-            navigate(href, entry);
+            navigate(href, entry, backward || restored);
             return;
         }
         committed(entry);
@@ -337,15 +375,17 @@ export function setLocation(item, back = false) {
     const history = globalThis.history;
     const address = discussionAddress(href, item);
     const entry = history.state;
-    if (back && entry?.emberHref === href && typeof entry.emberPreviousHref === "string" &&
-        locationItem(entry.emberPreviousHref) === item) {
-        pendingBack = { href: entry.emberPreviousHref, entry: entry.emberPreviousEntry || 0 };
+    const previous = back && reportEntry ? ownedPredecessor() : null;
+    if (previous && locationItem(previous.href) === item) {
+        pendingBack = { ...previous, navigate: false };
         reportEntry?.(pendingBack.entry);
         history.back();
         return;
     }
     const key = nextEntry++;
-    const stamp = { emberSession: historySession, emberEntry: key, emberHref: address, emberItem: item };
+    const position = entry?.emberPosition ?? 0;
+    const stamp = { emberSession: historySession, emberEntry: key, emberHref: address,
+        emberItem: item, emberPosition: back ? position : position + 1 };
     if (back) {
         // A direct permalink or a legacy entry has no known Ember predecessor.
         // Keep the preceding site's entry intact when returning to the feed.
@@ -354,7 +394,8 @@ export function setLocation(item, back = false) {
         const previousEntry = reportEntry ? currentEntry() : 0;
         history.pushState({ ...stamp, emberPreviousHref: href, emberPreviousEntry: previousEntry }, "", address);
     }
-    lastAddress = address;
-    lastEntry = key;
-    reportEntry?.(key);
+    if (reportEntry) {
+        rememberAddress();
+        reportEntry(key);
+    }
 }
