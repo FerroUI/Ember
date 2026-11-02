@@ -94,7 +94,7 @@ Open a story’s context menu by right-clicking, pressing the keyboard menu key,
 
 Compact story rows combine the source, author and age beneath the headline. Points, replies and reading-state icons remain visible.
 
-In split view, choosing the open story again returns focus to its reader and preserves the loaded replies, reading position and Find query. Reopening Explore keeps its expanded sections. A short accent mark identifies the current destination independently of keyboard focus on both the rail and the phone tab bar.
+In split view, choosing the open story again returns focus to its reader and preserves the loaded replies, reading position and Find query. Selecting More again while Explore is open keeps its expanded sections. A short accent mark identifies the current destination independently of keyboard focus on both the rail and the phone tab bar.
 
 A reply timestamp opens its standalone discussion in Ember. The reply menu can copy the comment as plain text, copy its HN link, open the original on Hacker News, or fold an individual reply. Expanding a folded reply returns keyboard focus to its controls.
 

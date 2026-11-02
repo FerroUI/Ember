@@ -51,14 +51,16 @@ fn retrying_profile_activity_recovers_only_missing_cards_in_submission_order() {
         start_with_http(1280.0, 800.0, Rc::new(MemoryStore::default()), http.clone());
     view.get_control::<TextBox>("SearchBox")
         .set_text(Some("https://news.ycombinator.com/user?id=ada"));
-    click(&shell, &window, &view.get_control::<Button>("SearchButton"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("SearchButton"));
     let cards = || {
         view.get_control::<ferroui_controls::ContentControl>("DetailHost")
             .get_visual_descendants()
             .filter_map(|v| v.cast::<crate::controls::StoryCard>())
             .collect::<Vec<_>>()
     };
-    let before = cards().pop().unwrap();
+    let before = cards()
+        .pop()
+        .expect("the readable submission remains available");
     assert_eq!(before.headline().as_deref(), Some("Submission 6002"));
     http.requests.borrow_mut().clear();
     click_in_view(&shell, &window, &action(&view, "Retry activity"));
