@@ -238,6 +238,22 @@ await run([
             await at("102", second);
             await page.evaluate("history.forward()");
             await at("103", third);
+            // An explicit tab selection starts a new feed entry and clears the
+            // in-reader detail trail. Browser Back still exposes C, B and A.
+            await byName(page, "NavTop");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            const detachedLength = await page.evaluate("history.length");
+            await page.evaluate("history.back()");
+            await at("103", third);
+            await byName(page, "BackButton");
+            await at("102", second);
+            await byName(page, "BackButton");
+            await at("101", title);
+            await expectFind("design notes");
+            await byName(page, "BackButton"); // close the original A's restored Find
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            assert(await page.evaluate("history.length") === detachedLength, "Returning to the feed duplicated a browser entry");
             assert(page.errors.length === 0, page.errors.join("\n"));
         } finally { await page.close(); }
     }],

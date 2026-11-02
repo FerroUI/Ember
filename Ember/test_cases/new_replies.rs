@@ -278,7 +278,7 @@ fn browser_slots_for_the_same_item_restore_distinct_find_drafts_in_both_directio
     );
     let field = view.get_control::<TextBox>("ThreadFind");
     let route = |item: u64, entry| {
-        crate::reader_view::navigate_browser_entry(&format!("?item={item}"), entry);
+        crate::reader_view::navigate_browser_entry(&format!("?item={item}"), entry, false);
         for _ in 0..4 {
             shell.settle();
         }
@@ -323,5 +323,18 @@ fn browser_slots_for_the_same_item_restore_distinct_find_drafts_in_both_directio
     );
     route(1001, None);
     assert!(!field.is_effectively_visible());
+    // A tab visit disconnects the local back stack. Traversing backwards to
+    // older keyed entries must not add the newer pages as toolbar predecessors.
+    click_in_view(&shell, &window, &view.get_control::<Button>("MobileHome"));
+    for (id, slot) in [(1003, 14), (1002, 12)] {
+        crate::reader_view::navigate_browser_entry(&format!("?item={id}"), Some(slot), true);
+        for _ in 0..4 {
+            shell.settle();
+        }
+    }
+    click_in_view(&shell, &window, &back);
+    assert!(view
+        .get_control::<ListBox>("Stories")
+        .is_effectively_visible());
     window.close();
 }

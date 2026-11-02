@@ -253,25 +253,27 @@ pub fn set_browser_entry(entry: Option<u64>) {
     });
 }
 
-pub fn navigate_browser_entry(location: &str, entry: Option<u64>) {
-    visit_location(location, entry, false);
+pub fn navigate_browser_entry(location: &str, entry: Option<u64>, backward: bool) {
+    visit_location(location, entry, false, backward);
 }
 
 pub fn navigate_location(location: &str) {
-    visit_location(location, None, true);
+    visit_location(location, None, true, false);
 }
 
-fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool) {
+fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool, backward: bool) {
     ACTIVE.with(|active| {
         let Some(view) = active.borrow().as_ref().and_then(|v| v.upgrade()) else {
             return;
         };
         let Some(id) = item_from_location(location) else {
             if *view.detail.borrow() != DetailRoute::Welcome {
-                if entry.is_some() {
+                if entry.is_some() && backward {
                     let outgoing = view.current_history_entry();
                     view.prepend_forward(view.history.take().into_iter().chain(outgoing));
                     view.detail.replace(DetailRoute::Welcome);
+                } else {
+                    view.forward.borrow_mut().clear();
                 }
                 view.return_to_feed(false);
             }
@@ -304,6 +306,20 @@ fn visit_location(location: &str, entry: Option<u64>, match_by_item: bool) {
             } else {
                 view.forward.borrow_mut().clear();
             }
+            view.detail.replace(DetailRoute::Welcome);
+            visit
+        } else if let Some(key) = entry.filter(|_| backward) {
+            // Tab changes clear the in-reader stack. An actual browser Back
+            // to an older slot must not record the outgoing (newer) discussion
+            // as the restored slot's predecessor.
+            let visit = view
+                .browser_visits
+                .borrow()
+                .get(key, id)
+                .unwrap_or_else(|| ThreadVisit::new(id, id, entry));
+            let outgoing = view.current_history_entry();
+            view.history.borrow_mut().clear();
+            view.prepend_forward(outgoing.into_iter());
             view.detail.replace(DetailRoute::Welcome);
             visit
         } else if let Some(index) = next {
