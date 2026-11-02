@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
-thread_local! {
+ferroui_base::ferro_thread_local! {
     static ACTIVE: RefCell<Weak<CjkCollection>> = RefCell::new(Weak::new());
 }
 const RETRY_DELAY: Duration = Duration::from_secs(15);
@@ -238,7 +238,7 @@ mod tests {
         use ferroui_base::platform::IFontManagerImpl;
         use ferroui_base::FerroLocator;
 
-        thread_local! { static ATTEMPTS: Cell<usize> = const { Cell::new(0) }; }
+        ferroui_base::ferro_thread_local! { static ATTEMPTS: Cell<usize> = const { Cell::new(0) }; }
         let _dispatcher = Dispatcher::unit_test_scope();
         let scope = FerroLocator::enter_scope();
         FerroLocator::current_mutable()
@@ -274,7 +274,7 @@ mod tests {
         use ferroui_base::FerroLocator;
         use ferroui_fonts_inter::InterFontCollection;
 
-        thread_local! { static LOADS: Cell<usize> = const { Cell::new(0) }; }
+        ferroui_base::ferro_thread_local! { static LOADS: Cell<usize> = const { Cell::new(0) }; }
         let _dispatcher = Dispatcher::unit_test_scope();
         let scope = FerroLocator::enter_scope();
         let locator = FerroLocator::current_mutable();
