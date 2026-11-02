@@ -247,6 +247,7 @@ pub struct ReaderView {
     explore_counts: RefCell<Vec<discovery::ExploreCount>>,
     profile_mute: RefCell<Option<Ref<ToggleButton>>>,
     pending_settings: RefCell<Option<crate::settings::RestorePreferences>>,
+    settings_back: RefCell<Option<Rc<crate::settings::SettingsBack>>>,
     live_settings: RefCell<Option<crate::settings::LivePreferences>>,
     downloaded_only: Cell<bool>,
     library_find: RefCell<library_find::LibraryFind>,
@@ -331,6 +332,7 @@ impl ReaderView {
             explore_counts: RefCell::new(Vec::new()),
             profile_mute: RefCell::new(None),
             pending_settings: RefCell::new(None),
+            settings_back: RefCell::new(None),
             live_settings: RefCell::new(None),
             downloaded_only: Cell::new(false),
             library_find: RefCell::default(),
@@ -2590,6 +2592,7 @@ impl ReaderView {
         self.storage_report.borrow_mut().take();
         self.explore_counts.borrow_mut().clear();
         self.profile_mute.borrow_mut().take();
+        self.settings_back.borrow_mut().take();
         self.pending_settings.borrow_mut().take();
         self.live_settings.borrow_mut().take();
         let welcome = *self.detail.borrow() == DetailRoute::Welcome;
@@ -2699,6 +2702,14 @@ impl ReaderView {
         }
     }
     fn go_back(&self) {
+        if self
+            .settings_back
+            .borrow()
+            .as_ref()
+            .is_some_and(|settings| settings.dismiss())
+        {
+            return;
+        }
         if self.get_control::<Border>("ThreadTools").is_visible() {
             self.set_find_open(false);
             return;
@@ -2881,11 +2892,12 @@ impl ReaderView {
         self.label("DetailEyebrow").set_text(Some("READER"));
         self.label("DetailTitle").set_text(Some("Settings"));
         let weak = self.to_ref().downgrade();
-        let (content, restore) = crate::settings::build(Rc::new(move |action| {
+        let (content, restore, back) = crate::settings::build(Rc::new(move |action| {
             if let Some(v) = weak.upgrade() {
                 v.setting_action(action);
             }
         }));
+        self.settings_back.replace(Some(back));
         if self.state_ready.get() {
             self.live_settings
                 .replace(Some(restore(&self.state.borrow())));
@@ -2930,16 +2942,24 @@ impl ReaderView {
             },
             SettingsAction::Import(state) => self.import_backup(state),
             SettingsAction::ClearHistory => {
-                self.state.borrow_mut().recent_searches.clear();
-                for entry in self.state.borrow_mut().items.values_mut() {
-                    entry.read_at = None;
-                    entry.last_opened_at = None;
-                    entry.seen_comments.clear();
-                    entry.scroll_anchor = None;
-                    entry.scroll_inset = 0;
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.recent_searches.clear();
+                    state.items.retain(|_, entry| {
+                        entry.read_at = None;
+                        entry.last_opened_at = None;
+                        entry.seen_comments.clear();
+                        entry.scroll_anchor = None;
+                        entry.scroll_inset = 0;
+                        *entry != ember_core::ItemState::default()
+                    });
                 }
                 self.changed();
-                self.render_stories();
+                if *self.feed.borrow() == FeedRoute::History {
+                    self.load_feed(0, FetchMode::Offline);
+                } else {
+                    self.render_stories();
+                }
                 self.status("Reading history cleared. Saved stories are retained.");
             }
             SettingsAction::ClearCache => self.clear_cache(),

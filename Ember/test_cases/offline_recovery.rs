@@ -157,6 +157,75 @@ fn measured_storage_updates_after_reviewed_cleanup_and_keeps_the_bookmarked_down
 }
 
 #[test]
+fn settings_back_dismisses_transient_data_before_leaving_and_clears_visible_history() {
+    use ferroui_base::interactivity::RoutedEventArgs;
+    use ferroui_controls::{Expander, TopLevel};
+
+    let store = Rc::new(MemoryStore::default());
+    let mut prior = ReaderState::default();
+    prior.mark_read(1002, 1);
+    prior.items.entry(1003).or_default().hidden = true;
+    ready(store.put("reader:state", &prior.export_json().unwrap())).unwrap();
+    let (shell, window, view) = start(1280.0, 900.0, store.clone(), Rc::new(Cell::new(false)));
+    click_in_view(&shell, &window, &first_story(&window));
+    click_in_view(&shell, &window, &view.get_control::<Button>("SaveButton"));
+    click_in_view(&shell, &window, &view.get_control::<Button>("NavHistory"));
+    let rows = view.get_control::<ListBox>("Stories");
+    assert_eq!(rows.items().count(), 2);
+    click_in_view(&shell, &window, &view.get_control::<Button>("ThemeButton"));
+    let named = |name: &str| {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<Control>())
+            .find(|c| AutomationProperties::get_name(c).as_deref() == Some(name))
+            .unwrap()
+    };
+    let tap = |name: &str| click_in_view(&shell, &window, &named(name));
+    let back = view.get_control::<Button>("BackButton");
+    tap("Copy backup");
+    let generated = named("Generated backup JSON").cast::<TextBox>().unwrap();
+    assert!(generated.is_focused());
+    let maintenance = named("Clear local data").cast::<Expander>().unwrap();
+    maintenance.set_is_expanded(true);
+    shell.settle();
+    tap("Clear reading history");
+    maintenance.set_is_expanded(false);
+    shell.settle();
+    maintenance.set_is_expanded(true);
+    shell.settle();
+    assert!(!named("Remove reading history").is_effectively_visible());
+    assert!(named("Clear reading history").is_enabled());
+
+    tap("Clear reading history");
+    back.focus();
+    let request = RoutedEventArgs::with_event(TopLevel::back_requested_event());
+    window.raise_event(&request);
+    shell.settle();
+    assert!(request.handled());
+    assert!(named("Clear reading history").is_focused());
+    assert!(!named("Remove reading history").is_effectively_visible());
+    assert!(generated.is_effectively_visible());
+    click_in_view(&shell, &window, &back);
+    assert!(!generated.is_effectively_visible());
+    assert_eq!(generated.text().as_deref(), Some(""));
+    assert!(named("Copy backup").is_focused());
+    assert_eq!(rows.items().count(), 2);
+
+    tap("Clear reading history");
+    tap("Remove reading history");
+    assert_eq!(rows.items().count(), 0);
+    let saved =
+        ReaderState::import_json(&ready(store.get("reader:state")).unwrap().unwrap()).unwrap();
+    assert!(saved.history_ids().is_empty());
+    assert!(saved.is_saved(1001));
+    assert!(
+        !saved.items.contains_key(&1002),
+        "Backups retained an ID whose only state was its visit"
+    );
+    assert!(saved.items[&1003].hidden);
+    window.close();
+}
+
+#[test]
 fn a_feed_download_can_be_canceled_after_navigation_and_retried_without_marking_read() {
     use ferroui_base::input::ContextRequestedEventArgs;
     use ferroui_base::interactivity::RoutedEventArgs;

@@ -111,10 +111,18 @@ async function reviewLocalData(page) {
     await waitText(page, "Paste an Ember backup first.");
     // Validation puts focus back in the JSON field so the correction can be typed directly.
     await page.type("{}");
+    assert(!(await state(page)).elements.some(e => e.text === "Paste an Ember backup first."), "The corrected import still reports an empty field");
     await revealAction("Import this backup");
     await waitText(page, "Replace reading data");
-    await byAutomation(page, "Cancel Import this backup");
-    assert(!(await state(page)).elements.some(e => e.automationName === "Replace reading data"), "Cancelled restore remained active");
+    await byName(page, "BackButton");
+    assert(!(await state(page)).elements.some(e => e.automationName === "Replace reading data"), "Back left a restore confirmation active");
+    await reveal(page, element => element.automationName === "Copy backup", -1);
+    await byAutomation(page, "Copy backup");
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Generated backup JSON')");
+    await byName(page, "BackButton");
+    const settings = (await state(page)).elements;
+    assert(settings.some(e => e.name === "DetailTitle" && e.text === "Settings"), "Closing the backup left Settings");
+    assert(!settings.some(e => e.automationName === "Generated backup JSON"), "Backup output remained after Back");
 
     await reveal(page, element => element.text === "Clear local data");
     await byText(page, "Clear local data");

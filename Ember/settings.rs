@@ -1,8 +1,8 @@
 //! Touch-sized preference and reading-data editor. Changes are committed through
 //! the owner so persistence failures remain visible to the user.
 use crate::widgets::{
-    action, combo, disclosure, field_pair, form_button as button, label as text, section, stack,
-    FormValidation,
+    action, combo, disclosure, disclosure_with_toggle, field_pair, form_button as button,
+    label as text, section, stack, FormValidation,
 };
 use ember_core::{validate_username, MuteRules, Preferences, ReaderState, ThemeMode};
 use ferroui_base::input::{InputElement, Key, KeyEventArgs};
@@ -426,7 +426,37 @@ fn build_preferences(
     live
 }
 
-pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePreferences) {
+pub(super) struct SettingsBack {
+    review: Rc<RefCell<Option<PendingReview>>>,
+    backup: WeakRef<StackPanel>,
+    output: WeakRef<TextBox>,
+    export: WeakRef<Button>,
+}
+
+impl SettingsBack {
+    fn hide_backup(&self) -> bool {
+        let Some(panel) = self.backup.upgrade().filter(|panel| panel.is_visible()) else {
+            return false;
+        };
+        if let Some(output) = self.output.upgrade() {
+            output.set_text(Some(""));
+        }
+        panel.set_is_visible(false);
+        if let Some(trigger) = self.export.upgrade() {
+            trigger.focus();
+            trigger.bring_into_view();
+        }
+        true
+    }
+
+    pub(super) fn dismiss(&self) -> bool {
+        finish_review(&self.review, true).is_some() || self.hide_backup()
+    }
+}
+
+pub(super) fn build(
+    on_action: Rc<dyn Fn(SettingsAction)>,
+) -> (Ref<Control>, RestorePreferences, Rc<SettingsBack>) {
     let root = StackPanel::new();
     root.set_spacing(10.0);
     root.set_margin(Thickness::uniform(16.0));
@@ -478,19 +508,17 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
     data.children().add(export.clone());
     let dismiss = button("Hide backup");
     dismiss.classes().add("quiet");
-    {
-        let trigger = export.downgrade();
-        let panel = backup.downgrade();
-        dismiss.click(move |_, _| {
-            output.set_text(Some(""));
-            if let Some(panel) = panel.upgrade() {
-                panel.set_is_visible(false);
-            }
-            if let Some(trigger) = trigger.upgrade() {
-                trigger.focus();
-            }
-        });
-    }
+    let review = Rc::new(RefCell::new(None::<PendingReview>));
+    let back = Rc::new(SettingsBack {
+        review: review.clone(),
+        backup: backup.downgrade(),
+        output: output.downgrade(),
+        export: export.downgrade(),
+    });
+    let close_backup = back.clone();
+    dismiss.click(move |_, _| {
+        close_backup.hide_backup();
+    });
     backup.children().add(dismiss);
     data.children().add(backup);
     let json = crate::widgets::field(
@@ -501,25 +529,8 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
         16 * 1024 * 1024,
         true,
     );
-    let review = Rc::new(RefCell::new(None::<PendingReview>));
-    let edited = review.clone();
-    let input = json.downgrade();
-    json.property_changed(move |e| {
-        if e.property() != TextBox::text_property().as_property() {
-            return;
-        }
-        if let Some(input) = input.upgrade() {
-            FormValidation::default().check(&input, Ok(()));
-        }
-        if edited
-            .borrow()
-            .as_ref()
-            .is_some_and(|review| matches!(review.action, SettingsAction::Import(_)))
-        {
-            finish_review(&edited, false);
-        }
-    });
-    reviewed_action(
+    let input = json.clone();
+    let import_error = reviewed_action(
         &data,
         &review,
         ("Import this backup", "download"),
@@ -556,10 +567,42 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
         &on_action,
     );
 
+    let edited = review.clone();
+    let weak_input = input.downgrade();
+    input.property_changed(move |e| {
+        if e.property() != TextBox::text_property().as_property() {
+            return;
+        }
+        import_error.set_is_visible(false);
+        if let Some(input) = weak_input.upgrade() {
+            FormValidation::default().check(&input, Ok(()));
+        }
+        if edited
+            .borrow()
+            .as_ref()
+            .is_some_and(|review| matches!(review.action, SettingsAction::Import(_)))
+        {
+            finish_review(&edited, false);
+        }
+    });
+
     let cleanup = stack(0.0);
     cleanup.set_is_visible(false);
     root.children().add(cleanup.clone());
-    let maintenance = disclosure(&cleanup, "Clear local data", false);
+    let (disclosure, maintenance) = disclosure_with_toggle(&cleanup, "Clear local data", false);
+    let active = review.clone();
+    let toggle = disclosure.downgrade();
+    disclosure.property_changed(move |event| {
+        if event.property() == ferroui_controls::Expander::is_expanded_property().as_property()
+            && toggle.upgrade().is_some_and(|d| !d.is_expanded())
+            && active
+                .borrow()
+                .as_ref()
+                .is_some_and(|pending| !matches!(pending.action, SettingsAction::Import(_)))
+        {
+            finish_review(&active, false);
+        }
+    });
     let usage = text("Measure cached data on this device.", 13.0, true);
     AutomationProperties::set_live_setting(&usage, AutomationLiveSetting::Polite);
     maintenance.children().add(usage.clone());
@@ -624,7 +667,7 @@ pub fn build(on_action: Rc<dyn Fn(SettingsAction)>) -> (Ref<Control>, RestorePre
         cleanup.set_is_visible(true);
         live
     });
-    (scroll.upcast(), restore)
+    (scroll.upcast(), restore, back)
 }
 
 struct PendingReview {
@@ -646,6 +689,7 @@ fn finish_review(
         trigger.set_is_enabled(true);
         if restore_focus {
             trigger.focus();
+            trigger.bring_into_view();
         }
     }
     Some(pending.action)
@@ -658,14 +702,15 @@ fn reviewed_action(
     confirm_label: &str,
     prepare: impl Fn() -> Result<(String, SettingsAction), (Ref<Control>, String)> + 'static,
     on_action: &Rc<dyn Fn(SettingsAction)>,
-) {
+) -> Ref<TextBlock> {
     let trigger = button(label);
     trigger.classes().add("quiet");
     trigger.set_content(Some(Control::boxed(crate::widgets::nav_content(
         icon, label, false,
     ))));
     parent.children().add(trigger.clone());
-    let error = feedback(parent);
+    let feedback = feedback(parent);
+    let error = feedback.clone();
     let panel = stack(6.0);
     panel.set_is_visible(false);
     parent.children().add(panel.clone());
@@ -744,6 +789,7 @@ fn reviewed_action(
             }
         }
     });
+    feedback
 }
 
 fn feedback(parent: &StackPanel) -> Ref<TextBlock> {
@@ -1184,7 +1230,7 @@ mod tests {
     fn generated_backup_can_be_copied_manually_and_dismissed_on_a_phone() {
         use ferroui_base::interactivity::RoutedEventArgs;
         let shell = Shell::start(&crate::SAMPLE, 360.0, 640.0, || crate::App::new().upcast());
-        let (control, restore) = build(Rc::new(|action| {
+        let (control, restore, _) = build(Rc::new(|action| {
             if let SettingsAction::Export(show) = action {
                 show("snapshot");
             }
@@ -1375,7 +1421,7 @@ mod tests {
         let shell = Shell::start(&crate::SAMPLE, 720.0, 1120.0, || crate::App::new().upcast());
         let applied = Rc::new(RefCell::new(Preferences::default()));
         let result = applied.clone();
-        let (form, restore) = build(Rc::new(move |action| {
+        let (form, restore, _) = build(Rc::new(move |action| {
             if let SettingsAction::Preferences(prefs) = action {
                 result.replace(prefs);
             }
