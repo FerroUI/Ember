@@ -197,7 +197,7 @@ pub(crate) struct StorySummary {
 impl StorySummary {
     pub(crate) fn new(item: &HnItem, now: u64, show_dead: bool) -> Self {
         let mut byline = Vec::new();
-        if let Some(author) = item.by.as_ref().filter(|_| !item.deleted) {
+        if let Some(author) = item.by.as_ref().filter(|_| item.content_visible(show_dead)) {
             byline.push(author.clone());
         }
         if item.time.is_some() {
@@ -216,7 +216,7 @@ impl StorySummary {
         let author = item
             .by
             .as_deref()
-            .filter(|_| !item.deleted)
+            .filter(|_| item.content_visible(show_dead))
             .unwrap_or("")
             .to_lowercase();
         let mut source = None;
@@ -260,8 +260,11 @@ impl StorySummary {
         }
     }
     fn source(item: &HnItem, show_dead: bool) -> String {
+        if !item.content_visible(show_dead) {
+            return "Hacker News".to_owned();
+        }
         match item.kind {
-            Some(ItemKind::Comment) if !item.deleted && (!item.dead || show_dead) => item
+            Some(ItemKind::Comment) => item
                 .title
                 .as_deref()
                 .map(|title| format!("Comment on {}", HtmlDocument::parse(title).plain_text()))
@@ -277,6 +280,39 @@ impl StorySummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacted_stories_hide_their_retained_source_author_and_search_terms() {
+        let url = "https://retained.example/article";
+        for (deleted, dead, show_dead, visible) in [
+            (true, false, true, false),
+            (false, true, false, false),
+            (false, true, true, true),
+            (false, false, false, true),
+        ] {
+            let item = HnItem {
+                kind: Some(ItemKind::Job),
+                id: 7,
+                by: Some("retained-author".into()),
+                title: Some("Retained headline".into()),
+                url: Some(url.into()),
+                deleted,
+                dead,
+                ..Default::default()
+            };
+            let summary = StorySummary::new(&item, 0, show_dead);
+            assert_eq!(summary.source.contains("retained.example"), visible);
+            assert_eq!(summary.byline.contains("retained-author"), visible);
+            assert_eq!(summary.headline.contains("Retained headline"), visible);
+            for term in ["retained.example", "retained-author", "headline"] {
+                assert_eq!(StorySummary::matches(&item, &[term], show_dead), visible);
+            }
+            assert_eq!(
+                item.visible_article_url(show_dead).as_deref(),
+                visible.then_some(url)
+            );
+        }
+    }
 
     #[test]
     fn jobs_and_comment_results_show_their_own_metadata() {

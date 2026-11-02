@@ -26,6 +26,7 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub enum ThreadAction {
     OpenUrl(String),
+    OpenArticle(u64),
     Profile(String),
     SearchDiscussion(u64),
     ToggleCollapse(u64),
@@ -767,7 +768,8 @@ fn header(
     let options = &reading.typography;
     let body = widgets::stack(8.0);
     body.set_margin(Thickness::new(0.0, 12.0, 0.0, 4.0));
-    let source = if story.article_url().is_some() {
+    let article = story.visible_article_url(reading.show_dead);
+    let source = if article.is_some() {
         story.domain()
     } else {
         match story.kind {
@@ -824,11 +826,11 @@ fn header(
     body.children().add(meta);
 
     let primary = WrapPanel::new();
-    if let Some(url) = story.article_url() {
+    if article.is_some() {
         primary.children().add(labelled_action(
             "Read article",
             "open",
-            ThreadAction::OpenUrl(url),
+            ThreadAction::OpenArticle(story.id),
             actions,
         ));
     }
@@ -908,10 +910,10 @@ fn header(
         ThreadAction::Hide,
         actions,
     );
-    if story.article_url().is_some() && story.domain() != "news.ycombinator.com" {
+    if article.is_some() && source != "news.ycombinator.com" {
         menu_action(
             &menu,
-            &format!("Mute {}", story.domain()),
+            &format!("Mute {source}"),
             "eye_off",
             ThreadAction::MuteDomain,
             actions,
@@ -1999,6 +2001,78 @@ mod tests {
                 ThreadAction::SearchDiscussion(42)
             ]
         ));
+    }
+
+    #[test]
+    fn redacted_discussions_keep_their_hn_link_but_hide_the_original_article() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        for (deleted, dead, show_dead, visible) in [
+            (true, false, true, false),
+            (false, true, false, false),
+            (false, true, true, true),
+        ] {
+            let snapshot = ThreadSnapshot {
+                root: HnItem {
+                    id: 7,
+                    kind: Some(ItemKind::Story),
+                    deleted,
+                    dead,
+                    url: Some("https://retained.example/article".to_owned()),
+                    ..Default::default()
+                },
+                complete: true,
+                ..Default::default()
+            };
+            let reading = ReadingContext {
+                hidden: false,
+                show_dead,
+                seen: BTreeSet::new(),
+                new_count: None,
+                typography: RenderOptions::default(),
+                find_foreground: None,
+            };
+            let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(|_| {});
+            let header = header(
+                &ThreadContext::from(&snapshot),
+                &reading,
+                ThreadSort::Ranked,
+                None,
+                true,
+                &actions,
+            );
+            let button = |name: &str| {
+                header
+                    .get_logical_descendants()
+                    .filter_map(|n| n.cast::<Button>())
+                    .find(|b| AutomationProperties::get_name(b).as_deref() == Some(name))
+            };
+            assert_eq!(button("Read article").is_some(), visible);
+            assert!(button("Copy discussion link").is_some());
+            assert_eq!(
+                header
+                    .get_logical_descendants()
+                    .filter_map(|n| n.cast::<TextBlock>())
+                    .any(|label| label.text().as_deref() == Some("retained.example")),
+                visible
+            );
+            let menu = button("More story actions")
+                .unwrap()
+                .flyout()
+                .unwrap()
+                .cast::<MenuFlyout>()
+                .unwrap();
+            let items = menu.items();
+            assert_eq!(
+                (0..items.count())
+                    .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+                    .filter_map(|v| v.cast::<MenuItem>())
+                    .any(|entry| entry.header().is_some_and(|h| h
+                        .downcast_ref::<String>()
+                        .is_some_and(|s| s == "Mute retained.example"))),
+                visible
+            );
+        }
     }
 
     #[test]

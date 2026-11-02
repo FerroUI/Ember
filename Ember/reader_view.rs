@@ -727,7 +727,9 @@ impl ReaderView {
                         let Some(item) = feed_row.cloned().or_else(|| v.current_item()) else {
                             return;
                         };
-                        v.open_url(&item.article_url().unwrap_or_else(|| item.discussion_url()));
+                        let article =
+                            item.visible_article_url(v.state.borrow().preferences.show_dead);
+                        v.open_url(&article.unwrap_or_else(|| item.discussion_url()));
                     }
                     _ => return,
                 };
@@ -1691,12 +1693,16 @@ impl ReaderView {
             }),
         );
     }
+    fn feed_article_url(&self, id: u64) -> Option<String> {
+        let stories = self.stories.borrow();
+        stories[stories.position(id)?]
+            .visible_article_url(self.state.borrow().preferences.show_dead)
+    }
     fn attach_story_menu(&self, card: &StoryCard, item: &HnItem) {
         let menu = ContextMenu::new();
         let owner = self.to_ref().downgrade();
         let weak_menu = menu.downgrade();
         let id = item.id;
-        let url = item.article_url();
         // Resolve state on opening. Scrolling a feed never constructs a menu's command tree.
         menu.opening(move |_| {
             let (Some(view), Some(menu)) = (owner.upgrade(), weak_menu.upgrade()) else {
@@ -1720,8 +1726,17 @@ impl ReaderView {
                 "chat",
                 Box::new(move |v| v.open_item(id)),
             );
-            if let Some(url) = url.clone() {
-                add("Open article", "open", Box::new(move |v| v.open_url(&url)));
+            if view.feed_article_url(id).is_some() {
+                add(
+                    "Open article",
+                    "open",
+                    Box::new(move |v| {
+                        v.open_url(
+                            &v.feed_article_url(id)
+                                .unwrap_or_else(|| ember_core::item_url(id)),
+                        )
+                    }),
+                );
             }
             let state = view.state.borrow();
             let hidden = state.items.get(&id).is_some_and(|item| item.hidden);
@@ -2167,6 +2182,18 @@ impl ReaderView {
     fn thread_action(&self, action: ThreadAction) {
         match action {
             ThreadAction::OpenUrl(url) => self.open_url(&url),
+            ThreadAction::OpenArticle(id) => {
+                let show_dead = self.state.borrow().preferences.show_dead;
+                let url = self
+                    .thread
+                    .borrow()
+                    .as_ref()
+                    .map(|discussion| &discussion.snapshot.root)
+                    .filter(|root| root.id == id)
+                    .and_then(|root| root.visible_article_url(show_dead))
+                    .unwrap_or_else(|| ember_core::item_url(id));
+                self.open_url(&url);
+            }
             ThreadAction::Profile(user) => self.show_profile(user),
             ThreadAction::SearchDiscussion(id) => self.open_search_form(None, Some(id)),
             ThreadAction::ShowNewReplies(enabled) => {
@@ -2227,7 +2254,11 @@ impl ReaderView {
                 }
             }
             ThreadAction::MuteDomain => {
-                if let Some(item) = self.current_item() {
+                let show_dead = self.state.borrow().preferences.show_dead;
+                if let Some(item) = self
+                    .current_item()
+                    .filter(|item| item.visible_article_url(show_dead).is_some())
+                {
                     self.state.borrow_mut().mutes.domains.insert(item.domain());
                     self.changed();
                     self.render_stories();

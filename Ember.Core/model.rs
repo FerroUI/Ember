@@ -102,6 +102,16 @@ impl HnItem {
     pub fn article_url(&self) -> Option<String> {
         self.url.as_deref().and_then(safe_web_url)
     }
+    pub fn content_visible(&self, show_dead: bool) -> bool {
+        !self.deleted && (!self.dead || show_dead)
+    }
+    pub fn visible_article_url(&self, show_dead: bool) -> Option<String> {
+        if self.content_visible(show_dead) {
+            self.article_url()
+        } else {
+            None
+        }
+    }
     pub fn domain(&self) -> String {
         self.url
             .as_deref()
