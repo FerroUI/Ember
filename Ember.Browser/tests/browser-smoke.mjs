@@ -591,10 +591,11 @@ await run([
             const download = async () => {
                 const row = (await state(page)).elements.find(e => e.hit && e.text === title);
                 const x = row.x + row.width / 2, y = row.y + row.height / 2;
+                await page.mouseMove(x, y);
                 for (const [type, buttons] of [["mousePressed", 2], ["mouseReleased", 0]]) {
-                    await page.send("Input.dispatchMouseEvent", { type, button: "right", buttons, x, y, clickCount: 1 });
+                    await page.send("Input.dispatchMouseEvent", { type, button: "right", buttons, pointerType: "mouse", x, y, clickCount: 1 });
                 }
-                await waitText(page, "Download for offline reading");
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.text === 'Download for offline reading')", 10000);
                 await byText(page, "Download for offline reading");
             };
             await download();
