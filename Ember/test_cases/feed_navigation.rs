@@ -661,6 +661,12 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     let tap = |name| click_in_view(&shell, &window, &view.get_control::<Button>(name));
     let list = view.get_control::<ListBox>("Stories");
     let retry = view.get_control::<Button>("RetryFeedItems");
+    assert_eq!(
+        view.get_control::<TextBlock>("FeedSummary")
+            .text()
+            .as_deref(),
+        Some("30 of 65 loaded · Updated")
+    );
     tap("LoadMoreButton");
     assert_eq!(list.items().count(), 56);
     assert_eq!(
@@ -672,10 +678,32 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     assert!(!view
         .get_control::<Button>("LoadMoreButton")
         .is_effectively_visible());
+    let summary = view.get_control::<TextBlock>("FeedSummary");
+    assert_eq!(
+        summary.text().as_deref(),
+        Some("61 of 65 loaded · 4 unavailable")
+    );
+    assert!(
+        !view
+            .get_control::<ferroui_controls::Border>("StatusBar")
+            .is_effectively_visible(),
+        "the recovery command already explains a transient per-row failure"
+    );
+    if let Some(dir) = std::env::var_os("EMBER_CAPTURE_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        shell
+            .last_frame(0)
+            .save_ppm(&std::path::Path::new(&dir).join("phone-feed-recovery.ppm"))
+            .unwrap();
+    }
     tap("MobileNew");
     assert!(!retry.is_effectively_visible());
     tap("MobileHome");
     assert!(retry.is_effectively_visible());
+    assert_eq!(
+        summary.text().as_deref(),
+        Some("61 of 65 loaded · 4 unavailable")
+    );
     let scroll = list.scroll().unwrap().cast::<ScrollViewer>().unwrap();
     scroll.set_offset(ferroui_base::Vector::new(0.0, 1050.0));
     shell.settle();
@@ -694,6 +722,10 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
         "a first-page offline fallback must not discard subsequent pages"
     );
     assert!((scroll.offset().y - before).abs() < 2.0);
+    assert_eq!(
+        summary.text().as_deref(),
+        Some("61 of 65 loaded · 4 unavailable · Offline copy")
+    );
     assert_eq!(
         list.items()
             .get_at(0)
@@ -730,6 +762,10 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     assert_eq!(http.requested.borrow().as_slice(), [32, 31, 37, 38]);
     assert_eq!(list.items().count(), 62);
     assert_eq!(
+        summary.text().as_deref(),
+        Some("62 of 65 loaded · 2 unavailable")
+    );
+    assert_eq!(
         AutomationProperties::get_name(&retry).as_deref(),
         Some("Retry 2 unavailable stories")
     );
@@ -740,6 +776,7 @@ fn later_feed_pages_recover_only_failed_ids_in_rank_order_and_retain_offline_vie
     tap("RetryFeedItems");
     assert_eq!(http.requested.borrow().as_slice(), [32, 31]);
     assert!(!retry.is_effectively_visible());
+    assert_eq!(summary.text().as_deref(), Some("64 of 65 loaded · Updated"));
     let ids: Vec<_> = (0..list.items().count())
         .map(|i| {
             list.items()

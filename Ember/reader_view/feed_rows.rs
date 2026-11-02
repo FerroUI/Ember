@@ -7,6 +7,7 @@ pub(super) struct FeedRows {
     ordered: Vec<Rc<HnItem>>,
     positions: BTreeMap<u64, usize>,
     recovery: Option<PageRecovery>,
+    pub(super) receipt: (usize, DataSource),
 }
 
 /// Allocate the provider order only when a page actually has recoverable gaps.
@@ -43,6 +44,7 @@ impl FeedRows {
         self.ordered.clear();
         self.positions.clear();
         self.recovery = None;
+        self.receipt = (0, DataSource::Cache);
     }
 
     pub(super) fn missing_count(&self) -> usize {
@@ -201,6 +203,13 @@ impl ReaderView {
                     return;
                 };
                 let focus = view.button("RetryFeedItems").is_focused();
+                let (total, old_source) = view.stories.borrow().receipt;
+                let source = if batch.items.is_empty() {
+                    old_source
+                } else {
+                    batch.source
+                };
+                let warning = batch.warning.filter(|_| !batch.warning_from_failed_item);
                 let first = if focus {
                     let state = view.state.borrow();
                     let route = view.feed.borrow();
@@ -225,6 +234,7 @@ impl ReaderView {
                         FeedLoad::Ready
                     });
                 view.button("LoadMoreButton").set_is_enabled(true);
+                view.set_feed_summary(total, source);
                 view.render_stories();
                 let message = match (recovered, missing) {
                     (0, 0) => "These stories are no longer available.".to_owned(),
@@ -235,7 +245,7 @@ impl ReaderView {
                     (1, _) => "Recovered 1 story.".to_owned(),
                     (n, _) => format!("Recovered {n} stories."),
                 };
-                view.status(&message);
+                view.status(warning.as_deref().unwrap_or(&message));
                 if focus && missing == 0 {
                     // Row reconciliation restores the old viewport at Loaded priority.
                     // Move to the recovered keyboard target after that restoration.

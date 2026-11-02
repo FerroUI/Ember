@@ -245,6 +245,9 @@ pub struct FeedPage {
     pub source: DataSource,
     pub stale: bool,
     pub warning: Option<String>,
+    /// True when the general warning describes a row already reported in failed_slots.
+    #[serde(default)]
+    pub warning_from_failed_item: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -258,6 +261,9 @@ pub struct ItemBatch {
     pub source: DataSource,
     pub stale: bool,
     pub warning: Option<String>,
+    /// True when the general warning describes a row already reported in failed_slots.
+    #[serde(default)]
+    pub warning_from_failed_item: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -579,8 +585,10 @@ impl Repository {
                     Ok(loaded) => {
                         combine_source(&mut batch.source, loaded.source);
                         batch.stale |= loaded.stale;
-                        if batch.warning.is_none() {
+                        if loaded.warning.is_some() && (batch.warning.is_none() || batch.warning_from_failed_item) {
+                            // A storage or fallback warning on a readable row needs its own feedback.
                             batch.warning = loaded.warning;
+                            batch.warning_from_failed_item = false;
                         }
                         match loaded.value {
                             Some(item) => batch.items.push(item),
@@ -592,6 +600,7 @@ impl Repository {
                         batch.missing_ids.push(id);
                         if batch.warning.is_none() {
                             batch.warning = Some(error.to_string());
+                            batch.warning_from_failed_item = true;
                         }
                     }
                 }
@@ -635,7 +644,8 @@ impl Repository {
             ranking_source: ids.source,
             source,
             stale: ids.stale || batch.stale,
-            warning: batch.warning.or(ids.warning),
+            warning_from_failed_item: ids.warning.is_none() && batch.warning_from_failed_item,
+            warning: ids.warning.or(batch.warning),
         })
     }
 

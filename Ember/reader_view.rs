@@ -1351,9 +1351,7 @@ impl ReaderView {
                                     );
                                     view.feed_load.set(FeedLoad::Ready);
                                     view.button("LoadMoreButton").set_is_enabled(true);
-                                    let summary = format!("{} stories · Offline copy", page.total);
-                                    view.label("FeedSummary").set_text(Some(&summary));
-                                    view.accepted_feed_summary.replace(Some(summary));
+                                    view.set_feed_summary(page.total, DataSource::StaleCache);
                                     if let Some(warning) = page.warning {
                                         view.status(&warning);
                                     }
@@ -1367,7 +1365,7 @@ impl ReaderView {
                                     page.next_offset,
                                     page.total,
                                     page.source,
-                                    page.warning,
+                                    page.warning.filter(|_| !page.warning_from_failed_item),
                                     page.failed_slots,
                                     BTreeMap::new(),
                                 )
@@ -1410,7 +1408,7 @@ impl ReaderView {
                             (end < ids.len()).then_some(end),
                             ids.len(),
                             batch.source,
-                            batch.warning,
+                            batch.warning.filter(|_| !batch.warning_from_failed_item),
                             batch.failed_slots,
                             BTreeMap::new(),
                         ))
@@ -1427,7 +1425,7 @@ impl ReaderView {
                 match result {
                     Ok((items, next, total, source, warning, failed_slots, story_ids)) => {
                         if offset == 0 {
-                            if items.is_empty() && total > 0 && warning.is_some() {
+                            if items.is_empty() && total > 0 && (warning.is_some() || !failed_slots.is_empty()) {
                                 view.feed_load.set(FeedLoad::Unavailable);
                             }
                             view.search_story_ids.borrow_mut().clear();
@@ -1435,7 +1433,7 @@ impl ReaderView {
                         view.search_story_ids.borrow_mut().extend(story_ids);
                         let previous_len = view.stories.borrow().len();
                         let continue_at = next.filter(|&cursor| {
-                            pages_left > 1 && cursor > offset && warning.is_none()
+                            pages_left > 1 && cursor > offset && warning.is_none() && failed_slots.is_empty()
                         });
                         view.accept_items(items, offset, next, total, source, warning, &failed_slots);
                         if let Some(cursor) = continue_at {
@@ -1482,6 +1480,24 @@ impl ReaderView {
         self.stories.borrow_mut().accept_page(items, failed_slots, offset == 0);
         self.next.set(next);
         self.button("LoadMoreButton").set_is_visible(next.is_some());
+        self.set_feed_summary(total, source);
+        if let Some(warning) = warning {
+            self.status(&warning);
+        }
+        self.project_stories(append_at);
+        // Pruning reads every cached item, so it runs once a session after a feed has loaded,
+        // and again after a download or a change of the cache limit, not after every refresh.
+        if self.feed_load.get() != FeedLoad::Loading
+            && !self.pruned_after_feed.get()
+            && self.prune_cache()
+        {
+            self.pruned_after_feed.set(true);
+        }
+    }
+    fn set_feed_summary(&self, total: usize, source: DataSource) {
+        let mut rows = self.stories.borrow_mut();
+        rows.receipt = (total, source);
+        let missing = rows.missing_count();
         let route = self.feed.borrow();
         let noun = if matches!(*route, FeedRoute::Search(_)) {
             if total == 1 {
@@ -1505,30 +1521,31 @@ impl ReaderView {
             }
             _ => format!("{total} {noun}"),
         };
-        let summary = match &*route {
-            FeedRoute::Search(SearchQuery {
-                story_id: Some(id), ..
-            }) => format!("Discussion {id} · {count} · {origin}"),
-            _ => format!("{count} · {origin}"),
+        let summary = if missing != 0 {
+            let offline = if source == DataSource::StaleCache {
+                " · Offline copy"
+            } else {
+                ""
+            };
+            format!(
+                "{} of {total} loaded · {missing} unavailable{offline}",
+                rows.len()
+            )
+        } else if rows.len() < total && !matches!(*route, FeedRoute::Search(_)) {
+            format!("{} of {total} loaded · {origin}", rows.len())
+        } else {
+            match &*route {
+                FeedRoute::Search(SearchQuery {
+                    story_id: Some(id), ..
+                }) => format!("Discussion {id} · {count} · {origin}"),
+                _ => format!("{count} · {origin}"),
+            }
         };
         self.label("FeedSummary").set_text(Some(&summary));
         if matches!(*route, FeedRoute::Feed(_)) {
             // Keep the last accepted summary while a subsequent page is still in flight.
             self.accepted_feed_summary
-                .replace((!self.stories.borrow().is_empty() || !failed_slots.is_empty()).then_some(summary));
-        }
-        drop(route);
-        if let Some(warning) = warning {
-            self.status(&warning);
-        }
-        self.project_stories(append_at);
-        // Pruning reads every cached item, so it runs once a session after a feed has loaded,
-        // and again after a download or a change of the cache limit, not after every refresh.
-        if self.feed_load.get() != FeedLoad::Loading
-            && !self.pruned_after_feed.get()
-            && self.prune_cache()
-        {
-            self.pruned_after_feed.set(true);
+                .replace((!rows.is_empty() || missing != 0).then_some(summary));
         }
     }
     fn render_stories(&self) {

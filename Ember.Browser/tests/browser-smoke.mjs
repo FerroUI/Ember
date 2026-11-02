@@ -332,6 +332,9 @@ await run([
             await waitText(page, "Unread · 30");
             await byName(page, "LoadMoreButton");
             await waitText(page, "Retry 3 unavailable stories");
+            await waitText(page, "30 of 33 loaded · 3 unavailable");
+            assert(!(await state(page)).elements.some(e => e.name === "StatusText" && e.text),
+                "Per-row failures should be reported once by the recovery controls");
             assert(!(await state(page)).elements.some(e => e.name === "LoadMoreButton" && e.hit),
                 "There is no page beyond this failed final page");
             await page.screenshot(path.join(captures, "phone-feed-recovery.png"));
@@ -350,8 +353,9 @@ await run([
             assert(JSON.stringify(await page.evaluate("retryRequests.slice().sort((a,b) => a-b)")) === "[31,32,33]",
                 "Retry requested stories already present in the feed");
             await reveal(page, e => e.hit && e.automationName?.startsWith("Ranked story 33,"));
-            const rows = (await state(page)).elements.filter(e => e.hit && /^Ranked story 3[123],/.test(e.automationName ?? ""));
-            assert(rows.length === 3 && rows[0].y < rows[1].y && rows[1].y < rows[2].y,
+            const {elements} = await state(page);
+            const rows = [31, 32, 33].map(id => elements.find(e => e.hit && e.automationName?.startsWith("Ranked story " + id + ",")));
+            assert(rows.every(Boolean) && rows[0].y < rows[1].y && rows[1].y < rows[2].y,
                 "Recovered stories should be visible in provider order");
             assert(!(await state(page)).elements.some(e => e.name === "RetryFeedItems" && e.hit),
                 "Successful recovery left a stale retry action");
