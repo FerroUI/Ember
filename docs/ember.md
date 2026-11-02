@@ -98,8 +98,7 @@ In split view, choosing the open story again returns focus to its reader and pre
 
 A reply timestamp opens its standalone discussion in Ember. The reply menu can copy the comment as plain text, copy its HN link, open the original on Hacker News, or fold an individual reply. Expanding a folded reply returns keyboard focus to its controls.
 
-Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Browser story navigation updates the URL without reloading the
-application, and Back/Forward routes through the reader. A browser URL with
+Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Reader Back and browser Back use the same discussion history entries, so Forward can reopen a discussion. A direct permalink returns to the feed without leaving Ember. During a browser session, Ember keeps the presentation of the 24 most recently remembered discussion entries for traversal. Two visits to one URL can have different Find queries, selected matches and reading positions. Reloading uses the saved reading position. A browser URL with
 `?item=8863` opens that discussion. The desktop host accepts an initial HN URL as
 its first argument.
 
@@ -116,6 +115,10 @@ blocks and text remain coordinated. Custom background luminance selects the
 underlying light/dark WinUI theme; the generated main and muted text colors are
 checked against the generated reading surfaces. Reading typography is applied to
 HN HTML without enlarging every navigation label.
+
+If some stories fail to load, the feed footer offers **Retry unavailable stories** with the number still missing. You can load another page or switch public feeds in the meantime. Retrying requests the failed IDs and inserts recovered stories at their original ranks. Stories that HN reports as missing do not stay in the retry count.
+
+The desktop search box recognizes HN story and profile links. Submitting text beyond the search limit keeps the current feed and the typed text visible. From an unavailable profile, **Edit username** returns to the original search draft with the username selected.
 
 ## Content rendering
 

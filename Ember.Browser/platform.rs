@@ -29,7 +29,7 @@ extern "C" {
     #[wasm_bindgen(js_name = databaseScan)]
     fn database_scan(prefix: &str) -> JsValue;
     #[wasm_bindgen(js_name = setLocation)]
-    pub fn set_location(item: Option<String>);
+    pub fn set_location(item: Option<String>, back: bool);
 }
 
 pub struct BrowserHttpClient;

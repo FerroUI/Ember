@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import "fake-indexeddb/auto";
-import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
+import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, observeLocation, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
 
 const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
@@ -138,6 +138,65 @@ test("legacy discussion URLs can return to the feed and keep unrelated URL state
             if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
         }
     }
+});
+
+test("reader Back reuses owned entries, queues rapid actions and replaces an initial permalink", t => {
+    const start = "https://example.test/read/?theme=dark#id=5&debug";
+    const entries = [{ href: start, state: { renderer: "native" } }];
+    const events = new EventTarget();
+    let position = 0;
+    let moving = false;
+    const location = { href: start };
+    const history = {
+        get state() { return entries[position].state; },
+        pushState(state, _, href) {
+            entries.splice(++position, Infinity, { state, href });
+            location.href = href;
+        },
+        replaceState(state, _, href) {
+            entries[position] = { state, href };
+            location.href = href;
+        },
+        back() {
+            assert.ok(position > 0 && !moving, "Only one owned traversal may be pending");
+            moving = true;
+        },
+    };
+    const traverse = delta => {
+        moving = false;
+        position += delta;
+        location.href = entries[position].href;
+        events.dispatchEvent(new Event("popstate"));
+        events.dispatchEvent(new Event("hashchange"));
+    };
+    const original = new Map(["location", "history", "addEventListener"].map(key => [key, globalThis[key]]));
+    Object.assign(globalThis, { location, history, addEventListener: events.addEventListener.bind(events) });
+    t.after(() => {
+        for (const [key, value] of original) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
+    });
+    const visits = [];
+    observeLocation(href => visits.push(locationItem(href)));
+    setLocation(null, true);
+    assert.equal(entries.length, 1);
+    assert.equal(location.href, "https://example.test/read/?theme=dark#debug");
+    assert.equal(history.state.renderer, "native");
+    setLocation("10");
+    setLocation("20");
+    setLocation("10", true);
+    setLocation(null, true);
+    setLocation("30");
+    assert.equal(entries.length, 3);
+    traverse(-1);
+    assert.ok(moving);
+    traverse(-1);
+    assert.equal(locationItem(location.href), "30");
+    assert.equal(entries.length, 2, "Only opening a new item should truncate Forward");
+    assert.deepEqual(visits, [], "Reader-initiated traversals must preserve restored views");
+    traverse(-1);
+    traverse(1);
+    assert.deepEqual(visits, [null, "30"]);
 });
 
 test("ordered batch reads use one transaction and range cleanup preserves neighboring keys", async () => {

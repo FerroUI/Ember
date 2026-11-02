@@ -171,6 +171,53 @@ async function failure(page, name) {
 }
 
 await run([
+    ["reader Back and browser Forward traverse the same discussion entries", async () => {
+        const page = await open(site, { width: 1280, height: 800, query: "?RenderThread=false", initScript });
+        const second = fixtures[102].title;
+        const at = (id, text) => page.waitFor(`new URL(location.href).searchParams.get("item") === ${JSON.stringify(id)} &&
+            JSON.parse(ember.emberState()).elements.some(e => e.name === "DetailTitle" && e.text === ${JSON.stringify(text)})`);
+        try {
+            await page.waitForView();
+            await byText(page, title);
+            await at("101", title);
+            await byText(page, second);
+            await at("102", second);
+            const length = await page.evaluate("history.length");
+            await byName(page, "BackButton");
+            await at("101", title);
+            assert(await page.evaluate("history.length") === length, "Reader Back appended a duplicate discussion");
+            await page.evaluate("history.forward()");
+            await at("102", second);
+            await page.evaluate("history.back()");
+            await at("101", title);
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('RenderThread')") === "false",
+                "Back discarded a renderer setting");
+            await page.evaluate("history.forward()");
+            await at("101", title);
+            // Distinct visits to one URL retain their own Find state, even when
+            // a browser traversal jumps over the intermediate discussion.
+            await byName(page, "FindButton");
+            await page.type("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            await byText(page, second);
+            await at("102", second);
+            await byText(page, title);
+            await at("101", title);
+            await byName(page, "FindButton");
+            await page.type("wonderful");
+            await waitText(page, "1 matching comment");
+            const expectFind = text => page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
+                e.name === "ThreadFind" && e.text === ${JSON.stringify(text)})`);
+            await page.evaluate("history.go(-2)");
+            await expectFind("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            await page.evaluate("history.go(2)");
+            await expectFind("wonderful");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } finally { await page.close(); }
+    }],
     ["primary navigation follows the layout and the selected discussion keeps Find", async () => {
         const page = await open(site, { width: 390, height: 844, initScript });
         try {

@@ -1,4 +1,4 @@
-import { locationItem } from "./ember-platform.js";
+import { locationItem, observeLocation } from "./ember-platform.js";
 
 const host = document.getElementById("out");
 
@@ -54,10 +54,9 @@ async function startReader() {
         const runtime = await loaded.createRuntime();
         FerroExports.attach(runtime);
         globalThis.ember = runtime;
+        observeLocation((href, entry) => runtime.emberNavigate(href, entry),
+            entry => runtime.emberSetBrowserEntry(entry));
         runtime.runMain(globalThis.location.href);
-        const navigate = () => runtime.emberNavigate(globalThis.location.href);
-        globalThis.addEventListener("popstate", navigate);
-        globalThis.addEventListener("hashchange", navigate);
         if ("serviceWorker" in navigator && isSecureContext && navigator.onLine !== false && !globalThis.ferrouiModule?.threads) {
             // The offline shell and FerroUI file picker share one worker registration.
             navigator.serviceWorker.register("./ferroui-sw.js", { updateViaCache: "none" })

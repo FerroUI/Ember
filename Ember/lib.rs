@@ -17,7 +17,10 @@ ferroui_markup_xaml::include_compiled_xaml!();
 pub use app::App;
 pub use markup::SAMPLE;
 pub use reader_view::ReaderView;
-pub use reader_view::{navigate_location, set_location_changed};
+pub use reader_view::{
+    navigate_browser_entry, navigate_location, set_browser_entry, set_location_changed,
+    set_location_navigation, LocationNavigation,
+};
 pub use register_types::{register_types, ASSEMBLY};
 pub use services::{set_database_path, set_initial_location, set_repository_factory};
 #[cfg(test)]

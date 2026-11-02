@@ -28,8 +28,11 @@ pub fn run_main(href: &str) {
         ))
     }));
     ember::set_initial_location(href.to_owned());
-    ember::set_location_changed(Rc::new(|item| {
-        platform::set_location(item.map(|id| id.to_string()))
+    ember::set_location_navigation(Rc::new(|item, action| {
+        platform::set_location(
+            item.map(|id| id.to_string()),
+            action == ember::LocationNavigation::Back,
+        )
     }));
     let mut options = BrowserPlatformOptions::default();
     if href.contains("RenderingMode=Software2D") {
@@ -53,8 +56,14 @@ pub fn run_main(href: &str) {
 
 #[cfg(target_os = "emscripten")]
 #[wasm_bindgen(js_name = emberNavigate)]
-pub fn navigate(href: &str) {
-    ember::navigate_location(href);
+pub fn navigate(href: &str, entry: u32) {
+    ember::navigate_browser_entry(href, (entry != 0).then_some(u64::from(entry)));
+}
+
+#[cfg(target_os = "emscripten")]
+#[wasm_bindgen(js_name = emberSetBrowserEntry)]
+pub fn set_browser_entry(entry: u32) {
+    ember::set_browser_entry((entry != 0).then_some(u64::from(entry)));
 }
 
 /// Read-only visual-tree probe used by browser interaction tests. Coordinates

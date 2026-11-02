@@ -223,12 +223,23 @@ enum WorkspaceLayout {
     Reading,
 }
 
+/// How the host should update its shareable discussion address.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LocationNavigation {
+    Open,
+    Back,
+}
+type LocationHandler = Rc<dyn Fn(Option<u64>, LocationNavigation)>;
+
 ferroui_base::ferro_thread_local! {
     static INITIAL_BROWSER_ENTRY: Cell<Option<u64>> = Cell::new(None);
     static ACTIVE: RefCell<Option<WeakRef<ReaderView>>> = RefCell::new(None);
-    static LOCATION_CHANGED: RefCell<Option<Rc<dyn Fn(Option<u64>)>>> = RefCell::new(None);
+    static LOCATION_CHANGED: RefCell<Option<LocationHandler>> = RefCell::new(None);
 }
 pub fn set_location_changed(callback: Rc<dyn Fn(Option<u64>)>) {
+    set_location_navigation(Rc::new(move |item, _| callback(item)));
+}
+pub fn set_location_navigation(callback: LocationHandler) {
     LOCATION_CHANGED.with(|v| *v.borrow_mut() = Some(callback));
 }
 /// Associate the already displayed reader with the host's committed history slot.
@@ -2095,7 +2106,7 @@ impl ReaderView {
         self.fetch_thread(id, self.thread_fetch_mode(id));
         self.refresh_story_cards(None, false);
         if publish {
-            self.publish_location(Some(id));
+            self.publish_location(Some(id), LocationNavigation::Open);
         }
     }
     fn thread_fetch_mode(&self, id: u64) -> FetchMode {
@@ -2993,7 +3004,7 @@ impl ReaderView {
         self.update_navigation();
         self.render_stories();
         if publish {
-            self.publish_location(None);
+            self.publish_location(None, LocationNavigation::Open);
         }
     }
     fn go_back(&self) {
@@ -3017,28 +3028,26 @@ impl ReaderView {
         self.remember_thread();
         // Restoring a route must not put the outgoing page back onto the history stack.
         self.detail.replace(DetailRoute::Welcome);
-        let route = match route {
-            Some(HistoryEntry::Thread(visit)) => {
-                self.present_discussion(visit, true);
-                return;
-            }
-            Some(HistoryEntry::Search(draft)) => {
-                self.present_search_form(None, None, Some(*draft));
-                return;
-            }
-            Some(HistoryEntry::Route(route)) => Some(route),
-            None => None,
-        };
         match route {
-            Some(DetailRoute::Thread(id)) => {
-                self.open_item_internal(id, true);
-            }
-            Some(DetailRoute::Profile(user)) => self.show_profile(user),
-            Some(DetailRoute::Settings) => self.show_settings(),
-            Some(DetailRoute::Search) => self.show_search(),
-            Some(DetailRoute::More) => self.show_more(),
-            _ => self.return_to_feed(true),
+            Some(HistoryEntry::Thread(visit)) => self.present_discussion(visit, false),
+            Some(HistoryEntry::Search(draft)) => self.present_search_form(None, None, Some(*draft)),
+            Some(HistoryEntry::Route(DetailRoute::Thread(id))) => self.open_item_internal(id, false),
+            Some(HistoryEntry::Route(DetailRoute::Profile(user))) => self.show_profile(user),
+            Some(HistoryEntry::Route(DetailRoute::Settings)) => self.show_settings(),
+            Some(HistoryEntry::Route(DetailRoute::Search)) => self.show_search(),
+            Some(HistoryEntry::Route(DetailRoute::More)) => self.show_more(),
+            _ => self.return_to_feed(false),
         }
+        // Forms and profiles keep the address of their underlying discussion.
+        let item = match *self.detail.borrow() {
+            DetailRoute::Thread(id) => Some(id),
+            _ => self.history.borrow().iter().rev().find_map(|entry| match entry {
+                HistoryEntry::Thread(visit) => Some(visit.root),
+                HistoryEntry::Route(DetailRoute::Thread(id)) => Some(*id),
+                _ => None,
+            }),
+        };
+        self.publish_location(item, LocationNavigation::Back);
     }
     fn return_to_feed(&self, publish: bool) {
         let row = self.selected_row.get();
@@ -3059,12 +3068,11 @@ impl ReaderView {
             self.button("RetryButton").focus();
         }
     }
-    fn publish_location(&self, id: Option<u64>) {
-        LOCATION_CHANGED.with(|v| {
-            if let Some(callback) = v.borrow().clone() {
-                callback(id);
-            }
-        });
+    fn publish_location(&self, id: Option<u64>, action: LocationNavigation) {
+        let callback = LOCATION_CHANGED.with(|slot| slot.borrow().clone());
+        if let Some(callback) = callback {
+            callback(id, action);
+        }
     }
     fn wire_quick_search(&self) {
         let error = self.label("QuickSearchError");
