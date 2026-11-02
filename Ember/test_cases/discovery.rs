@@ -124,17 +124,37 @@ fn masthead_validates_utf8_budget_in_place_and_identifies_permalinks() {
     let (shell, window, view) = start(1280.0, 800.0, store.clone(), Rc::new(Cell::new(false)));
     let field = view.get_control::<TextBox>("SearchBox");
     let submit = view.get_control::<Button>("SearchButton");
-    let error = view.get_control::<TextBlock>("QuickSearchError");
+    let message = "Search terms exceed the 2,048-byte limit.";
+    let visible_errors = || {
+        view.get_visual_descendants()
+            .filter_map(|v| v.cast::<TextBlock>())
+            .filter(|v| v.is_effectively_visible() && v.text().as_deref() == Some(message))
+            .count()
+    };
     field.set_text(Some(&"界".repeat(683)));
     click_in_view(&shell, &window, &submit);
-    assert!(error.is_effectively_visible());
+    assert_eq!(visible_errors(), 1);
+    assert!(
+        (Shell::bounds_of(&window, &submit).y - Shell::bounds_of(&window, &field).y).abs() < 1.
+    );
+
+    assert_eq!(
+        AutomationProperties::get_item_status(&field).as_deref(),
+        Some(message)
+    );
+    assert_eq!(
+        AutomationProperties::get_live_setting(&field),
+        ferroui_controls::automation::AutomationLiveSetting::Polite
+    );
     assert!(ferroui_controls::DataValidationErrors::get_has_errors(
         &field
     ));
     assert!(field.is_focused());
     assert_eq!(title(&view), "Front page");
     field.set_text(Some("https://news.ycombinator.com/user?id=ada"));
-    assert!(!error.is_visible());
+    shell.settle();
+    assert_eq!(visible_errors(), 0);
+    assert_eq!(AutomationProperties::get_item_status(&field), None);
     assert!(!ferroui_controls::DataValidationErrors::get_has_errors(
         &field
     ));

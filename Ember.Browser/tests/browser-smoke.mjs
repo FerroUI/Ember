@@ -1002,17 +1002,23 @@ await run([
             await byName(page, "SearchBox");
             await page.setPermission("clipboard-read", "granted");
             await page.setPermission("clipboard-write", "granted");
-            await page.evaluate("navigator.clipboard.writeText('界'.repeat(683))");
+            const terms = "żółta herbata ".repeat(140);
+            assert(terms.length < 2048 && new TextEncoder().encode(terms.trim()).length > 2048,
+                "The fixture should exceed the byte limit only");
+            await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(terms)})`);
             await page.press("v", ["ctrl"]);
-            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SearchBox' && e.text?.length === 683)");
+            await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e => e.name === 'SearchBox' && e.text?.length === ${terms.length})`);
             await page.press("Enter");
-            await waitText(page, "Search terms exceed the 2,048-byte limit.");
+            const message = "Search terms exceed the 2,048-byte limit.";
+            await waitText(page, message);
+            assert((await state(page)).elements.filter(e => e.text === message).length === 1,
+                "Show a single inline validation message");
             assert((await state(page)).elements.some(e => e.name === "FeedTitle" && e.text === "Front page"),
                 "Invalid input replaced the feed");
             await page.screenshot(path.join(captures, "desktop-search-validation.png"));
             await page.press("a", ["ctrl"]);
             await page.type("systems");
-            await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'QuickSearchError')");
+            await page.waitFor(`!JSON.parse(ember.emberState()).elements.some(e => e.text === ${JSON.stringify(message)})`);
             await page.resize(390, 844);
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'MobileSearch' && e.hit)");
             await byName(page, "MobileSearch");

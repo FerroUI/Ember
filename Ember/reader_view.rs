@@ -3180,8 +3180,6 @@ impl ReaderView {
         callback.is_some_and(|callback| callback(id, action))
     }
     fn wire_quick_search(&self) {
-        let error = self.label("QuickSearchError");
-        AutomationProperties::set_live_setting(&error, AutomationLiveSetting::Polite);
         let field = self.textbox("SearchBox");
         let input = field.downgrade();
         let button = self.button("SearchButton");
@@ -3197,12 +3195,12 @@ impl ReaderView {
                 AutomationProperties::set_name(&button, Some(label));
                 ToolTip::set_tip(&button, Some(Rc::new(label.to_owned()) as BoxedValue));
             }
-            if error.is_visible()
+            if ferroui_controls::DataValidationErrors::get_has_errors(&field)
                 && (crate::search_panel::validate_terms(query.trim()).is_ok()
                     || ember_core::HnDestination::from_link(&query).is_some())
             {
                 widgets::FormValidation::default().check(&field, Ok(()));
-                error.set_is_visible(false);
+                AutomationProperties::set_live_setting(&field, AutomationLiveSetting::Off);
             }
         });
         let weak = self.to_ref().downgrade();
@@ -3230,9 +3228,12 @@ impl ReaderView {
         } else if query.trim().is_empty() {
             self.show_search();
         } else {
-            let mut check = widgets::FormValidation::default();
-            check.check(&field, crate::search_panel::validate_terms(query.trim()));
-            if !check.finish(&self.label("QuickSearchError")) {
+            if let Err(message) = crate::search_panel::validate_terms(query.trim()) {
+                // The native TextBox template already renders its validation message inline.
+                AutomationProperties::set_live_setting(&field, AutomationLiveSetting::Polite);
+                widgets::FormValidation::default().check::<()>(&field, Err(message));
+                field.focus();
+                field.bring_into_view();
                 return;
             }
             self.run_search(SearchQuery {

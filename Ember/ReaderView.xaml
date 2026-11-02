@@ -14,11 +14,9 @@
             <TextBlock x:Name="BrandSubtitle" Text="Hacker News reader" FontSize="12" Classes="muted" Margin="4,0" VerticalAlignment="Center" />
           </StackPanel>
           <Border x:Name="SearchHost" Grid.Column="1" MaxWidth="410" HorizontalAlignment="Center" VerticalAlignment="Center">
-            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="2">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="2">
               <TextBox x:Name="SearchBox" MinWidth="210" PlaceholderText="Search or paste an HN link" AutomationProperties.Name="Search Hacker News" />
-              <Button x:Name="SearchButton" Grid.Column="1" Classes="icon-button" ToolTip.Tip="Search Hacker News" AutomationProperties.Name="Search" />
-              <TextBlock x:Name="QuickSearchError" Grid.Row="1" Grid.ColumnSpan="2" IsVisible="False"
-                         Margin="4,2,0,2" FontSize="12" TextWrapping="Wrap" />
+              <Button x:Name="SearchButton" Grid.Column="1" VerticalAlignment="Top" Classes="icon-button" ToolTip.Tip="Search Hacker News" AutomationProperties.Name="Search" />
             </Grid>
           </Border>
           <StackPanel Grid.Column="2" Orientation="Horizontal">
