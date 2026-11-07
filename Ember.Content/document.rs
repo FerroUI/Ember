@@ -57,7 +57,10 @@ impl HtmlDocument {
     pub fn plain_text(&self) -> String {
         let mut result = String::new();
         append_blocks(&self.blocks, &mut result);
-        result.trim().to_owned()
+        result.truncate(result.trim_end().len());
+        let start = result.len() - result.trim_start().len();
+        result.drain(..start);
+        result
     }
 
     /// First appearance order, deduplicated by normalized destination.

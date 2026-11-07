@@ -65,6 +65,12 @@ hooks `ember-html`, `ember-html-heading`, `ember-html-quote`, `ember-html-list`,
 and `ember-html-link` allow application styles. Font size, line height, paragraph spacing and code
 font are configurable; invalid floating-point inputs are normalized before reaching layout.
 
+A host can use `render_with_code_toolbar` to supply code-block actions alongside the
+existing link callback and optional Find highlight. The toolbar receives the decoded
+source and a callback for switching visual line wrapping. Ember provides a line count,
+a native Wrap toggle and a Copy code button in story text, replies and profiles.
+Copy uses the complete block, preserving indentation, blank lines and trailing newlines.
+
 ## Validation
 
 Build output goes to `$CARGO_TARGET_DIR` (`target` when it is not set).

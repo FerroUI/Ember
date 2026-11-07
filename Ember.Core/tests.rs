@@ -579,6 +579,74 @@ fn cache_write_failure_allows_reading_but_never_claims_offline_success() {
 }
 
 #[test]
+fn download_progress_reports_discovery_and_verifies_a_stale_copy_without_network() {
+    block_on(async {
+        let (repo, http, _) = repository();
+        http.item(1, r#"{"id":1,"kids":[2]}"#);
+        http.item(2, r#"{"id":2,"kids":[3]}"#);
+        http.item(3, r#"{"id":3}"#);
+        assert!(repo.download_thread(1, 10, 1).await.unwrap().complete);
+        let requests = http.calls.get();
+        let events = RefCell::new(Vec::new());
+        let snapshot = repo
+            .download_thread_with_progress(1, 10, 90_000, FetchMode::Offline, |progress| {
+                events.borrow_mut().push(progress)
+            })
+            .await
+            .unwrap();
+        assert!(snapshot.complete);
+        assert_eq!(http.calls.get(), requests);
+        assert_eq!(
+            *events.borrow(),
+            [
+                DownloadProgress::Collecting {
+                    loaded: 1,
+                    pending: 1
+                },
+                DownloadProgress::Collecting {
+                    loaded: 2,
+                    pending: 1
+                },
+                DownloadProgress::Collecting {
+                    loaded: 3,
+                    pending: 0
+                },
+                DownloadProgress::Verifying {
+                    checked: 0,
+                    total: 3
+                },
+                DownloadProgress::Verifying {
+                    checked: 3,
+                    total: 3
+                },
+            ]
+        );
+    });
+}
+
+#[test]
+fn stale_payload_with_the_right_id_cannot_certify_a_failed_refresh() {
+    block_on(async {
+        let store = Rc::new(UnwritableStore(MemoryStore::default()));
+        store
+            .0
+            .put(
+                "cache:item:1",
+                r#"{"fetched_at":0,"value":{"id":1,"text":"old"}}"#,
+            )
+            .await
+            .unwrap();
+        let http = Rc::new(FakeHttp::default());
+        http.item(1, r#"{"id":1,"text":"updated"}"#);
+        let repo = Repository::new(http, store);
+        let result = repo.download_thread(1, 10, 86_400).await.unwrap();
+        assert_eq!(result.root.text.as_deref(), Some("updated"));
+        assert_eq!(result.missing_ids, [1]);
+        assert!(!result.complete);
+    });
+}
+
+#[test]
 fn completed_download_can_reopen_fully_offline() {
     block_on(async {
         let (repo, http, _) = repository();
@@ -619,6 +687,34 @@ fn sqlite_store_persists_across_connections_and_scans_literal_prefixes() {
                 store.scan_prefix("user:a_").await.unwrap(),
                 [("user:a_%".into(), "saved".into())]
             );
+            store.put("bytes:unicode", "Ł😀").await.unwrap();
+            assert_eq!(
+                store.scan_sizes("bytes:").await.unwrap(),
+                [("bytes:unicode".into(), 6)]
+            );
+            let keys = vec!["user:abc".into(), "missing".into(), "user:abc".into()];
+            assert_eq!(
+                store.get_many(&keys).await.unwrap(),
+                [Some("other".into()), None, Some("other".into())]
+            );
+            for key in [
+                "x\u{d7ff}",
+                "x\u{d7ff}\u{10ffff}",
+                "x\u{e000}",
+                "\u{10ffff}z",
+            ] {
+                store.put(key, "utf8").await.unwrap();
+            }
+            assert_eq!(store.count_prefix("x\u{d7ff}").await.unwrap(), 2);
+            assert_eq!(store.count_prefix("\u{10ffff}").await.unwrap(), 1);
+            store.remove_prefix("x\u{d7ff}").await.unwrap();
+            assert_eq!(
+                store.get("x\u{e000}").await.unwrap().as_deref(),
+                Some("utf8")
+            );
+            assert_eq!(store.count_prefix("x\u{d7ff}").await.unwrap(), 0);
+            store.remove_many(&keys).await.unwrap();
+            assert_eq!(store.get("user:abc").await.unwrap(), None);
         }
         {
             let reopened = native::SqliteStore::open(&path).unwrap();
@@ -633,4 +729,189 @@ fn sqlite_store_persists_across_connections_and_scans_literal_prefixes() {
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     });
+}
+
+#[test]
+fn mute_domains_accept_article_links_and_match_host_boundaries() {
+    let mut rules = MuteRules::default();
+    for (input, expected) in [
+        ("https://WWW.Example.COM:443/news?q=1", "example.com"),
+        ("docs.example.com:8080", "docs.example.com"),
+        ("Example.com./", "example.com"),
+        ("https://[::1]:8080/read", "[::1]"),
+        ("https://münchen.de/", "xn--mnchen-3ya.de"),
+    ] {
+        assert_eq!(
+            MuteRules::domain_from_input(input).as_deref(),
+            Some(expected)
+        );
+    }
+    for bad in [
+        "",
+        ":8080",
+        "https:/news",
+        "ftp://example.org",
+        "https:////example.org",
+        "https://person@example.org/news",
+        "bad domain",
+        "-bad.org",
+        "foo..bar",
+        "*.org",
+    ] {
+        assert!(
+            MuteRules::domain_from_input(bad).is_none(),
+            "accepted {bad}"
+        );
+    }
+    rules
+        .domains
+        .insert(MuteRules::domain_from_input("https://www.example.com/post").unwrap());
+    for (url, muted) in [
+        ("https://news.example.com./x", true),
+        ("https://notexample.com/x", false),
+    ] {
+        assert_eq!(
+            rules.matches(&HnItem {
+                url: Some(url.into()),
+                ..Default::default()
+            }),
+            muted
+        );
+    }
+}
+
+#[test]
+fn hn_permalinks_accept_only_unambiguous_public_destinations() {
+    assert_eq!(
+        HnDestination::from_link(" https://NEWS.ycombinator.com/item?from=test&id=42#42 "),
+        Some(HnDestination::Discussion(42))
+    );
+    assert_eq!(
+        HnDestination::from_link("http://news.ycombinator.com/user?id=aDa-1"),
+        Some(HnDestination::Profile("aDa-1".into()))
+    );
+    for link in [
+        "http://example.com/item?id=42",
+        "https://news.ycombinator.com.example.org/item?id=42",
+        "https://person@news.ycombinator.com/item?id=42",
+        "https://news.ycombinator.com:8080/item?id=42",
+        "https://news.ycombinator.com/item?id=0",
+        "https://news.ycombinator.com/item?id=1&id=2",
+        "https://news.ycombinator.com/item?id=18446744073709551616",
+        "https://news.ycombinator.com/user?id=a%2Fb",
+        "https://news.ycombinator.com/reply?id=42",
+        "not a link",
+    ] {
+        assert_eq!(HnDestination::from_link(link), None, "{link}");
+    }
+}
+
+#[test]
+fn temporary_cleanup_keeps_shared_downloads_bookmarks_and_feed_lists() {
+    block_on(async {
+        let (repo, _, store) = repository();
+        for id in 1..=8 {
+            store.put(&format!("cache:item:{id}"), "{}").await.unwrap();
+        }
+        for key in [
+            "cache:user:ada",
+            "cache:search:query",
+            "cache:feed:topstories",
+            "other:record",
+        ] {
+            store.put(key, "{}").await.unwrap();
+        }
+        let mut durable = ReaderState::default();
+        durable.toggle_saved(1, 9);
+        durable.downloaded_threads.insert(2, vec![3, 4]);
+        repo.save_state(&durable).await.unwrap();
+        let mut current = ReaderState::default();
+        current.toggle_saved(5, 10);
+        current.downloaded_threads.insert(6, vec![4, 7]);
+        let result = repo.clean_temporary_cache(&current).await.unwrap();
+        assert_eq!((result.records, result.items), (3, 1));
+        assert!(result.bytes > 0);
+        for id in 1..=7 {
+            assert!(
+                store
+                    .get(&format!("cache:item:{id}"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(store.get("cache:item:8").await.unwrap().is_none());
+        assert!(store.get("cache:feed:topstories").await.unwrap().is_some());
+        assert!(store.get("other:record").await.unwrap().is_some());
+        assert!(repo.load_state().await.unwrap().is_saved(1));
+        assert_eq!(current.downloaded_ids(), vec![6]);
+        assert_eq!(
+            repo.clean_temporary_cache(&current).await.unwrap().records,
+            0
+        );
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Run with --ignored --nocapture in the same Cargo profile on both revisions.
+#[test]
+#[ignore = "timed SQLite workload"]
+fn sqlite_offline_workload() {
+    use std::time::Instant;
+
+    block_on(async {
+        let store = Rc::new(native::SqliteStore::in_memory().unwrap());
+        let http = Rc::new(FakeHttp::default());
+        let repo = Repository::new(http.clone(), store.clone());
+        let children: Vec<u64> = (2..=1_001).collect();
+        let body = "x".repeat(1024);
+        for id in 1..=1001 {
+            let mut item = item(id, if id == 1 { &children } else { &[] });
+            item.text = Some(body.clone());
+            let json = serde_json::json!({ "fetched_at": 1, "value": item }).to_string();
+            store.put(&format!("cache:item:{id}"), &json).await.unwrap();
+        }
+        let mut reads = Vec::new();
+        let mut prunes = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            let snapshot = repo
+                .download_thread_with_progress(1, 1001, 2, FetchMode::Offline, |_| {})
+                .await
+                .unwrap();
+            reads.push(start.elapsed());
+            assert!(snapshot.complete && snapshot.items.len() == 1001);
+            let start = Instant::now();
+            assert_eq!(repo.prune_cache(&ReaderState::default()).await.unwrap(), 0);
+            prunes.push(start.elapsed());
+        }
+        reads.sort();
+        prunes.sort();
+        println!(
+            "1001 cached items, 1 KiB each, 9 samples; median verification {:?}, under-limit prune {:?}",
+            reads[4], prunes[4]
+        );
+        assert_eq!(http.calls.get(), 0);
+    });
+}
+
+#[test]
+fn compact_state_writes_snapshot_pending_edits_and_read_existing_backups() {
+    let (repo, _, store) = repository();
+    let old = r#"{
+      "version":1,
+      "items":{"7":{"saved_at":null,"read_at":31,"hidden":false,"last_opened_at":31,"scroll_anchor":null,"scroll_inset":0,"collapsed":[],"seen_comments":[]}}
+    }"#;
+    block_on(store.put("reader:state", old)).unwrap();
+    let mut state = block_on(repo.load_state()).unwrap();
+    let write = repo.save_state(&state);
+    state.toggle_hidden(7);
+    block_on(write).unwrap();
+    let saved = block_on(repo.load_state()).unwrap();
+    assert!(saved.is_read(7));
+    assert!(!saved.items[&7].hidden);
+    let raw = block_on(store.get("reader:state")).unwrap().unwrap();
+    assert!(!raw.contains("seen_comments"));
+    assert!(!raw.contains('\n'));
+    assert_eq!(ReaderState::import_json(&saved.export_json().unwrap()).unwrap(), saved);
 }

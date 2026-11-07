@@ -21,6 +21,33 @@ repository = "https://github.com/FerroUI/Ember"
 
 [workspace.dependencies]
 # >>> FerroUI workspace dependencies (written by FerroUI/scripts/apps/sync-workspace.py from FerroUI/Cargo.toml; do not edit)
+ferroui-media-camera-windows = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Windows" }
+ferroui-media-video-windows = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Windows" }
+ferroui-media-windows = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Windows" }
+ferroui-media-camera-linux = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Linux" }
+ferroui-media-video-linux = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Linux" }
+ferroui-media-linux = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Linux" }
+ferroui-media-video = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video" }
+ferroui-media-camera = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera" }
+ferroui-media-video-controls = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Controls" }
+ferroui-media-video-apple = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Apple" }
+ferroui-media-camera-apple = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Apple" }
+ferroui-media-controls = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Controls" }
+ferroui-media-apple = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Apple" }
+ferroui-media-browser = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Browser" }
+ferroui-media-video-browser = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Browser" }
+ferroui-media-camera-browser = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Browser" }
+ferroui-media = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media" }
+ferroui-media3d = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media3D" }
+ferroui-media-metal = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Metal" }
+ferroui-media-opengl = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.OpenGL" }
+ferroui-media-android = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Android" }
+ferroui-media-video-android = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Video.Android" }
+ferroui-media-camera-android = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Android" }
+ferroui-media-camera-controls = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Controls" }
+ferroui-media-qr = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Qr", default-features = false }
+ferroui-media-qr-android = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Qr.Android" }
+ferroui-media-qr-apple = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Qr.Apple" }
 # The Dock port (docs/porting/dock): its crates and the dependencies only it has.
 ferrodock-controls-recycling-model = { version = "=0.5.0-preview.1", path = "FerroUI/src/Dock/FerroDock.Controls.Recycling.Model" }
 ferrodock-controls-recycling-model-ferro = { version = "=0.5.0-preview.1", path = "FerroUI/src/Dock/FerroDock.Controls.Recycling.Model.Ferro" }
@@ -201,7 +228,7 @@ wayland-protocols-misc = { version = "=0.3.12", features = ["client"] }
 jni-sys = { version = "=0.4.1" }
 paste = "1"
 cc = "1"
-skia-safe = { version = "0.153" }
+skia-safe = { version = "=0.153.3" }
 # The Vello render backend (docs/porting/vello-backend.md, section 2): exact versions, because the
 # renderers of the Vello project change their interfaces between minor releases. `vello_cpu` without
 # its default features: its thread pool is added by the backend on targets with threads (the
@@ -238,6 +265,9 @@ gif = { version = "=0.14.2", default-features = false, features = ["std"] }
 vello_gpu = { version = "=0.3.0", default-features = false, features = ["std", "text"] }
 vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal"] }
+# The shader translator of `wgpu`, at its version: `ferroui-build` translates the WGSL of the runtime
+# shader effects to GLSL ES 3.0 for WebGL2 at build time (its features `wgsl-in` and `glsl-out`).
+naga = { version = "=30.0.1", default-features = false }
 # The version of the `wasm-bindgen` command-line tool on PATH has to be this exact version.
 wasm-bindgen = "=0.2.129"
 # The bindings of the WebGL2 renderer of `vello_gpu`, at the versions that belong to that release
@@ -285,11 +315,27 @@ lto = false
 # then shows addresses (docs/binary-size.md, section 4.3). On Windows the executable never holds the
 # symbols (they are in the PDB beside it), so the setting changes nothing there. Build with the
 # release profile for a backtrace with names.
+#
+# Without unwinding (`panic = "abort"`, docs/binary-size.md, section 4.7, #567): a panic ends the
+# process, after the panic hook has run. The unwind tables and the landing pads are left out: hello
+# world's executable is 21 % smaller. No production path of the framework carries an expected
+# error as a panic (docs/porting/panics-as-exceptions.md); what a catch of a panic still isolates
+# is a bug, which then ends the process instead of being logged. The development tools that isolate
+# the code of the application they inspect (the Designer, the previewer, hot reload, DevTools) are
+# built with `dev`, `release` or `dist-unwind`. Cargo ignores the setting for tests, benches, build
+# scripts and procedural macros, which always unwind.
 [profile.dist]
 inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "abort"
+
+# The shipped build with unwinding: `dist` with `panic = "unwind"`, for an application that catches
+# panics to carry on (a plug-in host, a tool that isolates the code it runs).
+[profile.dist-unwind]
+inherits = "dist"
+panic = "unwind"
 
 # The WebAssembly module of the browser (scripts/build-browser.sh): optimised for size, because the
 # module is downloaded and compiled by every visitor (docs/porting/browser-platform.md, section 18).
@@ -362,4 +408,8 @@ opt-level = 3
 
 [profile.browser.package.read-fonts]
 opt-level = 3
+
+[patch.crates-io]
+# Pinned source hotfix for Graphite Metal's retained Objective-C objects.
+skia-bindings = { path = "FerroUI/external/rust-skia-bindings" }
 # <<< FerroUI profiles

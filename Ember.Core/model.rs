@@ -102,6 +102,16 @@ impl HnItem {
     pub fn article_url(&self) -> Option<String> {
         self.url.as_deref().and_then(safe_web_url)
     }
+    pub fn content_visible(&self, show_dead: bool) -> bool {
+        !self.deleted && (!self.dead || show_dead)
+    }
+    pub fn visible_article_url(&self, show_dead: bool) -> Option<String> {
+        if self.content_visible(show_dead) {
+            self.article_url()
+        } else {
+            None
+        }
+    }
     pub fn domain(&self) -> String {
         self.url
             .as_deref()
@@ -316,13 +326,27 @@ impl Preferences {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ItemState {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub read_at: Option<u64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_opened_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll_anchor: Option<ItemId>,
+    /// Logical pixels already read within the anchored story header or comment.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub scroll_inset: u32,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub collapsed: BTreeSet<ItemId>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub seen_comments: BTreeSet<ItemId>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -334,17 +358,74 @@ pub struct MuteRules {
 }
 
 impl MuteRules {
+    /// Extract the hostname used by feed matching. Pasted article links may have
+    /// paths and ports; plain entries must be hostnames, optionally with a port.
+    pub fn domain_from_input(value: &str) -> Option<String> {
+        let value = value.trim();
+        if value.is_empty() || value.chars().any(char::is_control) || value.contains('\\') {
+            return None;
+        }
+        let parsed = if let Some((_, rest)) = value.split_once("://") {
+            if rest.is_empty() || rest.starts_with('/') {
+                return None;
+            }
+            Url::parse(value).ok()?
+        } else {
+            let host = value.trim_end_matches('/');
+            if host.contains(['/', '?', '#', '@']) || host.ends_with(':') {
+                return None;
+            }
+            Url::parse(&format!("https://{host}")).ok()?
+        };
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return None;
+        }
+        let host = parsed.host_str()?.trim_end_matches('.');
+        if let Some(url::Host::Domain(_)) = parsed.host() {
+            if host.len() > 253
+                || host.split('.').any(|part| {
+                    part.is_empty()
+                        || part.len() > 63
+                        || part.starts_with('-')
+                        || part.ends_with('-')
+                        || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            {
+                return None;
+            }
+        }
+        Some(host.trim_start_matches("www.").to_owned())
+    }
+
     pub fn matches(&self, item: &HnItem) -> bool {
-        let domain = item.domain().to_ascii_lowercase();
+        if self.users.contains(item.author()) {
+            return true;
+        }
+        if !self.domains.is_empty() {
+            let domain = item.domain().to_ascii_lowercase();
+            let domain = domain.trim_end_matches('.');
+            if self.domains.iter().any(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                let value = value.trim_end_matches('.').trim_start_matches("www.");
+                !value.is_empty()
+                    && (domain == value
+                        || domain
+                            .strip_suffix(value)
+                            .is_some_and(|prefix| prefix.ends_with('.')))
+            }) {
+                return true;
+            }
+        }
+        if self.keywords.is_empty() {
+            return false;
+        }
         let title = item.title_text().to_lowercase();
-        self.users.contains(item.author())
-            || self.domains.iter().any(|value| {
-                let value = value.trim().trim_start_matches("www.").to_ascii_lowercase();
-                !value.is_empty() && (domain == value || domain.ends_with(&format!(".{value}")))
-            })
-            || self.keywords.iter().any(|value| {
-                !value.trim().is_empty() && title.contains(&value.trim().to_lowercase())
-            })
+        self.keywords
+            .iter()
+            .any(|value| !value.trim().is_empty() && title.contains(&value.trim().to_lowercase()))
     }
 }
 
@@ -400,13 +481,13 @@ impl ReaderState {
         self.items.get(&id).is_some_and(|s| s.read_at.is_some())
     }
     pub fn is_visible(&self, item: &HnItem) -> bool {
+        self.passes_content_filters(item) && !(self.preferences.hide_read && self.is_read(item.id))
+    }
+    pub fn passes_content_filters(&self, item: &HnItem) -> bool {
         !item.deleted
             && (!item.dead || self.preferences.show_dead)
             && !self.mutes.matches(item)
-            && !self
-                .items
-                .get(&item.id)
-                .is_some_and(|s| s.hidden || (self.preferences.hide_read && s.read_at.is_some()))
+            && !self.items.get(&item.id).is_some_and(|s| s.hidden)
     }
     pub fn saved_ids(&self) -> Vec<ItemId> {
         let mut values: Vec<_> = self
@@ -417,6 +498,32 @@ impl ReaderState {
         values.sort_by(|a, b| b.cmp(a));
         values.into_iter().map(|(_, id)| id).collect()
     }
+    /// Downloads remain discoverable after a bookmark is removed or a backup is imported.
+    pub fn downloaded_ids(&self) -> Vec<ItemId> {
+        let mut ids: Vec<_> = self.downloaded_threads.keys().copied().collect();
+        ids.sort_unstable_by_key(|id| {
+            let time = self
+                .items
+                .get(id)
+                .and_then(|item| item.saved_at.or(item.last_opened_at));
+            std::cmp::Reverse((time, *id))
+        });
+        ids
+    }
+
+    pub(crate) fn pinned_items(&self) -> BTreeSet<ItemId> {
+        let mut pinned: BTreeSet<_> = self
+            .items
+            .iter()
+            .filter_map(|(&id, item)| item.saved_at.map(|_| id))
+            .collect();
+        for (&root, items) in &self.downloaded_threads {
+            pinned.insert(root);
+            pinned.extend(items.iter().copied());
+        }
+        pinned
+    }
+
     pub fn history_ids(&self) -> Vec<ItemId> {
         let mut values: Vec<_> = self
             .items
@@ -494,6 +601,43 @@ pub fn user_url(username: &str) -> String {
     let mut url = Url::parse("https://news.ycombinator.com/user").expect("static HN URL");
     url.query_pairs_mut().append_pair("id", username);
     url.into()
+}
+
+/// A public HN permalink that can be read inside Ember.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HnDestination {
+    Discussion(ItemId),
+    Profile(String),
+}
+
+impl HnDestination {
+    pub fn from_link(input: &str) -> Option<Self> {
+        let value = input.trim();
+        if value.chars().any(char::is_whitespace) || value.contains('\\') {
+            return None;
+        }
+        let url = Url::parse(value).ok()?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str() != Some("news.ycombinator.com")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+        {
+            return None;
+        }
+        let mut ids = url.query_pairs().filter(|(key, _)| key == "id");
+        let (_, id) = ids.next()?;
+        if ids.next().is_some() {
+            return None;
+        }
+        match url.path() {
+            "/item" if id.bytes().all(|byte| byte.is_ascii_digit()) => {
+                id.parse().ok().filter(|id| *id > 0).map(Self::Discussion)
+            }
+            "/user" if validate_username(&id).is_ok() => Some(Self::Profile(id.into_owned())),
+            _ => None,
+        }
+    }
 }
 
 pub fn validate_username(username: &str) -> Result<(), crate::ReaderError> {

@@ -28,14 +28,20 @@ The wrapper (`scripts/build-browser.sh` of this repository) accepts the options 
 framework's Skia backend. `--features vello` adds FerroUI's alternative renderer,
 selected with `?Renderer=Vello`. All drawing remains behind the FerroUI rendering API.
 
-For a development build on a machine with limited memory, optimize the Rust code
-before the WebAssembly binding step. An entirely unoptimized framework module is
-much larger:
+For a single-threaded development build on a memory-constrained machine, use the
+same pinned toolchain and run:
 
 ```sh
-CARGO_PROFILE_DEV_OPT_LEVEL=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
-  CARGO_BUILD_JOBS=1 scripts/build-browser.sh --debug
+source /path/to/browser-tools/env.sh
+EMBER_LOW_MEMORY=1 scripts/build-browser.sh --debug
 ```
+
+This mode builds Rust at optimization level 1 with one build job, then uses the
+SDK's Binaryen `wasm-opt` to reduce the linked module before the pinned
+`wasm-bindgen` generates JavaScript. It strips WebAssembly debug symbols and
+function names, so browser stack traces lack those names. The temporary optimized
+module is removed after binding. The site location and offline shell are the same
+as a standard non-threaded build.
 
 ## Database and offline behavior
 

@@ -1,14 +1,14 @@
 //! The virtualized native conversation surface. Only realized rows create rich-text controls.
 
-use crate::widgets::{bind_resource, muted, text as label};
-use ember_content::{HtmlDocument, RenderOptions};
+use crate::widgets::{self, bind_resource, muted, text as label};
+use ember_content::{FindHighlight, HtmlDocument, RenderOptions};
 use ember_core::{
-    flatten_thread, flatten_thread_with_match, relative_time, HnItem, ReaderState, ThreadOptions,
-    ThreadRow, ThreadSnapshot, ThreadSort,
+    project_thread_since, project_thread_with_match, relative_time, HnItem, ItemKind, ReaderState,
+    ThreadOptions, ThreadRow, ThreadSnapshot, ThreadSort,
 };
 use ferroui_base::controls::ResourceKey;
 use ferroui_base::layout::{HorizontalAlignment, Orientation, VerticalAlignment};
-use ferroui_base::media::{Color, FontWeight, IBrush, SolidColorBrush};
+use ferroui_base::media::{FontWeight, IBrush, TextTrimming};
 use ferroui_base::metadata::from_markup_value;
 use ferroui_base::threading::{Dispatcher, DispatcherPriority};
 use ferroui_base::{BoxedValue, CornerRadius, Point, Ref, Thickness, Vector};
@@ -17,32 +17,42 @@ use ferroui_controls::primitives::ScrollBarVisibility;
 use ferroui_controls::templates::FuncDataTemplate;
 use ferroui_controls::{
     Application, Border, Button, ColumnDefinitions, ComboBox, Control, Grid, ItemsSource, ListBox,
-    ProgressBar, ScrollViewer, StackPanel, TextBlock, WrapPanel,
+    MenuFlyout, MenuItem, ProgressBar, ScrollViewer, StackPanel, TextBlock, ToolTip, WrapPanel,
 };
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 pub enum ThreadAction {
     OpenUrl(String),
+    OpenArticle(u64),
     Profile(String),
+    SearchDiscussion(u64),
     ToggleCollapse(u64),
-    Save,
+    ToggleAll,
+    ShowNewReplies(bool),
+    ReadInContext(u64),
     Share,
+    CopyCommentLink(u64),
+    CopyCommentText(u64),
+    CopyCode(String),
+    OpenContentLink(String),
+    FocusReading,
     Hide,
     MuteDomain,
     Reply(u64),
     Vote(u64),
     LoadMore,
     Sort(ThreadSort),
-    Parent(u64),
+    GoToItem(u64),
+    OpenComment(u64),
 }
 
 #[derive(Clone)]
 enum RowKind {
     Header,
-    Comment(ThreadRow),
+    Comment(ThreadRow<()>),
     Empty,
     Footer,
 }
@@ -54,21 +64,119 @@ struct ConversationRow {
     document: OnceCell<HtmlDocument>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FindMatch {
+    pub id: u64,
+    pub ordinal: usize,
+    pub total: usize,
+}
+
 #[derive(PartialEq)]
 struct ThreadAnchors {
     root: u64,
     indices: BTreeMap<u64, i32>,
-    parents: BTreeMap<u64, u64>,
+    parents: Rc<BTreeMap<u64, u64>>,
+    /// Only matches, in display order. Context ancestors remain in the ordinary row index.
+    matches: Vec<(i32, u64)>,
+    current_match: Rc<Cell<Option<FindMatch>>>,
+    pending_reveal: Cell<Option<(i32, u32, bool)>>,
 }
 
-/// Comment rows already own their item data. Keep only the header/footer payload here,
-/// rather than retaining another copy of every comment body in a downloaded thread.
+/// Immutable payloads and derived data shared by successive projections of one discussion.
+pub(crate) struct Discussion {
+    pub(crate) snapshot: ThreadSnapshot,
+    search: RefCell<SearchText>,
+    parents: OnceCell<Rc<BTreeMap<u64, u64>>>,
+    header: OnceCell<Rc<ThreadContext>>,
+}
+
+impl Discussion {
+    pub(crate) fn new(snapshot: ThreadSnapshot) -> Self {
+        Self {
+            snapshot,
+            search: RefCell::default(),
+            parents: OnceCell::new(),
+            header: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn comment_text(&self, id: u64, show_dead: bool) -> Option<String> {
+        let item = self.snapshot.items.get(&id)?;
+        let text = HtmlDocument::parse(visible_comment_html(item, show_dead)?).plain_text();
+        (!text.is_empty()).then_some(text)
+    }
+
+    fn parents(&self) -> Rc<BTreeMap<u64, u64>> {
+        self.parents
+            .get_or_init(|| {
+                let mut parents = BTreeMap::new();
+                for item in self
+                    .snapshot
+                    .items
+                    .values()
+                    .chain(std::iter::once(&self.snapshot.root))
+                {
+                    for &child in &item.kids {
+                        parents.entry(child).or_insert(item.id);
+                    }
+                }
+                Rc::new(parents)
+            })
+            .clone()
+    }
+}
+
+// Keep searchable, decoded text instead of an HTML tree for every unrendered comment.
+// The index belongs to a single immutable snapshot. Oversized discussions still search
+// every visible body; entries beyond the byte budget are evaluated without retention.
+const FIND_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct SearchText {
+    bodies: BTreeMap<u64, Box<str>>,
+    bytes: usize,
+}
+
+impl SearchText {
+    fn matches(
+        &mut self,
+        item: &HnItem,
+        query: &str,
+        documents: &mut BTreeMap<u64, HtmlDocument>,
+    ) -> bool {
+        if item
+            .by
+            .as_ref()
+            .is_some_and(|name| name.to_lowercase().contains(query))
+        {
+            return true;
+        }
+        let Some(html) = item.text.as_deref().filter(|text| !text.is_empty()) else {
+            return false;
+        };
+        if let Some(text) = self.bodies.get(&item.id) {
+            return text.contains(query);
+        }
+        let document = HtmlDocument::parse(html);
+        let text = document.plain_text().to_lowercase();
+        let matched = text.contains(query);
+        if text.len() <= FIND_TEXT_BYTES - self.bytes {
+            self.bytes += text.len();
+            self.bodies.insert(item.id, text.into_boxed_str());
+        }
+        if matched && documents.len() < 128 {
+            documents.insert(item.id, document);
+        }
+        matched
+    }
+}
+
 struct ThreadContext {
     root: HnItem,
     poll_options: BTreeMap<u64, HnItem>,
     loaded_comments: usize,
-    pending_comments: usize,
-    missing_comments: usize,
+    pending_items: usize,
+    missing_items: usize,
     complete: bool,
     stale: bool,
     warning: Option<String>,
@@ -84,19 +192,34 @@ impl From<&ThreadSnapshot> for ThreadContext {
                 .iter()
                 .filter_map(|id| snapshot.items.get(id).map(|item| (*id, item.clone())))
                 .collect(),
-            loaded_comments: snapshot
-                .items
-                .keys()
-                .filter(|&&id| id != snapshot.root.id && !snapshot.root.parts.contains(&id))
-                .count(),
-            pending_comments: snapshot.pending_ids.len(),
-            missing_comments: snapshot.missing_ids.len(),
+            loaded_comments: if snapshot.root.parts.is_empty() {
+                snapshot.items.len() - usize::from(snapshot.items.contains_key(&snapshot.root.id))
+            } else {
+                let parts: BTreeSet<_> = snapshot.root.parts.iter().copied().collect();
+                snapshot
+                    .items
+                    .keys()
+                    .filter(|&&id| id != snapshot.root.id && !parts.contains(&id))
+                    .count()
+            },
+            pending_items: snapshot.pending_ids.len(),
+            missing_items: snapshot.missing_ids.len(),
             complete: snapshot.complete,
             stale: snapshot.stale,
             warning: snapshot.warning.clone(),
         }
     }
 }
+/// Retain only the current thread's local state in the virtualized template.
+struct ReadingContext {
+    hidden: bool,
+    seen: Rc<BTreeSet<u64>>,
+    new_count: Option<usize>,
+    show_dead: bool,
+    typography: RenderOptions,
+    find_foreground: Option<Rc<dyn IBrush>>,
+}
+
 impl PartialEq for ConversationRow {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
@@ -105,13 +228,16 @@ impl PartialEq for ConversationRow {
 
 /// The parent must arrange this control into a finite-height viewport; putting it inside an
 /// outer ScrollViewer would disable ListBox's VirtualizingStackPanel.
-pub fn build(
-    snapshot: &ThreadSnapshot,
+pub(crate) fn build_discussion(
+    discussion: Rc<Discussion>,
     state: &ReaderState,
+    seen: Rc<BTreeSet<u64>>,
     query: &str,
     sort: ThreadSort,
+    new_only: bool,
     on_action: Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
+    let snapshot = &discussion.snapshot;
     let query = query.trim();
     let local = state.items.get(&snapshot.root.id);
     let options = ThreadOptions {
@@ -122,40 +248,50 @@ pub fn build(
         ..Default::default()
     };
     let mut matched_documents = BTreeMap::new();
-    let comments = if query.is_empty() {
-        flatten_thread(snapshot, &options)
+    // Find always searches the whole loaded discussion and restores the selected scope on close.
+    let new_only = new_only && !seen.is_empty() && query.is_empty();
+    let comments = if new_only {
+        project_thread_since(snapshot, &options, &seen)
     } else {
-        flatten_thread_with_match(snapshot, &options, |item, query| {
-            if item.author().to_lowercase().contains(query) {
-                return true;
-            }
-            let document = HtmlDocument::parse(item.text.as_deref().unwrap_or_default());
-            let matches = document.plain_text().to_lowercase().contains(query);
-            // Reuse search parsing for the first matching rows, without retaining thousands
-            // of parsed documents when a broad query matches a downloaded conversation.
-            if matches && matched_documents.len() < 128 {
-                matched_documents.insert(item.id, document);
-            }
-            matches
+        let mut search = discussion.search.borrow_mut();
+        project_thread_with_match(snapshot, &options, |item, query| {
+            search.matches(item, query, &mut matched_documents)
         })
     };
+    let new_count = new_only.then(|| {
+        comments
+            .iter()
+            .filter(|row| is_new_reply(row, &seen, options.show_dead))
+            .count()
+    });
     let mut rows = vec![Rc::new(ConversationRow {
         key: 0,
         kind: RowKind::Header,
         document: OnceCell::new(),
     })];
+    // Index only displayed replies. Their order already includes the active sort,
+    // folds and Find/New replies scope; the API's kids array does not.
+    let mut children: BTreeMap<u64, Vec<(usize, u64)>> = BTreeMap::new();
+    let mut matches = Vec::new();
     for comment in comments {
+        children
+            .entry(comment.parent_id)
+            .or_default()
+            .push((rows.len(), comment.id));
+        if comment.matches_query {
+            matches.push((rows.len() as i32, comment.id));
+        }
         let document = matched_documents
             .remove(&comment.id)
             .map(OnceCell::from)
             .unwrap_or_default();
         rows.push(Rc::new(ConversationRow {
             key: rows.len(),
-            kind: RowKind::Comment(comment),
+            kind: RowKind::Comment(comment.with_item(())),
             document,
         }));
     }
-    if rows.len() == 1 {
+    if rows.len() == 1 && !matches!(snapshot.root.kind, Some(ItemKind::Job | ItemKind::Pollopt)) {
         rows.push(Rc::new(ConversationRow {
             key: rows.len(),
             kind: RowKind::Empty,
@@ -172,7 +308,7 @@ pub fn build(
     let list = ListBox::new();
     list.classes().add("reader-list");
     list.classes().add("thread-list");
-    list.set_padding(Thickness::new(20.0, 0.0, 20.0, 16.0));
+    list.set_padding(Thickness::new(14.0, 0.0, 14.0, 12.0));
     list.set_auto_scroll_to_selected_item(false);
     ScrollViewer::set_horizontal_scroll_bar_visibility_on(&list, ScrollBarVisibility::Disabled);
     ScrollViewer::set_vertical_scroll_bar_visibility_on(&list, ScrollBarVisibility::Auto);
@@ -184,41 +320,87 @@ pub fn build(
             _ => None,
         })
         .collect();
-    let mut parents = BTreeMap::new();
-    for item in snapshot
-        .items
-        .values()
-        .chain(std::iter::once(&snapshot.root))
-    {
-        for &child in &item.kids {
-            parents.entry(child).or_insert(item.id);
-        }
-    }
+    let current_match: Rc<Cell<Option<FindMatch>>> = Rc::default();
     list.set_tag(Some(Rc::new(ThreadAnchors {
         root: snapshot.root.id,
         indices,
-        parents,
+        parents: discussion.parents(),
+        matches,
+        current_match: current_match.clone(),
+        pending_reveal: Cell::new(None),
     }) as BoxedValue));
     list.set_items_source(Some(ItemsSource::from_values(rows)));
     AutomationProperties::set_name(&list, Some("Hacker News conversation"));
-    let snapshot = Rc::new(ThreadContext::from(snapshot));
-    let state = Rc::new(state.clone());
-    let query = query.to_owned();
+    let snapshot = discussion
+        .header
+        .get_or_init(|| Rc::new(ThreadContext::from(snapshot)))
+        .clone();
+    let reading = ReadingContext {
+        hidden: local.is_some_and(|s| s.hidden),
+        seen,
+        new_count,
+        show_dead: state.preferences.show_dead,
+        typography: render_options(state),
+        find_foreground: if query.is_empty() {
+            None
+        } else {
+            brush("EmberSurface")
+        },
+    };
+    let bulk_collapse = (query.is_empty() && !new_only && !snapshot.root.kids.is_empty())
+        .then_some(!options.collapsed.is_empty());
+    let query = query.to_lowercase();
+    let weak_list = list.downgrade();
+    let comment_actions: Rc<dyn Fn(ThreadAction)> = {
+        let forward = on_action.clone();
+        Rc::new(move |action| {
+            if let ThreadAction::GoToItem(id) = action {
+                if let Some(list) = weak_list.upgrade() {
+                    if let Some((index, _)) = anchor_index(&list, id) {
+                        reveal_index(&list, index, 0, true);
+                        return;
+                    }
+                }
+            }
+            forward(action);
+        })
+    };
     list.set_item_template(Some(FuncDataTemplate::for_type::<Rc<ConversationRow>>(
         move |row, _| {
-            Some(match &row.kind {
-                RowKind::Header => header(&snapshot, &state, sort, &on_action),
-                RowKind::Comment(comment) => comment_row(
-                    comment,
-                    &row.document,
-                    &snapshot.root,
-                    &state,
-                    !query.is_empty(),
+            let control = match &row.kind {
+                RowKind::Header => header(
+                    &snapshot,
+                    &reading,
+                    sort,
+                    bulk_collapse,
+                    query.is_empty(),
                     &on_action,
                 ),
-                RowKind::Empty => empty(&snapshot, &query, &on_action),
+                RowKind::Comment(comment) => {
+                    let control = comment_row(
+                        &comment.with_item(discussion.snapshot.items.get(&comment.id)),
+                        &row.document,
+                        &snapshot.root,
+                        &reading,
+                        &query,
+                        ReplyNeighbors::at(row.key, comment.parent_id, snapshot.root.id, &children),
+                        &comment_actions,
+                    );
+                    if comment.matches_query {
+                        control.classes().add("find-result");
+                        mark_find_result(
+                            &control,
+                            current_match.get().filter(|m| m.id == comment.id),
+                        );
+                    }
+                    control
+                }
+                RowKind::Empty => empty(&snapshot, &query, new_only, &on_action),
                 RowKind::Footer => footer(&snapshot, &on_action),
-            })
+            };
+            // Stretch into narrow panes, cap the line length on wide monitors.
+            control.set_max_width((reading.typography.font_size * 44.0).clamp(560.0, 840.0));
+            Some(control)
         },
         // Native containers are virtualized; document controls are rebuilt for a different
         // item so a recycled row can never retain another comment's action closures.
@@ -227,50 +409,197 @@ pub fn build(
     list.upcast()
 }
 
-/// The first comment intersecting the viewport, including a partially visible comment.
-/// Returns `None` while the story header is visible so a refresh preserves the top.
-/// This uses realized containers rather than estimating an index from variable row heights.
-pub fn viewport_anchor(control: &Control) -> Option<u64> {
+/// Select or step through matching comments without rebuilding the list. The caller
+/// keeps the stable comment ID across refreshes and sort changes. A missing preferred
+/// result starts at the first match, or the last match when stepping backward.
+pub(crate) fn select_find_match(
+    control: &Control,
+    preferred: Option<u64>,
+    direction: i32,
+) -> Option<FindMatch> {
     let list = conversation_list(control)?;
-    let height = list.bounds().height;
+    let tag = list.tag()?;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let total = anchors.matches.len();
+    if total == 0 {
+        return None;
+    }
+    let previous = preferred.and_then(|id| {
+        let index = anchors.indices.get(&id)?;
+        anchors
+            .matches
+            .binary_search_by_key(index, |&(index, _)| index)
+            .ok()
+    });
+    let index = match (previous, direction.signum()) {
+        (Some(0) | None, -1) => total - 1,
+        (Some(n), -1) => n - 1,
+        (Some(n), 1) => (n + 1) % total,
+        (Some(n), _) => n,
+        (None, _) => 0,
+    };
+    let (row, id) = anchors.matches[index];
+    let selected = FindMatch {
+        id,
+        ordinal: index + 1,
+        total,
+    };
+    if let Some(old) = anchors
+        .current_match
+        .replace(Some(selected))
+        .filter(|m| m.id != id)
+    {
+        update_realized_match(&list, anchors.matches[old.ordinal - 1].0, None);
+    }
+    update_realized_match(&list, row, Some(selected));
+    // The template reads current_match when a later scroll first realizes this row.
+    reveal_index(&list, row, 0, false);
+    Some(selected)
+}
+
+pub(crate) fn current_find_match(control: &Control) -> Option<FindMatch> {
+    let tag = conversation_list(control)?.tag()?;
+    tag.downcast_ref::<ThreadAnchors>()?.current_match.get()
+}
+
+fn update_realized_match(list: &ListBox, index: i32, result: Option<FindMatch>) {
+    if let Some(container) = list.container_from_index(index) {
+        if let Some(row) = container.get_visual_descendants().find_map(|node| {
+            node.cast::<Control>()
+                .filter(|c| c.classes().contains("find-result"))
+        }) {
+            mark_find_result(&row, result);
+        }
+    }
+}
+
+fn mark_find_result(row: &Control, result: Option<FindMatch>) {
+    row.classes().set("current-find-result", result.is_some());
+    let status = result.map(|m| format!("Search result {} of {}", m.ordinal, m.total));
+    AutomationProperties::set_item_status(row, status.as_deref());
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReadingPosition {
+    pub item: u64,
+    /// Distance from the top of the row in logical pixels.
+    pub inset: u32,
+}
+
+impl ReadingPosition {
+    pub fn start(item: u64) -> Self {
+        Self { item, inset: 0 }
+    }
+}
+
+/// Capture the first intersecting row and how far it has scrolled. A single
+/// long comment or a text-only story header can span several screens.
+pub(crate) fn viewport_position(control: &Control) -> Option<ReadingPosition> {
+    let list = conversation_list(control)?;
+    let tag = list.tag()?;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let root = anchors.root;
+    // A complete snapshot can replace the cache preview before its scheduled
+    // layout. Its logical destination is already known even without containers.
+    if let Some((index, inset, _)) = anchors.pending_reveal.get() {
+        let item = list.items().get_at(usize::try_from(index).ok()?)?;
+        let row = item.downcast_ref::<Rc<ConversationRow>>()?;
+        let id = match &row.kind {
+            RowKind::Header => root,
+            RowKind::Comment(comment) => comment.id,
+            _ => return None,
+        };
+        return Some(ReadingPosition { item: id, inset });
+    }
+    let scroll = list.scroll()?.cast::<ScrollViewer>()?;
+    let height = scroll.viewport().height;
     list.get_realized_containers()
         .into_iter()
         .filter_map(|container| {
             if !container.is_effectively_visible() {
                 return None;
             }
-            let origin = container.translate_point(Point::new(0.0, 0.0), &list)?;
+            let origin = container.translate_point(Point::new(0.0, 0.0), &scroll)?;
             if origin.y >= height || origin.y + container.bounds().height <= 0.0 {
                 return None;
             }
             let item = list.item_from_container(&container)?;
             let row = item.downcast_ref::<Rc<ConversationRow>>()?;
             match &row.kind {
-                RowKind::Header => Some((origin.y, None)),
-                RowKind::Comment(comment) => Some((origin.y, Some(comment.id))),
+                RowKind::Header => Some((origin.y, root)),
+                RowKind::Comment(comment) => Some((origin.y, comment.id)),
                 _ => None,
             }
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .and_then(|(_, id)| id)
+        .map(|(top, item)| ReadingPosition {
+            item,
+            inset: (-top).max(0.0).round() as u32,
+        })
+}
+
+/// Return the displayed path, including the result itself when its text was folded.
+pub(crate) fn displayed_comment_path(control: &Control, mut id: u64) -> Option<Vec<u64>> {
+    let list = conversation_list(control)?;
+    let tag = list.tag()?;
+    let anchors = tag.downcast_ref::<ThreadAnchors>()?;
+    let mut path = Vec::new();
+    while id != anchors.root {
+        let index = usize::try_from(*anchors.indices.get(&id)?).ok()?;
+        let item = list.items().get_at(index)?;
+        let row = item.downcast_ref::<Rc<ConversationRow>>()?;
+        let RowKind::Comment(comment) = &row.kind else {
+            return None;
+        };
+        path.push(id);
+        // Filtered rows include the entire ancestry of each hit. Follow the actual
+        // display tree even if a malformed snapshot lists a child under two parents.
+        id = comment.parent_id;
+    }
+    Some(path)
 }
 
 /// Restores reading context after rebuilding a thread. If an ancestor was collapsed,
 /// the nearest visible ancestor is used. A filtered-out branch falls back to its root.
 /// Calling this before attaching the newly built control is supported.
-pub fn restore_anchor(control: &Control, id: u64) {
+pub(crate) fn restore_position(control: &Control, position: ReadingPosition, focus_row: bool) {
     let Some(list) = conversation_list(control) else {
         return;
     };
-    let Some(index) = anchor_index(&list, id) else {
+    let Some((index, exact)) = anchor_index(&list, position.item) else {
         return;
+    };
+    // When the former row is folded away, show its ancestor from the start.
+    let inset = if exact { position.inset } else { 0 };
+    reveal_index(&list, index, inset, focus_row);
+}
+
+fn reveal_index(list: &Ref<ListBox>, index: i32, inset: u32, focus_row: bool) {
+    let Some(tag) = list.tag() else { return };
+    let Some(anchors) = tag.downcast_ref::<ThreadAnchors>() else {
+        return;
+    };
+    let request = (index, inset, focus_row);
+    anchors.pending_reveal.set(Some(request));
+    let reveal = move |list: &ListBox| {
+        let anchors = tag.downcast_ref::<ThreadAnchors>().unwrap();
+        if anchors.pending_reveal.get() != Some(request) {
+            return;
+        }
+        anchors.pending_reveal.set(None);
+        scroll_anchor_into_view(list, index, inset);
+        if focus_row {
+            if let Some(container) = list.container_from_index(index) {
+                container.focus();
+            }
+        }
     };
     if list.is_loaded() {
         let weak = list.downgrade();
         Dispatcher::ui_thread().post_local(
             move || {
                 if let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) {
-                    scroll_anchor_into_view(&list, index);
+                    reveal(&list);
                 }
             },
             DispatcherPriority::LOADED,
@@ -281,11 +610,60 @@ pub fn restore_anchor(control: &Control, id: u64) {
         list.loaded(move |_, _| {
             if !restored.replace(true) {
                 if let Some(list) = weak.upgrade() {
-                    scroll_anchor_into_view(&list, index);
+                    reveal(&list);
                 }
             }
         });
     }
+}
+
+/// Rebuilds replace both virtual containers and their controls. Look up a disclosure by
+/// comment ID so a recycled row cannot receive focus on behalf of its former item.
+pub(crate) fn focus_thread_tool(control: &Control, item: Option<u64>, name: &'static str) {
+    let Some(list) = conversation_list(control) else {
+        return;
+    };
+    let weak = list.downgrade();
+    Dispatcher::ui_thread().post_local(
+        move || {
+            let Some(list) = weak.upgrade().filter(|list| list.is_loaded()) else {
+                return;
+            };
+            let index = match item {
+                None => 0,
+                Some(id) => {
+                    let Some(index) = list.tag().and_then(|tag| {
+                        tag.downcast_ref::<ThreadAnchors>()?
+                            .indices
+                            .get(&id)
+                            .copied()
+                    }) else {
+                        return;
+                    };
+                    index
+                }
+            };
+            if list.container_from_index(index).is_none() {
+                list.scroll_into_view(index);
+            }
+            if let Some(row) = list.container_from_index(index) {
+                let find = |name: &str| {
+                    row.get_visual_descendants()
+                        .filter_map(|v| v.cast::<Control>())
+                        .find(|tool| tool.name().as_deref() == Some(name))
+                };
+                // An expanded leaf keeps its fold action in the overflow.
+                let tool = find(name).or_else(|| match name {
+                    "FoldReply" => find("CommentMenu"),
+                    _ => None,
+                });
+                if let Some(tool) = tool {
+                    tool.focus();
+                }
+            }
+        },
+        DispatcherPriority::LOADED,
+    );
 }
 
 fn conversation_list(control: &Control) -> Option<Ref<ListBox>> {
@@ -301,23 +679,24 @@ fn conversation_list(control: &Control) -> Option<Ref<ListBox>> {
         })
 }
 
-fn anchor_index(list: &ListBox, mut id: u64) -> Option<i32> {
+fn anchor_index(list: &ListBox, target: u64) -> Option<(i32, bool)> {
+    let mut id = target;
     let tag = list.tag()?;
     let anchors = tag.downcast_ref::<ThreadAnchors>()?;
     let mut seen = BTreeSet::new();
     while seen.insert(id) {
         if id == anchors.root {
-            return Some(0);
+            return Some((0, target == id));
         }
         if let Some(&index) = anchors.indices.get(&id) {
-            return Some(index);
+            return Some((index, target == id));
         }
         id = *anchors.parents.get(&id)?;
     }
     None
 }
 
-fn scroll_anchor_into_view(list: &ListBox, index: i32) {
+fn scroll_anchor_into_view(list: &ListBox, index: i32, inset: u32) {
     list.scroll_into_view(index);
     if let (Some(container), Some(scroll)) = (
         list.container_from_index(index),
@@ -328,139 +707,262 @@ fn scroll_anchor_into_view(list: &ListBox, index: i32) {
         // at the top instead of merely making its final pixel visible at the bottom.
         if let Some(origin) = container.translate_point(Point::new(0.0, 0.0), &scroll) {
             let offset = scroll.offset();
-            scroll.set_offset(Vector::new(offset.x, (offset.y + origin.y).max(0.0)));
+            let inset = f64::from(inset).min((container.bounds().height - 1.0).max(0.0));
+            scroll.set_offset(Vector::new(
+                offset.x,
+                (offset.y + origin.y + inset).max(0.0),
+            ));
+        }
+    }
+}
+
+/// The pinned detail header stays meaningful for standalone comments and poll options too.
+pub(crate) fn discussion_summary(snapshot: &ThreadSnapshot) -> String {
+    let root = &snapshot.root;
+    match root.kind {
+        Some(ItemKind::Job) => return "Job listing".to_owned(),
+        Some(ItemKind::Pollopt) => {
+            return root
+                .score
+                .and_then(|n| u64::try_from(n).ok())
+                .map(vote_count)
+                .unwrap_or_else(|| "Poll result".to_owned());
+        }
+        _ => {}
+    }
+    let count = root.descendants.unwrap_or_else(|| {
+        snapshot
+            .items
+            .values()
+            .filter(|item| item.id != root.id && item.kind == Some(ItemKind::Comment))
+            .count() as u64
+    });
+    let noun = match (root.kind == Some(ItemKind::Comment), count == 1) {
+        (true, true) => "reply",
+        (true, false) => "replies",
+        (false, true) => "comment",
+        (false, false) => "comments",
+    };
+    if root.descendants.is_none() && !snapshot.complete {
+        format!("{count} {noun} loaded")
+    } else {
+        format!("{count} {noun}")
+    }
+}
+
+pub(crate) fn discussion_title(story: &HnItem, show_dead: bool) -> String {
+    if story.deleted {
+        "[deleted]".to_owned()
+    } else if story.dead && !show_dead {
+        "[dead]".to_owned()
+    } else if let Some(title) = story
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
+        HtmlDocument::parse(title).plain_text()
+    } else {
+        match story.kind {
+            Some(ItemKind::Comment) => story
+                .by
+                .as_ref()
+                .map(|author| format!("Comment by {author}"))
+                .unwrap_or_else(|| "Comment".to_owned()),
+            Some(ItemKind::Pollopt) => "Poll option".to_owned(),
+            _ => story.title_text().to_owned(),
         }
     }
 }
 
 fn header(
     snapshot: &ThreadContext,
-    state: &ReaderState,
+    reading: &ReadingContext,
     sort: ThreadSort,
+    bulk_collapse: Option<bool>,
+    show_scope: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let story = &snapshot.root;
-    let body = StackPanel::new();
-    body.set_spacing(14.0);
-    body.set_margin(Thickness::new(0.0, 16.0, 0.0, 20.0));
-    let eyebrow = label(
-        &format!("DISCUSSION  /  {}", story.domain().to_uppercase()),
-        10.0,
+    let options = &reading.typography;
+    let body = widgets::stack(8.0);
+    body.set_margin(Thickness::new(0.0, 12.0, 0.0, 4.0));
+    let article = story.visible_article_url(reading.show_dead);
+    let source = if article.is_some() {
+        story.domain()
+    } else {
+        match story.kind {
+            Some(ItemKind::Comment) => "Hacker News comment",
+            Some(ItemKind::Poll | ItemKind::Pollopt) => "Hacker News poll",
+            Some(ItemKind::Job) => "Hacker News job",
+            _ => "Hacker News",
+        }
+        .to_owned()
+    };
+    let eyebrow = label(&source, 12.0);
+    eyebrow.set_font_weight(FontWeight::SemiBold);
+    bind_resource(
+        &eyebrow,
+        TextBlock::foreground_property().as_property(),
+        "EmberAccentInk",
     );
-    eyebrow.classes().add("eyebrow");
     body.children().add(eyebrow);
 
-    let headline = HtmlDocument::parse(story.title_text()).plain_text();
-    let title = label(&headline, 28.0);
+    let headline = discussion_title(story, reading.show_dead);
+    let title = label(&headline, (options.font_size * 1.55).clamp(23.0, 36.0));
+    AutomationProperties::set_heading_level(&title, 1);
     title.set_font_weight(FontWeight::SemiBold);
-    title.set_line_height(36.0);
+    title.set_line_height(title.font_size() * 1.24);
     AutomationProperties::set_name(&title, Some(&headline));
     body.children().add(title);
 
     let meta = WrapPanel::new();
-    meta.set_orientation(Orientation::Horizontal);
-    if let Some(author) = &story.by {
-        meta.children().add(action_button(
-            author,
-            ThreadAction::Profile(author.clone()),
-            actions,
-        ));
+    if let Some(author) = visible_author(story, reading.show_dead) {
+        meta.children().add(author_button(author, actions));
     }
-    let score = story
-        .score
-        .map(|value| format!("{value} points"))
-        .unwrap_or_else(|| "HN post".to_owned());
-    let count = story
-        .descendants
-        .map(|value| format!("{value} comments"))
-        .unwrap_or_else(|| format!("{} replies", story.kids.len()));
-    let metadata = label(
-        &format!(
-            "{score}  ·  {count}  ·  {}",
-            relative_time(story.time, crate::services::now())
-        ),
-        12.0,
-    );
-    metadata.classes().add("muted");
-    metadata.set_vertical_alignment(VerticalAlignment::Center);
-    metadata.set_margin(Thickness::symmetric(6.0, 4.0));
-    meta.children().add(metadata);
+    let mut facts = Vec::new();
+    if story.time.is_some() {
+        facts.push(relative_time(story.time, crate::services::now()));
+    }
+    if let Some(score) = story.score {
+        if story.kind == Some(ItemKind::Pollopt) {
+            if let Ok(votes) = u64::try_from(score) {
+                facts.push(vote_count(votes));
+            }
+        } else {
+            facts.push(format!(
+                "{score} {}",
+                if score == 1 { "point" } else { "points" }
+            ));
+        }
+    }
+    if !facts.is_empty() {
+        let metadata = muted(&facts.join(" · "));
+        metadata.set_vertical_alignment(VerticalAlignment::Center);
+        metadata.set_margin(Thickness::symmetric(4.0, 0.0));
+        meta.children().add(metadata);
+    }
     body.children().add(meta);
 
     let primary = WrapPanel::new();
-    if let Some(url) = story.article_url() {
-        primary.children().add(action_button(
+    if article.is_some() {
+        primary.children().add(labelled_action(
             "Read article",
-            ThreadAction::OpenUrl(url),
+            "open",
+            ThreadAction::OpenArticle(story.id),
             actions,
         ));
     }
-    primary.children().add(action_button(
-        if state.is_saved(story.id) {
-            "Saved"
-        } else {
-            "Save story"
-        },
-        ThreadAction::Save,
+    if let Some(parent) = story.parent {
+        primary.children().add(labelled_action(
+            "View parent",
+            "up",
+            ThreadAction::GoToItem(parent),
+            actions,
+        ));
+    } else if let Some(poll) = story.poll {
+        primary.children().add(labelled_action(
+            "View poll",
+            "up",
+            ThreadAction::GoToItem(poll),
+            actions,
+        ));
+    }
+    primary.children().add(icon_action(
+        "Copy discussion link",
+        "copy",
+        ThreadAction::Share,
         actions,
     ));
-    primary
-        .children()
-        .add(action_button("Share link", ThreadAction::Share, actions));
-    primary.children().add(action_button(
-        "Open on HN",
+    let more = widgets::icon_button("More story actions", "more");
+    let menu = MenuFlyout::new();
+    menu_action(
+        &menu,
+        "Focus reading",
+        "focus_reading",
+        ThreadAction::FocusReading,
+        actions,
+    );
+    if matches!(story.kind, Some(ItemKind::Story | ItemKind::Poll)) {
+        menu_action(
+            &menu,
+            "Search this discussion",
+            "search",
+            ThreadAction::SearchDiscussion(story.id),
+            actions,
+        );
+    }
+    menu_action(
+        &menu,
+        "Open discussion on HN",
+        "open",
         ThreadAction::OpenUrl(story.discussion_url()),
         actions,
-    ));
+    );
+    if !matches!(story.kind, Some(ItemKind::Job | ItemKind::Pollopt))
+        && !story.deleted
+        && !story.dead
+    {
+        menu_action(
+            &menu,
+            "Vote on HN",
+            "up",
+            ThreadAction::Vote(story.id),
+            actions,
+        );
+        menu_action(
+            &menu,
+            "Reply on HN",
+            "reply",
+            ThreadAction::Reply(story.id),
+            actions,
+        );
+    }
+    menu_action(
+        &menu,
+        if reading.hidden {
+            "Restore to feed"
+        } else {
+            "Hide story"
+        },
+        "eye_off",
+        ThreadAction::Hide,
+        actions,
+    );
+    if article.is_some() && source != "news.ycombinator.com" {
+        menu_action(
+            &menu,
+            &format!("Mute {source}"),
+            "eye_off",
+            ThreadAction::MuteDomain,
+            actions,
+        );
+    }
+    more.set_flyout(menu);
+    primary.children().add(more);
     body.children().add(primary);
 
     if story.deleted {
         body.children()
             .add(muted("This item was deleted on Hacker News."));
-    } else if story.dead && !state.preferences.show_dead {
+    } else if story.dead && !reading.show_dead {
         body.children().add(muted("This item is marked dead on Hacker News. Enable dead items in Reader settings to show its content."));
     } else if let Some(html) = &story.text {
         if !html.trim().is_empty() {
-            body.children().add(rich(html, state, actions));
+            body.children().add(rich_document(
+                &HtmlDocument::parse(html),
+                options,
+                None,
+                actions,
+            ));
         }
     }
-    if !story.parts.is_empty() {
-        body.children().add(poll_options(snapshot, actions));
+    if !story.parts.is_empty() && !story.deleted && (!story.dead || reading.show_dead) {
+        body.children()
+            .add(poll_options(snapshot, reading, actions));
     }
-    let secondary = WrapPanel::new();
-    secondary.children().add(action_button(
-        "Vote on HN",
-        ThreadAction::Vote(story.id),
-        actions,
-    ));
-    secondary.children().add(action_button(
-        "Reply on HN",
-        ThreadAction::Reply(story.id),
-        actions,
-    ));
-    secondary.children().add(action_button(
-        if state.items.get(&story.id).is_some_and(|s| s.hidden) {
-            "Unhide"
-        } else {
-            "Hide story"
-        },
-        ThreadAction::Hide,
-        actions,
-    ));
-    secondary.children().add(action_button(
-        "Mute domain",
-        ThreadAction::MuteDomain,
-        actions,
-    ));
-    if let Some(parent) = story.parent {
-        secondary.children().add(action_button(
-            "Parent context",
-            ThreadAction::Parent(parent),
-            actions,
-        ));
+    if matches!(story.kind, Some(ItemKind::Job | ItemKind::Pollopt)) && story.kids.is_empty() {
+        return body.upcast();
     }
-    body.children().add(secondary);
-
     let separator = Border::new();
     separator.set_height(1.0);
     bind_resource(
@@ -471,37 +973,66 @@ fn header(
     body.children().add(separator);
 
     let sort_row = WrapPanel::new();
-    let heading = label("Conversation", 18.0);
+    let caption = if let Some(count) = reading.new_count {
+        format!(
+            "{count} new {}",
+            if count == 1 { "reply" } else { "replies" }
+        )
+    } else {
+        story
+            .descendants
+            .map(|n| format!("{n} {}", if n == 1 { "comment" } else { "comments" }))
+            .unwrap_or_else(|| {
+                if story.kind == Some(ItemKind::Comment) {
+                    "Replies"
+                } else {
+                    "Conversation"
+                }
+                .to_owned()
+            })
+    };
+    let heading = label(&caption, 17.0);
+    AutomationProperties::set_heading_level(&heading, 2);
     heading.set_font_weight(FontWeight::SemiBold);
-    heading.set_margin(Thickness::new(0.0, 8.0, 16.0, 8.0));
+    heading.set_vertical_alignment(VerticalAlignment::Center);
+    heading.set_margin(Thickness::new(0.0, 4.0, 12.0, 4.0));
     sort_row.children().add(heading);
-    let sort_picker = ComboBox::new();
-    sort_picker.set_items_source(Some(ItemsSource::from_values([
-        "Ranked threads".to_owned(),
-        "Newest first".to_owned(),
-        "Oldest first".to_owned(),
-    ])));
-    sort_picker.set_selected_index(match sort {
-        ThreadSort::Ranked => 0,
-        ThreadSort::Newest => 1,
-        ThreadSort::Oldest => 2,
-    });
-    sort_picker.set_min_height(44.0);
-    sort_picker.set_min_width(160.0);
-    AutomationProperties::set_name(&sort_picker, Some("Comment sort order"));
-    let weak = sort_picker.downgrade();
-    let actions = actions.clone();
-    sort_picker.selection_changed(move |_, _| {
-        if let Some(picker) = weak.upgrade() {
-            let value = match picker.selected_index() {
-                1 => ThreadSort::Newest,
-                2 => ThreadSort::Oldest,
-                _ => ThreadSort::Ranked,
-            };
-            actions(ThreadAction::Sort(value));
-        }
-    });
-    sort_row.children().add(sort_picker);
+    if !story.kids.is_empty() {
+        sort_row.children().add(sort_control(sort, actions));
+    }
+    if let Some(expand) = bulk_collapse {
+        let (label, icon) = if expand {
+            ("Expand all replies", "chevron_down")
+        } else {
+            ("Collapse all replies", "collapse")
+        };
+        let button = icon_action(label, icon, ThreadAction::ToggleAll, actions);
+        button.set_name(Some("FoldAll".to_owned()));
+        sort_row.children().add(button);
+    }
+    if show_scope
+        && !reading.seen.is_empty()
+        && (reading.new_count.is_some() || !story.kids.is_empty())
+    {
+        let filter = ferroui_controls::primitives::ToggleButton::new();
+        filter.set_content(Some(Rc::new("New replies".to_owned())));
+        filter.classes().add("feed-filter");
+        filter.classes().set("active", reading.new_count.is_some());
+        filter.set_name(Some("NewReplyFilter".to_owned()));
+        filter.set_min_height(44.0);
+        filter.set_is_checked(Some(reading.new_count.is_some()));
+        AutomationProperties::set_name(&filter, Some("New replies since last visit"));
+        ToolTip::set_tip(
+            &filter,
+            Some(Rc::new(
+                "Show loaded replies absent from your previous copy".to_owned(),
+            )),
+        );
+        let actions = actions.clone();
+        let enabled = reading.new_count.is_none();
+        filter.click(move |_, _| actions(ThreadAction::ShowNewReplies(enabled)));
+        sort_row.children().add(filter);
+    }
     body.children().add(sort_row);
     if snapshot.stale {
         body.children().add(muted(
@@ -511,91 +1042,234 @@ fn header(
     body.upcast()
 }
 
+fn sort_control(sort: ThreadSort, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<ComboBox> {
+    let sort_picker = ComboBox::new();
+    sort_picker.set_name(Some("ThreadSort".to_owned()));
+    sort_picker.set_items_source(Some(ItemsSource::from_values([
+        "Ranked".to_owned(),
+        "Newest first".to_owned(),
+        "Oldest first".to_owned(),
+    ])));
+    sort_picker.set_selected_index(match sort {
+        ThreadSort::Ranked => 0,
+        ThreadSort::Newest => 1,
+        ThreadSort::Oldest => 2,
+    });
+    sort_picker.set_min_height(44.0);
+    sort_picker.set_min_width(128.0);
+    AutomationProperties::set_name(&sort_picker, Some("Comment sort order"));
+    let weak = sort_picker.downgrade();
+    let sort_action = actions.clone();
+    sort_picker.selection_changed(move |_, _| {
+        if let Some(picker) = weak.upgrade() {
+            let value = match picker.selected_index() {
+                1 => ThreadSort::Newest,
+                2 => ThreadSort::Oldest,
+                _ => ThreadSort::Ranked,
+            };
+            sort_action(ThreadAction::Sort(value));
+        }
+    });
+    sort_picker
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReplyNeighbors {
+    previous_branch: Option<u64>,
+    next_branch: Option<u64>,
+    previous_sibling: Option<u64>,
+    next_sibling: Option<u64>,
+}
+
+impl ReplyNeighbors {
+    fn at(row: usize, parent: u64, root: u64, children: &BTreeMap<u64, Vec<(usize, u64)>>) -> Self {
+        let adjacent = |parent| {
+            let siblings = children.get(&parent).map(Vec::as_slice).unwrap_or_default();
+            let next = siblings.partition_point(|&(index, _)| index <= row);
+            (
+                next.checked_sub(2).map(|index| siblings[index].1),
+                siblings.get(next).map(|&(_, id)| id),
+            )
+        };
+        let (previous_branch, next_branch) = adjacent(root);
+        // Top-level replies already expose these same destinations as branch commands.
+        let (previous_sibling, next_sibling) = if parent == root {
+            (None, None)
+        } else {
+            adjacent(parent)
+        };
+        Self {
+            previous_branch,
+            next_branch,
+            previous_sibling,
+            next_sibling,
+        }
+    }
+}
+
+fn visible_author(item: &HnItem, show_dead: bool) -> Option<&str> {
+    item.by
+        .as_deref()
+        .filter(|name| !name.is_empty() && item.content_visible(show_dead))
+}
+
+fn visible_comment_html(item: &HnItem, show_dead: bool) -> Option<&str> {
+    item.text
+        .as_deref()
+        .filter(|text| item.content_visible(show_dead) && !text.trim().is_empty())
+}
+
+fn is_new_reply(
+    row: &ThreadRow<Option<&HnItem>>,
+    previous: &BTreeSet<u64>,
+    show_dead: bool,
+) -> bool {
+    !previous.is_empty()
+        && !previous.contains(&row.id)
+        && row
+            .item
+            .as_ref()
+            .is_some_and(|item| !item.deleted && (!item.dead || show_dead))
+}
+
 fn comment_row(
-    row: &ThreadRow,
+    row: &ThreadRow<Option<&HnItem>>,
     document: &OnceCell<HtmlDocument>,
     root: &HnItem,
-    state: &ReaderState,
-    searching: bool,
+    reading: &ReadingContext,
+    query: &str,
+    neighbors: ReplyNeighbors,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
+    let searching = !query.is_empty();
     let outer = Border::new();
-    outer.set_corner_radius(CornerRadius::uniform(10.0));
-    outer.set_border_thickness(Thickness::uniform(1.0));
-    outer.set_margin(Thickness::new(
-        (row.depth.min(4) * 10) as f64,
-        0.0,
-        0.0,
-        0.0,
-    ));
-    bind_resource(
-        &outer,
-        Border::background_property().as_property(),
-        "EmberCard",
-    );
+    outer.set_border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0));
     bind_resource(
         &outer,
         Border::border_brush_property().as_property(),
-        if row.matches_query {
-            "SystemControlHighlightAccentBrush"
-        } else {
-            "EmberBorder"
-        },
+        "EmberBorder",
     );
-    let grid = Grid::new();
-    grid.set_column_definitions(ColumnDefinitions::parse("3,*").expect("constant columns"));
-    let rail = Border::new();
-    rail.set_margin(Thickness::new(0.0, 12.0, 0.0, 12.0));
-    let depth_colors = [
-        &state.preferences.accent[..],
-        "#6CAEE7",
-        "#9D8CE8",
-        "#5BB7A0",
-        "#D7A66E",
-    ];
-    if let Ok(color) = Color::parse(depth_colors[row.depth % depth_colors.len()]) {
-        rail.set_background(Some(SolidColorBrush::with_color(color).into()));
-    }
-    grid.children().add(rail);
-    let body = StackPanel::new();
-    body.set_spacing(10.0);
-    body.set_margin(Thickness::new(12.0, 8.0, 12.0, 10.0));
-    Grid::set_column(&body, 1);
-    let meta = WrapPanel::new();
+    let body = widgets::stack(3.0);
+    body.set_margin(Thickness::new(0.0, 2.0, 0.0, 10.0));
+    let line = Grid::new();
+    line.set_column_definitions(ColumnDefinitions::parse("*,Auto").expect("constant columns"));
+    let byline = WrapPanel::new();
+    byline.set_vertical_alignment(VerticalAlignment::Center);
     if let Some(item) = &row.item {
-        if !item.deleted {
-            if let Some(author) = &item.by {
-                let author_button =
-                    action_button(author, ThreadAction::Profile(author.clone()), actions);
-                author_button.set_font_weight(FontWeight::SemiBold);
-                meta.children().add(author_button);
-                if item.by == root.by && root.by.is_some() {
-                    meta.children().add(badge("AUTHOR"));
-                }
+        if let Some(author) = visible_author(item, reading.show_dead) {
+            let button = author_button(author, actions);
+            if row.matches_query && author.to_lowercase().contains(query) {
+                button.classes().add("active");
+                AutomationProperties::set_item_status(&button, Some("Author matches search"));
+            }
+            byline.children().add(button);
+            if matches!(
+                root.kind,
+                Some(ItemKind::Story | ItemKind::Poll | ItemKind::Job)
+            ) && visible_author(root, reading.show_dead) == Some(author)
+            {
+                let op = badge("OP");
+                AutomationProperties::set_name(&op, Some("Original poster"));
+                ToolTip::set_tip(&op, Some(Rc::new("Original poster".to_owned())));
+                byline.children().add(op);
             }
         }
-        let age = muted(&relative_time(item.time, crate::services::now()));
-        age.set_vertical_alignment(VerticalAlignment::Center);
-        age.set_margin(Thickness::symmetric(4.0, 8.0));
-        meta.children().add(age);
-        let was_read = state.items.get(&root.id);
-        if was_read
-            .is_some_and(|s| !s.seen_comments.is_empty() && !s.seen_comments.contains(&row.id))
-        {
-            meta.children().add(badge("NEW"));
+        // A timestamp doubles as the stable comment link, as on Hacker News.
+        let caption = if item.time.is_some() {
+            relative_time(item.time, crate::services::now())
+        } else {
+            "Link".to_owned()
+        };
+        let link_name = item
+            .time
+            .map(|_| format!("Open comment thread · {caption}"));
+        let permalink = text_action(
+            &caption,
+            link_name.as_deref().unwrap_or("Open comment thread"),
+            ThreadAction::OpenComment(row.id),
+            actions,
+        );
+        permalink.set_name(Some("CommentPermalink".to_owned()));
+        byline.children().add(permalink);
+        if is_new_reply(row, &reading.seen, reading.show_dead) {
+            byline.children().add(badge("NEW"));
+        } else if reading.new_count.is_some() {
+            let context = muted("Earlier reply");
+            context.set_vertical_alignment(VerticalAlignment::Center);
+            byline.children().add(context);
         }
         if row.matches_query {
-            meta.children().add(badge("MATCH"));
+            byline.children().add(badge("MATCH"));
         }
     } else {
-        meta.children().add(muted(&format!("Comment {}", row.id)));
+        byline.children().add(muted(&format!("Comment {}", row.id)));
     }
-    body.children().add(meta);
+    line.children().add(byline);
+    let commands = widgets::stack(0.0);
+    commands.set_orientation(Orientation::Horizontal);
+    Grid::set_column(&commands, 1);
+    if reading.new_count.is_none() && !searching && (row.child_count > 0 || row.collapsed) {
+        let count = format!(
+            "{} {}",
+            row.child_count,
+            if row.child_count == 1 {
+                "reply"
+            } else {
+                "replies"
+            }
+        );
+        let action = ThreadAction::ToggleCollapse(row.id);
+        let disclosure = if row.collapsed {
+            let caption = if row.child_count == 0 {
+                "Show text"
+            } else {
+                &count
+            };
+            let expand = labelled_action(caption, "chevron_down", action, actions);
+            let name = if row.child_count == 0 {
+                "Expand comment".to_owned()
+            } else {
+                format!("Expand comment and {count}")
+            };
+            AutomationProperties::set_name(&expand, Some(&name));
+            ToolTip::set_tip(&expand, Some(Rc::new(name)));
+            expand
+        } else {
+            icon_action(&format!("Collapse {count}"), "chevron_up", action, actions)
+        };
+        disclosure.set_name(Some("FoldReply".to_owned()));
+        commands.children().add(disclosure);
+    }
+    if row.matches_query
+        || (reading.new_count.is_some() && is_new_reply(row, &reading.seen, reading.show_dead))
+    {
+        let context = icon_action(
+            "Read in context",
+            "chat",
+            ThreadAction::ReadInContext(row.id),
+            actions,
+        );
+        context.set_name(Some("ReadInContext".to_owned()));
+        commands.children().add(context);
+    }
+    let has_text = row
+        .item
+        .is_some_and(|item| visible_comment_html(item, reading.show_dead).is_some());
+    let fold_leaf = has_text
+        && row.child_count == 0
+        && !row.collapsed
+        && !searching
+        && reading.new_count.is_none();
+    commands.children().add(comment_menu(
+        row, root, neighbors, has_text, fold_leaf, actions,
+    ));
+    line.children().add(commands);
+    body.children().add(line);
 
-    if row.collapsed && !searching {
+    if row.collapsed && reading.new_count.is_none() && !searching {
         let summary = match &row.item {
             Some(item) if item.deleted => "[deleted]".to_owned(),
-            Some(item) if item.dead && !state.preferences.show_dead => "[dead]".to_owned(),
+            Some(item) if item.dead && !reading.show_dead => "[dead]".to_owned(),
             Some(item) => item
                 .text
                 .as_deref()
@@ -607,15 +1281,18 @@ fn comment_row(
                 .unwrap_or_else(|| "Collapsed conversation".to_owned()),
             None => "Collapsed conversation".to_owned(),
         };
-        let preview: String = summary.chars().take(150).collect();
-        body.children().add(muted(&format!(
-            "{preview}{}",
-            if summary.chars().count() > 150 {
-                "…"
-            } else {
-                ""
-            }
-        )));
+        let mut chars = summary
+            .split_whitespace()
+            .flat_map(|word| word.chars().chain(std::iter::once(' ')));
+        let mut snippet: String = chars.by_ref().take(120).collect();
+        if chars.next().is_some() {
+            snippet.push('…');
+        }
+        let preview = muted(snippet.trim_end());
+        preview.set_max_lines(1);
+        preview.set_text_trimming(<dyn TextTrimming>::character_ellipsis());
+        body.children().add(preview);
+        AutomationProperties::set_item_status(&outer, Some("Collapsed"));
     } else {
         match &row.item {
             None => body.children().add(muted(
@@ -624,14 +1301,28 @@ fn comment_row(
             Some(item) if item.deleted => body
                 .children()
                 .add(muted("[deleted] — replies remain available below.")),
-            Some(item) if item.dead && !state.preferences.show_dead => body.children().add(muted(
+            Some(item) if item.dead && !reading.show_dead => body.children().add(muted(
                 "[dead] — enable dead comments in Reader settings to show this text.",
             )),
             Some(item) => {
                 if let Some(html) = item.text.as_deref().filter(|s| !s.trim().is_empty()) {
+                    let highlight = if row.matches_query {
+                        reading
+                            .find_foreground
+                            .as_ref()
+                            .zip(reading.typography.link_brush.as_ref())
+                            .map(|(foreground, background)| FindHighlight {
+                                query,
+                                foreground: foreground.clone(),
+                                background: background.clone(),
+                            })
+                    } else {
+                        None
+                    };
                     body.children().add(rich_document(
                         document.get_or_init(|| HtmlDocument::parse(html)),
-                        state,
+                        &reading.typography,
+                        highlight,
                         actions,
                     ));
                 } else {
@@ -641,122 +1332,310 @@ fn comment_row(
         }
     }
 
-    let toolbar = WrapPanel::new();
-    if row.child_count > 0 || row.collapsed {
-        toolbar.children().add(action_button(
-            &format!(
-                "{} {} replies",
-                if row.collapsed { "Expand" } else { "Collapse" },
-                row.child_count
-            ),
-            ThreadAction::ToggleCollapse(row.id),
-            actions,
-        ));
-    }
-    if row.item.is_some() {
-        toolbar.children().add(action_button(
-            "Reply on HN",
-            ThreadAction::Reply(row.id),
-            actions,
-        ));
-        toolbar.children().add(action_button(
-            "Permalink",
-            ThreadAction::OpenUrl(ember_core::item_url(row.id)),
-            actions,
-        ));
-    } else {
-        toolbar.children().add(action_button(
+    if row.item.is_none() {
+        body.children().add(labelled_action(
             "Retry loading",
+            "refresh",
             ThreadAction::LoadMore,
             actions,
         ));
     }
-    if row.depth > 0 {
-        toolbar.children().add(action_button(
-            "Parent",
-            ThreadAction::Parent(row.parent_id),
-            actions,
-        ));
-    }
-    body.children().add(toolbar);
+    let description = match &row.item {
+        None => "Unavailable comment".to_owned(),
+        Some(item) if item.deleted => "Deleted comment".to_owned(),
+        Some(item) if item.dead && !reading.show_dead => "Dead comment".to_owned(),
+        Some(item) => visible_author(item, reading.show_dead)
+            .map(|name| format!("Comment by {name}"))
+            .unwrap_or_else(|| "Comment".to_owned()),
+    };
     AutomationProperties::set_name(
         &outer,
-        Some(&format!(
-            "Comment by {}, level {}",
-            row.item
-                .as_ref()
-                .map(HnItem::author)
-                .unwrap_or("unavailable"),
-            row.depth + 1
-        )),
+        Some(&format!("{description}, level {}", row.depth + 1)),
     );
-    grid.children().add(body);
-    outer.set_child(grid);
+    let branch = Border::new();
+    // Preserve reading width on phones, even when HN threads are dozens of levels deep.
+    let inset = row.depth.min(4) as f64 * 8.0;
+    branch.set_margin(Thickness::new(inset, 0.0, 0.0, 0.0));
+    if row.depth > 0 || row.matches_query {
+        branch.set_padding(Thickness::new(8.0, 0.0, 0.0, 0.0));
+        branch.set_border_thickness(Thickness::new(2.0, 0.0, 0.0, 0.0));
+        bind_resource(
+            &branch,
+            Border::border_brush_property().as_property(),
+            if row.matches_query {
+                "EmberAccentInk"
+            } else {
+                "EmberBorder"
+            },
+        );
+    }
+    branch.set_child(body);
+    outer.set_child(branch);
     outer.upcast()
 }
 
-fn poll_options(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let panel = StackPanel::new();
-    panel.set_spacing(12.0);
-    panel.children().add(muted("POLL RESULTS"));
-    let total: i64 = snapshot
-        .root
-        .parts
-        .iter()
-        .filter_map(|id| snapshot.poll_options.get(id))
-        .map(|item| item.score.unwrap_or(0).max(0))
-        .fold(0i64, i64::saturating_add);
-    for id in &snapshot.root.parts {
+/// Populate on first open so scrolling a long thread need only realize the overflow trigger.
+fn comment_menu(
+    row: &ThreadRow<Option<&HnItem>>,
+    root: &HnItem,
+    neighbors: ReplyNeighbors,
+    has_text: bool,
+    fold_leaf: bool,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let more = widgets::icon_button("More comment actions", "more");
+    more.set_name(Some("CommentMenu".to_owned()));
+    let menu = MenuFlyout::new();
+    let weak = menu.downgrade();
+    let actions = actions.clone();
+    let id = row.id;
+    let can_reply = row
+        .item
+        .as_ref()
+        .is_some_and(|item| !item.deleted && !item.dead);
+    let parent = (row.depth > 0).then_some(row.parent_id);
+    let root_id = root.id;
+    let back_label = match root.kind {
+        Some(ItemKind::Comment) => "Back to opening comment",
+        Some(ItemKind::Poll) => "Back to poll",
+        _ => "Back to story",
+    };
+    menu.opening(move |_| {
+        let Some(menu) = weak.upgrade() else {
+            return;
+        };
+        if menu.items().count() != 0 {
+            return;
+        }
+        menu_action(
+            &menu,
+            "Copy comment link",
+            "copy",
+            ThreadAction::CopyCommentLink(id),
+            &actions,
+        );
+        menu_action(
+            &menu,
+            "Open comment thread",
+            "chat",
+            ThreadAction::OpenComment(id),
+            &actions,
+        );
+        if has_text {
+            menu_action(
+                &menu,
+                "Copy comment text",
+                "copy",
+                ThreadAction::CopyCommentText(id),
+                &actions,
+            );
+        }
+        if fold_leaf {
+            menu_action(
+                &menu,
+                "Fold comment",
+                "chevron_up",
+                ThreadAction::ToggleCollapse(id),
+                &actions,
+            );
+        }
+        if can_reply {
+            menu_action(
+                &menu,
+                "Reply on HN",
+                "reply",
+                ThreadAction::Reply(id),
+                &actions,
+            );
+        }
+        if let Some(parent) = parent {
+            menu_action(
+                &menu,
+                "Go to parent comment",
+                "up",
+                ThreadAction::GoToItem(parent),
+                &actions,
+            );
+        }
+        for (target, label, icon) in [
+            (
+                neighbors.previous_sibling,
+                "Previous reply to this parent",
+                "chevron_up",
+            ),
+            (
+                neighbors.next_sibling,
+                "Next reply to this parent",
+                "chevron_down",
+            ),
+        ] {
+            if let Some(target) = target {
+                menu_action(&menu, label, icon, ThreadAction::GoToItem(target), &actions);
+            }
+        }
+        if let Some(previous) = neighbors.previous_branch {
+            menu_action(
+                &menu,
+                "Previous top-level comment",
+                "chevron_up",
+                ThreadAction::GoToItem(previous),
+                &actions,
+            );
+        }
+        if let Some(next) = neighbors.next_branch {
+            menu_action(
+                &menu,
+                "Next top-level comment",
+                "chevron_down",
+                ThreadAction::GoToItem(next),
+                &actions,
+            );
+        }
+        menu_action(
+            &menu,
+            back_label,
+            "back",
+            ThreadAction::GoToItem(root_id),
+            &actions,
+        );
+        menu_action(
+            &menu,
+            "Open comment on HN",
+            "open",
+            ThreadAction::OpenUrl(ember_core::item_url(id)),
+            &actions,
+        );
+    }).detach();
+    more.set_flyout(menu);
+    more
+}
+
+fn poll_options(
+    snapshot: &ThreadContext,
+    reading: &ReadingContext,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Control> {
+    let panel = widgets::stack(8.0);
+    let title = label("Poll results", 17.0);
+    title.set_font_weight(FontWeight::SemiBold);
+    AutomationProperties::set_heading_level(&title, 2);
+    panel.children().add(title);
+
+    // A share is meaningful only after every option has a reported vote count.
+    let total: Option<u64> = snapshot.root.parts.iter().try_fold(0u64, |total, id| {
+        let votes = u64::try_from(snapshot.poll_options.get(id)?.score?).ok()?;
+        total.checked_add(votes)
+    });
+    let caption = match total {
+        Some(0) => "No votes yet".to_owned(),
+        Some(votes) => format!("{} in total", vote_count(votes)),
+        None => "Some poll results are unavailable.".to_owned(),
+    };
+    panel.children().add(muted(&caption));
+    for (index, id) in snapshot.root.parts.iter().enumerate() {
         let Some(option) = snapshot.poll_options.get(id) else {
             panel
                 .children()
-                .add(muted("A poll option is still loading."));
+                .add(muted(&format!("Option {} is unavailable.", index + 1)));
             continue;
         };
-        let item = StackPanel::new();
-        item.set_spacing(6.0);
-        let text = HtmlDocument::parse(
-            option
-                .text
-                .as_deref()
-                .or(option.title.as_deref())
-                .unwrap_or("Poll option"),
-        )
-        .plain_text();
-        item.children().add(label(
-            &format!("{}  ·  {} votes", text, option.score.unwrap_or(0)),
-            14.0,
-        ));
-        let progress = ProgressBar::new();
-        progress.set_maximum(total.max(1) as f64);
-        progress.set_range_value(option.score.unwrap_or(0).max(0) as f64);
-        progress.set_height(5.0);
-        AutomationProperties::set_name(&progress, Some(&text));
-        item.children().add(progress);
+        let item = widgets::stack(3.0);
+        let text = if option.deleted {
+            "[deleted]".to_owned()
+        } else if option.dead && !reading.show_dead {
+            "[dead]".to_owned()
+        } else {
+            HtmlDocument::parse(
+                option
+                    .text
+                    .as_deref()
+                    .or(option.title.as_deref())
+                    .unwrap_or_default(),
+            )
+            .plain_text()
+        };
+        let text = if text.trim().is_empty() {
+            format!("Option {}", index + 1)
+        } else {
+            text
+        };
+        item.children()
+            .add(label(&text, reading.typography.font_size));
+        if let Some(votes) = option.score.and_then(|score| u64::try_from(score).ok()) {
+            let count = vote_count(votes);
+            if let Some(total) = total.filter(|&total| total > 0) {
+                let share = 100.0 * votes as f64 / total as f64;
+                let percentage = if votes > 0 && share < 1.0 {
+                    "<1%".to_owned()
+                } else if votes < total && share > 99.0 {
+                    ">99%".to_owned()
+                } else {
+                    format!("{share:.0}%")
+                };
+                let info = format!("{count} · {percentage}");
+                let progress = ProgressBar::new();
+                progress.set_maximum(total as f64);
+                progress.set_range_value(votes as f64);
+                progress.set_height(4.0);
+                AutomationProperties::set_name(&progress, Some(&format!("{text}, {info}")));
+                item.children().add(progress);
+                item.children().add(muted(&info));
+            } else {
+                item.children().add(muted(&count));
+            }
+        } else {
+            item.children().add(muted("Vote count unavailable"));
+        }
         panel.children().add(item);
     }
-    panel.children().add(action_button(
+    panel.children().add(labelled_action(
         "Vote in poll on HN",
+        "up",
         ThreadAction::OpenUrl(snapshot.root.discussion_url()),
         actions,
     ));
     panel.upcast()
 }
 
+fn vote_count(votes: u64) -> String {
+    format!("{votes} {}", if votes == 1 { "vote" } else { "votes" })
+}
+
 fn footer(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let panel = StackPanel::new();
-    panel.set_spacing(10.0);
-    panel.set_margin(Thickness::uniform(12.0));
-    panel.children().add(muted(&format!(
-        "{} comments loaded · {} pending · {} unavailable",
-        snapshot.loaded_comments, snapshot.pending_comments, snapshot.missing_comments
-    )));
+    let panel = widgets::stack(6.0);
+    panel.set_margin(Thickness::new(0.0, 8.0, 0.0, 12.0));
+    if !snapshot.complete {
+        let mut facts = vec![format!(
+            "{} {} loaded",
+            snapshot.loaded_comments,
+            if snapshot.loaded_comments == 1 {
+                "comment"
+            } else {
+                "comments"
+            }
+        )];
+        if snapshot.pending_items != 0 {
+            facts.push(format!("{} pending", snapshot.pending_items));
+        }
+        if snapshot.missing_items != 0 {
+            facts.push(format!("{} unavailable", snapshot.missing_items));
+        }
+        panel.children().add(muted(&facts.join(" · ")));
+    }
     if let Some(warning) = &snapshot.warning {
         panel.children().add(muted(warning));
     }
     if !snapshot.complete {
-        panel.children().add(action_button(
-            "Load more comments",
+        let (label, icon) = if snapshot.pending_items == 0 {
+            ("Retry unavailable items", "refresh")
+        } else if snapshot.root.parts.is_empty() {
+            ("Load more comments", "chevron_down")
+        } else {
+            ("Load more items", "chevron_down")
+        };
+        panel.children().add(labelled_action(
+            label,
+            icon,
             ThreadAction::LoadMore,
             actions,
         ));
@@ -767,43 +1646,62 @@ fn footer(snapshot: &ThreadContext, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<C
 fn empty(
     snapshot: &ThreadContext,
     query: &str,
+    new_only: bool,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
     let panel = StackPanel::new();
     panel.set_spacing(12.0);
     panel.set_margin(Thickness::uniform(20.0));
-    let text = if query.is_empty() && !snapshot.complete {
-        "Comments are not yet available in the local copy.".to_owned()
-    } else if query.is_empty() {
-        "A good conversation starts with one thought.".to_owned()
+    if !query.is_empty() {
+        panel.children().add(label("No matching comments", 17.0));
+        panel.children().add(muted(&format!(
+            "No loaded comments contain “{query}”. Edit or clear the search above."
+        )));
+    } else if new_only {
+        panel
+            .children()
+            .add(label("No new replies in this copy", 17.0));
+        panel.children().add(labelled_action(
+            "Show all replies",
+            "chat",
+            ThreadAction::ShowNewReplies(false),
+            actions,
+        ));
+    } else if !snapshot.complete && !snapshot.root.kids.is_empty() {
+        panel
+            .children()
+            .add(label("Comments haven’t loaded yet", 17.0));
+        panel.children().add(muted(
+            "Use the action below to continue loading this discussion.",
+        ));
     } else {
-        format!("No loaded comments match “{}”.", query)
-    };
-    panel.children().add(label(&text, 18.0));
-    panel.children().add(action_button(
-        "Join the conversation on HN",
-        ThreadAction::Reply(snapshot.root.id),
-        actions,
-    ));
+        panel.children().add(label("No comments yet", 17.0));
+        if !snapshot.root.deleted && !snapshot.root.dead {
+            panel.children().add(labelled_action(
+                "Reply on Hacker News",
+                "reply",
+                ThreadAction::Reply(snapshot.root.id),
+                actions,
+            ));
+        }
+    }
     panel.upcast()
-}
-
-fn rich(html: &str, state: &ReaderState, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Control> {
-    let document = HtmlDocument::parse(html);
-    rich_document(&document, state, actions)
 }
 
 fn rich_document(
     document: &HtmlDocument,
-    state: &ReaderState,
+    options: &RenderOptions,
+    highlight: Option<FindHighlight<'_>>,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Control> {
-    let options = render_options(state);
-    let actions = actions.clone();
-    ember_content::render(
+    let open = actions.clone();
+    let copy = actions.clone();
+    crate::rich_content::render(
         document,
-        &options,
-        Rc::new(move |url| actions(ThreadAction::OpenUrl(url.to_owned()))),
+        options,
+        highlight,
+        Rc::new(move |url| open(ThreadAction::OpenContentLink(url.to_owned()))),
+        Rc::new(move |source| copy(ThreadAction::CopyCode(source.to_owned()))),
     )
 }
 
@@ -813,8 +1711,7 @@ pub fn render_options(state: &ReaderState) -> RenderOptions {
         font_size: state.preferences.font_size,
         line_height: state.preferences.font_size * state.preferences.line_height,
         foreground: brush("EmberText"),
-        link_brush: brush("HyperlinkButtonForeground")
-            .or_else(|| brush("SystemControlHighlightAccentBrush")),
+        link_brush: brush("EmberAccentInk").or_else(|| brush("HyperlinkButtonForeground")),
         code_background: brush("EmberCode"),
         quote_brush: brush("EmberMuted"),
         link_min_height: 44.0,
@@ -823,31 +1720,78 @@ pub fn render_options(state: &ReaderState) -> RenderOptions {
     }
 }
 
-fn action_button(
-    text: &str,
+fn author_button(author: &str, actions: &Rc<dyn Fn(ThreadAction)>) -> Ref<Button> {
+    let button = text_action(
+        author,
+        &format!("View {author}’s profile"),
+        ThreadAction::Profile(author.to_owned()),
+        actions,
+    );
+    button.set_font_weight(FontWeight::SemiBold);
+    button
+}
+
+fn text_action(
+    caption: &str,
+    name: &str,
     action: ThreadAction,
     actions: &Rc<dyn Fn(ThreadAction)>,
 ) -> Ref<Button> {
     let button = Button::new();
-    button.set_content(Some(Control::boxed(label(text, 12.0))));
-    button.set_min_height(44.0);
-    button.set_padding(Thickness::symmetric(10.0, 8.0));
-    button.set_margin(Thickness::new(0.0, 0.0, 6.0, 6.0));
+    button.classes().add("quiet");
+    button.set_content(Some(Rc::new(caption.to_owned())));
     button.set_font_size(12.0);
-    button.set_max_width(260.0);
+    button.set_padding(Thickness::symmetric(4.0, 0.0));
     button.set_horizontal_alignment(HorizontalAlignment::Left);
-    AutomationProperties::set_name(&button, Some(text));
-    let actions = actions.clone();
-    button.click(move |_, _| actions(action.clone()));
+    AutomationProperties::set_name(&button, Some(name));
+    ToolTip::set_tip(&button, Some(Rc::new(name.to_owned())));
+    let invoke = actions.clone();
+    button.click(move |_, _| invoke(action.clone()));
     button
 }
 
+fn labelled_action(
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let invoke = actions.clone();
+    widgets::action(name, icon, move || invoke(action.clone()))
+}
+
+fn icon_action(
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) -> Ref<Button> {
+    let button = widgets::icon_button(name, icon);
+    let invoke = actions.clone();
+    button.click(move |_, _| invoke(action.clone()));
+    button
+}
+
+fn menu_action(
+    menu: &MenuFlyout,
+    name: &str,
+    icon: &str,
+    action: ThreadAction,
+    actions: &Rc<dyn Fn(ThreadAction)>,
+) {
+    let item = MenuItem::new();
+    item.set_header(Some(Rc::new(name.to_owned())));
+    item.set_icon(Some(Control::boxed(crate::icons::icon(icon))));
+    let invoke = actions.clone();
+    item.click(move |_, _| invoke(action.clone()));
+    menu.items().add(Some(Control::boxed(item)));
+}
 
 fn badge(text: &str) -> Ref<Border> {
     let border = Border::new();
     border.set_corner_radius(CornerRadius::uniform(5.0));
     border.set_padding(Thickness::symmetric(6.0, 3.0));
-    border.set_margin(Thickness::symmetric(4.0, 10.0));
+    border.set_margin(Thickness::symmetric(3.0, 0.0));
     border.set_vertical_alignment(VerticalAlignment::Center);
     bind_resource(
         &border,
@@ -859,12 +1803,11 @@ fn badge(text: &str) -> Ref<Border> {
     bind_resource(
         &label,
         TextBlock::foreground_property().as_property(),
-        "SystemControlHighlightAccentBrush",
+        "EmberAccentInk",
     );
     border.set_child(label);
     border
 }
-
 
 fn brush(key: &str) -> Option<Rc<dyn IBrush>> {
     let app = Application::current()?;
@@ -881,7 +1824,502 @@ mod tests {
     use ferroui_controls::testing::UnitTestApplication;
     use ferroui_controls::{HyperlinkButton, SelectableTextBlock, Window};
     use sample_testing::{Shell, TestGlobalClock};
-    use std::cell::RefCell;
+
+    fn build(
+        snapshot: &ThreadSnapshot,
+        state: &ReaderState,
+        query: &str,
+        sort: ThreadSort,
+        new_only: bool,
+        on_action: Rc<dyn Fn(ThreadAction)>,
+    ) -> Ref<Control> {
+        build_discussion(
+            Rc::new(Discussion::new(snapshot.clone())),
+            state,
+            Rc::new(
+                state
+                    .items
+                    .get(&snapshot.root.id)
+                    .map(|s| s.seen_comments.clone())
+                    .unwrap_or_default(),
+            ),
+            query,
+            sort,
+            new_only,
+            on_action,
+        )
+    }
+
+    #[test]
+    fn find_reuses_only_visible_content_from_the_current_snapshot_with_a_bounded_text_index() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let mut snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 1,
+                kids: vec![2, 3, 4],
+                ..Default::default()
+            },
+            complete: true,
+            ..ThreadSnapshot::default()
+        };
+        for (id, dead, deleted) in [(2, false, false), (3, true, false), (4, false, true)] {
+            snapshot.items.insert(
+                id,
+                HnItem {
+                    id,
+                    dead,
+                    deleted,
+                    text: Some("<p>Rare <em>needle</em> &amp; thread</p>".into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let original = Rc::new(Discussion::new(snapshot.clone()));
+        let matches = |discussion: &Rc<Discussion>, show_dead, query| {
+            let mut state = ReaderState::default();
+            state.preferences.show_dead = show_dead;
+            let control = build_discussion(
+                discussion.clone(),
+                &state,
+                Rc::default(),
+                query,
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            );
+            control
+                .cast::<ListBox>()
+                .unwrap()
+                .tag()
+                .unwrap()
+                .downcast_ref::<ThreadAnchors>()
+                .unwrap()
+                .matches
+                .iter()
+                .map(|(_, id)| *id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matches(&original, false, "NEEDLE &"), [2]);
+        assert_eq!(original.search.borrow().bodies.len(), 1);
+        assert_eq!(matches(&original, true, "rare needle"), [2, 3]);
+        assert_eq!(original.search.borrow().bodies.len(), 2);
+        assert_eq!(matches(&original, false, "rare needle"), [2]);
+        assert!(matches(&original, false, "<em>").is_empty());
+
+        let mut documents = BTreeMap::new();
+        assert!(original.search.borrow_mut().matches(
+            &snapshot.items[&2],
+            "rare needle",
+            &mut documents
+        ));
+        assert!(documents.is_empty(), "a warm hit must not reparse HTML");
+        snapshot.items.get_mut(&2).unwrap().text = Some("replaced by server".into());
+        let refreshed = Rc::new(Discussion::new(snapshot));
+        assert!(matches(&refreshed, false, "rare needle").is_empty());
+        assert_eq!(matches(&refreshed, false, "replaced"), [2]);
+
+        let mut full = SearchText {
+            bytes: FIND_TEXT_BYTES - 1,
+            ..Default::default()
+        };
+        assert!(full.matches(&refreshed.snapshot.items[&2], "replaced", &mut documents));
+        assert!(
+            full.bodies.is_empty(),
+            "items over budget are searched without retention"
+        );
+        assert_eq!(full.bytes, FIND_TEXT_BYTES - 1);
+    }
+
+    #[test]
+    #[ignore = "native thread projection timing workload"]
+    fn measure_large_thread_projection_and_find() {
+        use std::time::Instant;
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let mut snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 1,
+                kind: Some(ItemKind::Story),
+                ..Default::default()
+            },
+            complete: true,
+            ..Default::default()
+        };
+        for id in 2..4098u64 {
+            let branch = (id - 2) % 8 == 0;
+            if branch {
+                snapshot.root.kids.push(id);
+            }
+            let match_text = if id % 128 == 0 {
+                "Rare <i>needle</i>"
+            } else {
+                "notes"
+            };
+            snapshot.items.insert(id, HnItem {
+                id, kind: Some(ItemKind::Comment), by: Some(format!("reader{}", id % 73)),
+                text: Some(format!("<p>Entry {id}: <b>layout</b> &amp; paint. {match_text}.</p><p>Second paragraph with <code>UTF-8</code> details.</p>")),
+                kids: if branch { (id + 1..id + 8).collect() } else { Vec::new() },
+                ..Default::default()
+            });
+        }
+        let state = ReaderState::default();
+        let discussion = Rc::new(Discussion::new(snapshot));
+        let start = Instant::now();
+        let project = |query: &str| {
+            let control = build_discussion(
+                discussion.clone(),
+                &state,
+                Rc::default(),
+                query,
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            );
+            let count = control.cast::<ListBox>().unwrap().items().count();
+            std::hint::black_box(control);
+            count
+        };
+        assert_eq!(project(""), 4097);
+        let browse = start.elapsed();
+        let start = Instant::now();
+        assert_eq!(project("rare needle"), 65);
+        let cold = start.elapsed();
+        let mut samples = Vec::new();
+        for _ in 0..7 {
+            let start = Instant::now();
+            for query in ["absent", "rare", "layout", "rare needle"] {
+                assert!(project(query) > 1);
+            }
+            samples.push(start.elapsed().as_micros());
+        }
+        samples.sort_unstable();
+        eprintln!("4096 replies; browse {} us; first Find {} us; median four successive Find projections {} us; samples {samples:?}",
+            browse.as_micros(), cold.as_micros(), samples[3]);
+    }
+
+    #[test]
+    fn overflow_keeps_story_actions_accessible_and_uses_the_current_item() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let snapshot = ThreadSnapshot {
+            root: HnItem {
+                id: 42,
+                kind: Some(ItemKind::Story),
+                url: Some("https://example.com/article".into()),
+                ..Default::default()
+            },
+            complete: true,
+            ..Default::default()
+        };
+        let reading = ReadingContext {
+            hidden: true,
+            show_dead: false,
+            seen: Rc::default(),
+            new_count: None,
+            typography: RenderOptions::default(),
+            find_foreground: None,
+        };
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let observed = calls.clone();
+        let actions: Rc<dyn Fn(ThreadAction)> =
+            Rc::new(move |action| observed.borrow_mut().push(action));
+        let header = header(
+            &ThreadContext::from(&snapshot),
+            &reading,
+            ThreadSort::Ranked,
+            None,
+            true,
+            &actions,
+        );
+        let more = header
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|b| AutomationProperties::get_name(b).as_deref() == Some("More story actions"))
+            .expect("named overflow button");
+        let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+        let items = menu.items();
+        let entries: Vec<_> = (0..items.count())
+            .map(|i| {
+                Control::from_boxed(&items.get_at(i).unwrap())
+                    .unwrap()
+                    .cast::<MenuItem>()
+                    .unwrap()
+            })
+            .collect();
+        for (name, index) in [
+            ("Reply on HN", 0),
+            ("Restore to feed", 1),
+            ("Mute example.com", 2),
+            ("Search this discussion", 3),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|item| {
+                    item.header()
+                        .as_ref()
+                        .and_then(|h| h.downcast_ref::<String>())
+                        .is_some_and(|s| s == name)
+                })
+                .unwrap();
+            entry.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+            assert_eq!(calls.borrow().len(), index + 1);
+        }
+        assert!(matches!(
+            calls.borrow().as_slice(),
+            [
+                ThreadAction::Reply(42),
+                ThreadAction::Hide,
+                ThreadAction::MuteDomain,
+                ThreadAction::SearchDiscussion(42)
+            ]
+        ));
+    }
+
+    #[test]
+    fn redacted_discussions_keep_their_hn_link_but_hide_the_original_article() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        for (deleted, dead, show_dead, visible) in [
+            (true, false, true, false),
+            (false, true, false, false),
+            (false, true, true, true),
+        ] {
+            let snapshot = ThreadSnapshot {
+                root: HnItem {
+                    id: 7,
+                    kind: Some(ItemKind::Story),
+                    deleted,
+                    dead,
+                    url: Some("https://retained.example/article".to_owned()),
+                    ..Default::default()
+                },
+                complete: true,
+                ..Default::default()
+            };
+            let reading = ReadingContext {
+                hidden: false,
+                show_dead,
+                seen: Rc::default(),
+                new_count: None,
+                typography: RenderOptions::default(),
+                find_foreground: None,
+            };
+            let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(|_| {});
+            let header = header(
+                &ThreadContext::from(&snapshot),
+                &reading,
+                ThreadSort::Ranked,
+                None,
+                true,
+                &actions,
+            );
+            let button = |name: &str| {
+                header
+                    .get_logical_descendants()
+                    .filter_map(|n| n.cast::<Button>())
+                    .find(|b| AutomationProperties::get_name(b).as_deref() == Some(name))
+            };
+            assert_eq!(button("Read article").is_some(), visible);
+            assert!(button("Copy discussion link").is_some());
+            assert_eq!(
+                header
+                    .get_logical_descendants()
+                    .filter_map(|n| n.cast::<TextBlock>())
+                    .any(|label| label.text().as_deref() == Some("retained.example")),
+                visible
+            );
+            let menu = button("More story actions")
+                .unwrap()
+                .flyout()
+                .unwrap()
+                .cast::<MenuFlyout>()
+                .unwrap();
+            let items = menu.items();
+            assert_eq!(
+                (0..items.count())
+                    .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+                    .filter_map(|v| v.cast::<MenuItem>())
+                    .any(|entry| entry.header().is_some_and(|h| h
+                        .downcast_ref::<String>()
+                        .is_some_and(|s| s == "Mute retained.example"))),
+                visible
+            );
+        }
+    }
+
+    #[test]
+    fn direct_comment_and_poll_option_links_identify_their_item_and_open_its_context() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let target = Rc::new(Cell::new(0));
+        let observe = target.clone();
+        let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(move |action| {
+            if let ThreadAction::GoToItem(id) = action {
+                observe.set(id);
+            }
+        });
+        let reading = ReadingContext {
+            hidden: false,
+            seen: Rc::default(),
+            new_count: None,
+            show_dead: false,
+            typography: RenderOptions::default(),
+            find_foreground: None,
+        };
+        for (root, title, name, expected) in [
+            (
+                HnItem {
+                    kind: Some(ItemKind::Comment),
+                    by: Some("maker".to_owned()),
+                    parent: Some(4),
+                    ..Default::default()
+                },
+                "Comment by maker",
+                "View parent",
+                4,
+            ),
+            (
+                HnItem {
+                    kind: Some(ItemKind::Pollopt),
+                    poll: Some(9),
+                    score: Some(1),
+                    ..Default::default()
+                },
+                "Poll option",
+                "View poll",
+                9,
+            ),
+        ] {
+            assert_eq!(discussion_title(&root, false), title);
+            let snapshot = ThreadSnapshot {
+                root,
+                complete: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                discussion_summary(&snapshot),
+                if snapshot.root.kind == Some(ItemKind::Pollopt) {
+                    "1 vote"
+                } else {
+                    "0 replies"
+                }
+            );
+            let content = header(
+                &ThreadContext::from(&snapshot),
+                &reading,
+                ThreadSort::Ranked,
+                None,
+                true,
+                &actions,
+            );
+            let button = content
+                .get_logical_descendants()
+                .filter_map(|v| v.cast::<Button>())
+                .find(|button| AutomationProperties::get_name(button).as_deref() == Some(name))
+                .unwrap();
+            button.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+            assert_eq!(target.get(), expected);
+            if snapshot.root.kind == Some(ItemKind::Pollopt) {
+                assert!(content
+                    .get_logical_descendants()
+                    .filter_map(|v| v.cast::<TextBlock>())
+                    .any(|text| text.text().as_deref() == Some("1 vote")));
+                let list = build(
+                    &snapshot,
+                    &ReaderState::default(),
+                    "",
+                    ThreadSort::Ranked,
+                    false,
+                    actions.clone(),
+                )
+                .cast::<ListBox>()
+                .unwrap();
+                assert_eq!(
+                    list.items().count(),
+                    1,
+                    "a poll option has no reply invitation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn poll_results_withhold_shares_until_all_counts_are_known() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let root = HnItem {
+            id: 1,
+            kind: Some(ItemKind::Poll),
+            parts: vec![2, 3],
+            ..Default::default()
+        };
+        let option = |id, score, text: &str| HnItem {
+            id,
+            score,
+            text: Some(text.to_owned()),
+            ..Default::default()
+        };
+        let reading = ReadingContext {
+            hidden: false,
+            seen: Rc::default(),
+            new_count: None,
+            show_dead: false,
+            typography: RenderOptions::default(),
+            find_foreground: None,
+        };
+        let actions: Rc<dyn Fn(ThreadAction)> = Rc::new(|_| {});
+        let mut snapshot = ThreadSnapshot {
+            root,
+            items: [(2, option(2, Some(1), "First"))].into(),
+            missing_ids: vec![3],
+            ..Default::default()
+        };
+        let inspect = |snapshot: &ThreadSnapshot| {
+            let control = poll_options(&ThreadContext::from(snapshot), &reading, &actions);
+            let lines = control
+                .get_logical_descendants()
+                .filter_map(|v| v.cast::<TextBlock>())
+                .filter_map(|t| t.text())
+                .collect::<Vec<_>>();
+            let bars = control
+                .get_logical_descendants()
+                .filter(|v| v.cast::<ProgressBar>().is_some())
+                .count();
+            (lines, bars)
+        };
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "1 vote"));
+        assert!(lines.iter().any(|s| s == "Option 2 is unavailable."));
+        let context = ThreadContext::from(&snapshot);
+        let footer = footer(&context, &actions);
+        assert!(footer
+            .get_logical_descendants()
+            .filter_map(|v| v.cast::<Button>())
+            .any(|b| AutomationProperties::get_name(&b).as_deref()
+                == Some("Retry unavailable items")));
+        let no_comments = empty(&context, "", false, &actions);
+        assert!(no_comments
+            .get_logical_descendants()
+            .filter_map(|v| v.cast::<TextBlock>())
+            .any(|t| t.text().as_deref() == Some("No comments yet")));
+        snapshot.items.insert(3, option(3, None, "Second"));
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "Vote count unavailable"));
+        snapshot.items.get_mut(&3).unwrap().score = Some(3);
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 2);
+        assert!(lines.iter().any(|s| s == "4 votes in total"));
+        assert!(lines.iter().any(|s| s == "1 vote · 25%"));
+        assert!(lines.iter().any(|s| s == "3 votes · 75%"));
+        snapshot.items.get_mut(&2).unwrap().score = Some(0);
+        snapshot.items.get_mut(&3).unwrap().score = Some(0);
+        let (lines, bars) = inspect(&snapshot);
+        assert_eq!(bars, 0);
+        assert!(lines.iter().any(|s| s == "No votes yet"));
+    }
 
     #[test]
     fn conversation_find_matches_visible_decoded_text_with_ancestor_context() {
@@ -932,6 +2370,7 @@ mod tests {
                 &ReaderState::default(),
                 query,
                 ThreadSort::Ranked,
+                false,
                 Rc::new(|_| {}),
             );
             let list = control.cast::<ListBox>().unwrap();
@@ -947,6 +2386,92 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected, "query: {query}");
         }
+    }
+
+    #[test]
+    fn find_cycles_actual_hits_and_keeps_ids_stable_across_sort_changes() {
+        let clock = Rc::new(TestGlobalClock::default());
+        let _application = UnitTestApplication::start(sample_testing::services(clock));
+        let root = HnItem {
+            id: 1,
+            kids: vec![2, 4, 5],
+            ..Default::default()
+        };
+        let comment = |id, text: &str| HnItem {
+            id,
+            text: Some(text.to_owned()),
+            time: Some(id),
+            ..Default::default()
+        };
+        let parent = HnItem {
+            kids: vec![3],
+            ..comment(2, "Context only")
+        };
+        let child = comment(3, "<b>Found</b> &amp; decoded");
+        let author = HnItem {
+            by: Some("founder".into()),
+            ..comment(4, "Author-only hit")
+        };
+        let hidden = HnItem {
+            dead: true,
+            ..comment(5, "Found in hidden text")
+        };
+        let snapshot = ThreadSnapshot {
+            root,
+            items: [parent, child, author, hidden]
+                .into_iter()
+                .map(|i| (i.id, i))
+                .collect(),
+            complete: true,
+            ..Default::default()
+        };
+        let mut state = ReaderState::default();
+        state.items.entry(1).or_default().collapsed.insert(2);
+        let view = |q: &str, sort| build(&snapshot, &state, q, sort, false, Rc::new(|_| {}));
+        let results = view("found", ThreadSort::Ranked);
+        let first = FindMatch {
+            id: 3,
+            ordinal: 1,
+            total: 2,
+        };
+        let last = FindMatch {
+            id: 4,
+            ordinal: 2,
+            total: 2,
+        };
+        assert_eq!(select_find_match(&results, None, 0), Some(first));
+        assert_eq!(select_find_match(&results, Some(3), -1), Some(last));
+        assert_eq!(select_find_match(&results, Some(4), 1), Some(first));
+        assert_eq!(
+            select_find_match(&results, Some(2), 0),
+            Some(first),
+            "retained ancestors are not hits"
+        );
+        let reordered = view("found", ThreadSort::Newest);
+        assert_eq!(
+            select_find_match(&reordered, Some(3), 0),
+            Some(FindMatch {
+                ordinal: 2,
+                ..first
+            })
+        );
+        assert_eq!(
+            select_find_match(&view("absent", ThreadSort::Ranked), None, 0),
+            None
+        );
+        assert_eq!(
+            select_find_match(&view("deleted", ThreadSort::Ranked), None, 0),
+            None,
+            "an absent author has no visible text to match"
+        );
+        assert_eq!(
+            select_find_match(&view("", ThreadSort::Ranked), None, 0),
+            None
+        );
+        assert!(
+            state.items[&1].collapsed.contains(&2),
+            "finding a hidden descendant must not change the saved collapse state"
+        );
     }
 
     #[test]
@@ -966,6 +2491,7 @@ mod tests {
                 depth: 0,
                 item: Some(HnItem {
                     id: 2001,
+                    by: Some("hidden-author".to_owned()),
                     text: Some("<p>retained source must stay hidden</p>".into()),
                     deleted,
                     dead,
@@ -976,7 +2502,22 @@ mod tests {
                 matches_query: false,
             };
             let document = OnceCell::new();
-            let control = comment_row(&row, &document, &root, &state, false, &actions);
+            let control = comment_row(
+                &row.with_item(row.item.as_ref()),
+                &document,
+                &root,
+                &ReadingContext {
+                    hidden: false,
+                    seen: Rc::default(),
+                    new_count: None,
+                    show_dead: false,
+                    typography: render_options(&state),
+                    find_foreground: None,
+                },
+                "",
+                ReplyNeighbors::default(),
+                &actions,
+            );
             let text = control
                 .get_logical_descendants()
                 .filter_map(|node| node.cast::<TextBlock>())
@@ -985,6 +2526,10 @@ mod tests {
                 .join("\n");
             assert!(text.contains(placeholder));
             assert!(!text.contains("retained source"));
+            assert!(!text.contains("hidden-author"));
+            assert!(!AutomationProperties::get_name(&control)
+                .unwrap()
+                .contains("hidden-author"));
             assert!(document.get().is_none(), "hidden HTML must not be parsed");
         }
     }
@@ -1094,6 +2639,126 @@ mod tests {
     }
 
     #[test]
+    fn rebuilt_discussions_restore_interior_positions_in_long_stories_and_comments() {
+        let shell = Shell::start(&crate::SAMPLE, 390.0, 620.0, || crate::App::new().upcast());
+        let long_text = "<p>This paragraph is part of a long discussion.</p>".repeat(56);
+        let root = HnItem {
+            id: 1,
+            kids: vec![2, 4],
+            text: Some(long_text.clone()),
+            ..Default::default()
+        };
+        let snapshot = ThreadSnapshot {
+            root,
+            items: [
+                HnItem {
+                    id: 2,
+                    kids: vec![3],
+                    text: Some(long_text.clone()),
+                    ..Default::default()
+                },
+                HnItem {
+                    id: 3,
+                    text: Some(long_text.clone()),
+                    ..Default::default()
+                },
+                HnItem {
+                    id: 4,
+                    text: Some(long_text),
+                    ..Default::default()
+                },
+            ]
+            .into_iter()
+            .map(|item| (item.id, item))
+            .collect(),
+            complete: true,
+            ..Default::default()
+        };
+        let make_view = |state: &ReaderState| {
+            build(
+                &snapshot,
+                state,
+                "",
+                ThreadSort::Ranked,
+                false,
+                Rc::new(|_| {}),
+            )
+        };
+        let state = ReaderState::default();
+        let window = Window::new();
+        window.set_width(390.0);
+        window.set_height(620.0);
+        window.show();
+        for item in [1, 3] {
+            let anchor = ReadingPosition { item, inset: 340 };
+            let view = make_view(&state);
+            restore_position(&view, anchor, false);
+            window.set_content(Some(Control::boxed(&view)));
+            for _ in 0..5 {
+                shell.settle();
+            }
+            assert_eq!(viewport_position(&view), Some(anchor));
+        }
+        let mut folded = state;
+        folded.items.entry(1).or_default().collapsed.insert(2);
+        let view = make_view(&folded);
+        restore_position(
+            &view,
+            ReadingPosition {
+                item: 3,
+                inset: 340,
+            },
+            false,
+        );
+        window.set_content(Some(Control::boxed(&view)));
+        for _ in 0..5 {
+            shell.settle();
+        }
+        assert_eq!(viewport_position(&view), Some(ReadingPosition::start(2)));
+        window.close();
+    }
+
+    #[test]
+    fn comment_copy_uses_visible_decoded_text_from_the_requested_row() {
+        let mut snapshot = ThreadSnapshot::default();
+        for (id, deleted, dead, html) in [
+            (
+                2,
+                false,
+                false,
+                "<p>A &amp; B</p><p><b>Next</b> <a href='/'>line</a></p>",
+            ),
+            (3, true, false, "Retained deleted text"),
+            (4, false, true, "Retained dead text"),
+            (5, false, false, " <script>hidden()</script> "),
+        ] {
+            snapshot.items.insert(
+                id,
+                HnItem {
+                    id,
+                    deleted,
+                    dead,
+                    text: Some(html.into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let discussion = Discussion::new(snapshot);
+        assert_eq!(
+            discussion.comment_text(2, false).as_deref(),
+            Some("A & B\nNext line")
+        );
+        assert_eq!(discussion.comment_text(3, true), None);
+        assert_eq!(discussion.comment_text(4, false), None);
+        assert_eq!(
+            discussion.comment_text(4, true).as_deref(),
+            Some("Retained dead text")
+        );
+        assert_eq!(discussion.comment_text(5, false), None);
+        assert_eq!(discussion.comment_text(99, true), None);
+    }
+
+    #[test]
     fn long_threads_virtualize_rows_and_keep_scrolled_actions_attached_to_their_item() {
         let shell = Shell::start(&crate::SAMPLE, 390.0, 620.0, || crate::App::new().upcast());
         let root = HnItem {
@@ -1130,6 +2795,7 @@ mod tests {
             &ReaderState::default(),
             "",
             ThreadSort::Ranked,
+            false,
             Rc::new(move |action| observed.borrow_mut().push(action)),
         );
         let list = content.cast::<ListBox>().unwrap();
@@ -1143,16 +2809,19 @@ mod tests {
         }
         assert_eq!(list.items().count(), 201);
         assert_eq!(
-            viewport_anchor(&content),
-            None,
+            viewport_position(&content),
+            Some(ReadingPosition::start(1000)),
             "a visible story header anchors the top"
         );
         for index in [20, 170, 10] {
-            restore_anchor(&content, 2000 + index as u64);
+            restore_position(&content, ReadingPosition::start(2000 + index as u64), false);
             for _ in 0..4 {
                 shell.settle();
             }
-            assert_eq!(viewport_anchor(&content), Some(2000 + index as u64));
+            assert_eq!(
+                viewport_position(&content),
+                Some(ReadingPosition::start(2000 + index as u64))
+            );
             assert!(
                 list.get_realized_containers().len() < 50,
                 "a phone viewport must not realize the entire conversation"
@@ -1163,31 +2832,170 @@ mod tests {
             let permalink = row
                 .get_visual_descendants()
                 .filter_map(|node| node.cast::<Button>())
-                .find(|button| {
-                    AutomationProperties::get_name(button).as_deref() == Some("Permalink")
-                })
+                .find(|button| button.name().as_deref() == Some("CommentPermalink"))
                 .expect("realized comment has an accessible permalink action");
             permalink.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
-            let expected = ember_core::item_url(2000 + index as u64);
             assert!(
-                matches!(calls.borrow().last(), Some(ThreadAction::OpenUrl(url)) if url == &expected)
+                matches!(calls.borrow().last(), Some(ThreadAction::OpenComment(id)) if *id == 2000 + index as u64)
             );
         }
+        // The overflow follows the realized row after recycling. Exercise the actual
+        // flyout opening event, then jump between comments without leaving this story.
+        for (from, command, destination) in [
+            (10, "Next top-level comment", 11),
+            (11, "Previous top-level comment", 10),
+            (10, "Back to story", 0),
+        ] {
+            let row = list.container_from_index(from).unwrap();
+            let more = row
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<Button>())
+                .find(|button| {
+                    AutomationProperties::get_name(button).as_deref()
+                        == Some("More comment actions")
+                })
+                .unwrap();
+            let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+            menu.show_at(&more);
+            shell.settle();
+            let items = menu.items();
+            let target = (0..items.count())
+                .filter_map(|i| Control::from_boxed(&items.get_at(i)?))
+                .filter_map(|control| control.cast::<MenuItem>())
+                .find(|item| {
+                    item.header()
+                        .and_then(|h| h.downcast_ref::<String>().cloned())
+                        .as_deref()
+                        == Some(command)
+                })
+                .unwrap();
+            assert!(menu.is_open());
+            target.raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+            menu.hide();
+            for _ in 0..4 {
+                shell.settle();
+            }
+            let expected = if destination == 0 {
+                1000
+            } else {
+                2000 + destination as u64
+            };
+            assert_eq!(
+                viewport_position(&content),
+                Some(ReadingPosition::start(expected))
+            );
+            assert!(list
+                .container_from_index(destination)
+                .unwrap()
+                .is_keyboard_focus_within());
+        }
         assert_eq!(calls.borrow().len(), 3);
+        let row = list.container_from_index(1).unwrap();
+        let more = row
+            .get_visual_descendants()
+            .filter_map(|node| node.cast::<Button>())
+            .find(|b| AutomationProperties::get_name(b).as_deref() == Some("More comment actions"))
+            .unwrap();
+        let menu = more.flyout().unwrap().cast::<MenuFlyout>().unwrap();
+        menu.show_at(&more);
+        shell.settle();
+        let entries = menu.items();
+        let entry = |label: &str| {
+            (0..entries.count())
+                .filter_map(|i| Control::from_boxed(&entries.get_at(i)?))
+                .filter_map(|v| v.cast::<MenuItem>())
+                .find(|item| {
+                    item.header()
+                        .and_then(|v| v.downcast_ref::<String>().cloned())
+                        .as_deref()
+                        == Some(label)
+                })
+                .unwrap()
+        };
+        for name in [
+            "Copy comment link",
+            "Copy comment text",
+            "Fold comment",
+            "Open comment on HN",
+        ] {
+            entry(name).raise_event(&RoutedEventArgs::with_event(MenuItem::click_event()));
+        }
+        menu.hide();
+        assert!(matches!(
+            &calls.borrow()[3..],
+            [ThreadAction::CopyCommentLink(2001), ThreadAction::CopyCommentText(2001), ThreadAction::ToggleCollapse(2001), ThreadAction::OpenUrl(url)]
+            if url == &ember_core::item_url(2001)
+        ));
         let replacement = build(
             &snapshot,
             &ReaderState::default(),
             "",
             ThreadSort::Ranked,
+            false,
             Rc::new(|_| {}),
         );
         // A rebuilt view is not attached yet when the controller applies saved context.
-        restore_anchor(&replacement, 2010);
+        restore_position(&replacement, ReadingPosition::start(2010), false);
         window.set_content(Some(Control::boxed(&replacement)));
         for _ in 0..4 {
             shell.settle();
         }
-        assert_eq!(viewport_anchor(&replacement), Some(2010));
+        assert_eq!(
+            viewport_position(&replacement),
+            Some(ReadingPosition::start(2010))
+        );
+        let filtered = build(
+            &snapshot,
+            &ReaderState::default(),
+            "native",
+            ThreadSort::Ranked,
+            false,
+            Rc::new(|_| {}),
+        );
+        let list = filtered.clone().cast::<ListBox>().unwrap();
+        // Set the cursor before attachment. Its row has never been realized.
+        assert_eq!(
+            select_find_match(&filtered, Some(2180), 0).unwrap().ordinal,
+            180
+        );
+        window.set_content(Some(Control::boxed(&filtered)));
+        for _ in 0..4 {
+            shell.settle();
+        }
+        for (step, expected) in [(0, 2180), (1, 2181), (-1, 2180)] {
+            let from = if step < 0 { 2181 } else { 2180 };
+            let found = select_find_match(&filtered, Some(from), step).unwrap();
+            for _ in 0..4 {
+                shell.settle();
+            }
+            assert_eq!(found.id, expected);
+            assert_eq!(
+                viewport_position(&filtered),
+                Some(ReadingPosition::start(expected))
+            );
+            let active: Vec<_> = list
+                .get_visual_descendants()
+                .filter_map(|node| node.cast::<Border>())
+                .filter(|row| row.classes().contains("current-find-result"))
+                .collect();
+            assert_eq!(active.len(), 1);
+            let marked: Vec<_> = active[0]
+                .get_logical_descendants()
+                .filter_map(|node| node.cast::<ferroui_controls::documents::Run>())
+                .filter(|run| run.background().is_some())
+                .filter_map(|run| run.text())
+                .collect();
+            assert_eq!(
+                marked,
+                ["native"],
+                "recycled comments must paint the current search text"
+            );
+            assert_eq!(
+                AutomationProperties::get_item_status(&active[0]),
+                Some(format!("Search result {} of 200", found.ordinal))
+            );
+            assert!(list.get_realized_containers().len() < 50);
+        }
         assert!(shell.take_binding_reports().is_empty());
         window.close();
     }

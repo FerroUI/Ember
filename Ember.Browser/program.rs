@@ -6,6 +6,9 @@
 #[cfg(target_os = "emscripten")]
 mod platform;
 
+#[cfg(any(target_os = "emscripten", test))]
+mod cjk;
+
 #[cfg(target_os = "emscripten")]
 use wasm_bindgen::prelude::*;
 
@@ -13,7 +16,6 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(js_name = runMain)]
 pub fn run_main(href: &str) {
     use ferroui_base::logging::LogEventLevel;
-    use ferroui_base::media::FontManagerOptions;
     use ferroui_browser::{
         BrowserAppBuilder, BrowserPlatformOptions, BrowserRenderer, BrowserRenderingMode,
     };
@@ -28,8 +30,15 @@ pub fn run_main(href: &str) {
         ))
     }));
     ember::set_initial_location(href.to_owned());
-    ember::set_location_changed(Rc::new(|item| {
-        platform::set_location(item.map(|id| id.to_string()))
+    ember::set_location_navigation(Rc::new(|item, action| {
+        if action == ember::LocationNavigation::RequestBack {
+            return platform::request_browser_back();
+        }
+        platform::set_location(
+            item.map(|id| id.to_string()),
+            action == ember::LocationNavigation::Back,
+        );
+        true
     }));
     let mut options = BrowserPlatformOptions::default();
     if href.contains("RenderingMode=Software2D") {
@@ -41,39 +50,40 @@ pub fn run_main(href: &str) {
     if href.contains("RenderThread=false") {
         options.render_thread = false;
     }
-    AppBuilder::configure::<ember::App>()
-        .with_inter_font()
-        .with(Rc::new(FontManagerOptions {
-            default_family_name: Some("fonts:Inter#Inter".to_owned()),
-            ..Default::default()
-        }))
+    let builder = AppBuilder::configure::<ember::App>().with_inter_font();
+    cjk::configure(&builder, platform::load_cjk_font)
         .log_to_text_writer(std::io::stdout(), LogEventLevel::Warning, &[])
         .start_browser_app("out", Some(options));
 }
 
 #[cfg(target_os = "emscripten")]
 #[wasm_bindgen(js_name = emberNavigate)]
-pub fn navigate(href: &str) {
-    ember::navigate_location(href);
+pub fn navigate(href: &str, entry: u32, backward: bool) {
+    ember::navigate_browser_entry(href, (entry != 0).then_some(u64::from(entry)), backward);
+}
+
+#[cfg(target_os = "emscripten")]
+#[wasm_bindgen(js_name = emberSetBrowserEntry)]
+pub fn set_browser_entry(entry: u32) {
+    ember::set_browser_entry((entry != 0).then_some(u64::from(entry)));
+}
+
+#[cfg(target_os = "emscripten")]
+#[wasm_bindgen(js_name = emberRetryCjkFont)]
+pub fn retry_cjk_font() {
+    cjk::retry_after_online();
 }
 
 /// Read-only visual-tree probe used by browser interaction tests. Coordinates
 /// are CSS pixels of the actual FerroUI view, including touch hit testing.
 #[cfg(target_os = "emscripten")]
 #[wasm_bindgen(js_name = emberState)]
-pub fn reader_state() -> String {
+pub fn reader_state(probe_name: Option<String>) -> String {
     use ferroui_base::{Point, Visual};
     use ferroui_controls::automation::AutomationProperties;
-    use ferroui_controls::{Application, Button, ComboBox, TextBlock, TextBox};
+    use ferroui_controls::{Button, ComboBox, TextBlock, TextBox};
 
-    let top_level = Application::current()
-        .and_then(|app| app.application_lifetime())
-        .and_then(|lifetime| {
-            lifetime
-                .as_single_top_level_application_lifetime()
-                .and_then(|view| view.top_level())
-        });
-    let Some(top_level) = top_level else {
+    let Some(top_level) = cjk::top_level() else {
         return "null".to_owned();
     };
     let viewport = top_level.bounds();
@@ -111,12 +121,17 @@ pub fn reader_state() -> String {
                     || hit.is_visual_ancestor_of(&visual)
                     || visual.is_visual_ancestor_of(hit)
             });
-        elements.push(serde_json::json!({
+        let mut element = serde_json::json!({
             "type": visual.get_type().name(), "name": visual.name(), "text": text, "hit": hit,
             "automationName": AutomationProperties::get_name(&visual),
+            "helpText": AutomationProperties::get_help_text(&visual),
             "selectedIndex": visual.cast::<ComboBox>().map(|combo| combo.selected_index()),
             "x": origin.x, "y": origin.y, "width": size.width, "height": size.height,
-        }));
+        });
+        if probe_name.is_some() && visual.name().as_ref() == probe_name.as_ref() {
+            cjk::probe(&visual, &mut element);
+        }
+        elements.push(element);
     }
     serde_json::json!({ "width": viewport.width, "height": viewport.height, "elements": elements })
         .to_string()

@@ -619,10 +619,12 @@ dependencies = [
  "ferroui-markup",
  "ferroui-markup-xaml",
  "ferroui-themes-winui",
+ "futures-util",
  "sample-build",
  "sample-support",
  "sample-testing",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -646,7 +648,10 @@ dependencies = [
  "ferroui-browser",
  "ferroui-controls",
  "ferroui-fonts-inter",
+ "ferroui-skia",
+ "js-sys",
  "serde_json",
+ "url",
  "wasm-bindgen",
 ]
 
@@ -821,9 +826,11 @@ dependencies = [
  "ferroui-harfbuzz",
  "ferroui-opengl",
  "ferroui-skia",
+ "ferroui-system",
  "ferroui-vulkan",
  "jni-sys",
  "libc",
+ "url",
 ]
 
 [[package]]
@@ -853,6 +860,7 @@ dependencies = [
  "ferroui-opengl",
  "ferroui-skia",
  "ferroui-vello",
+ "url",
  "wasm-bindgen",
 ]
 
@@ -887,6 +895,7 @@ dependencies = [
  "ferroui-remote-protocol",
  "ferroui-system",
  "rustc-hash 2.1.3",
+ "url",
 ]
 
 [[package]]
@@ -910,6 +919,7 @@ dependencies = [
  "ferroui-build",
  "ferroui-controls",
  "ferroui-markup-xaml",
+ "ferroui-system",
  "sysinfo",
 ]
 
@@ -919,6 +929,7 @@ version = "0.5.0-preview.1"
 dependencies = [
  "ferroui-base",
  "ferroui-controls",
+ "url",
 ]
 
 [[package]]
@@ -928,7 +939,9 @@ dependencies = [
  "bitflags",
  "ferroui-base",
  "ferroui-controls",
+ "ferroui-system",
  "futures-util",
+ "url",
  "uuid",
  "zbus",
 ]
@@ -954,14 +967,17 @@ dependencies = [
  "ferroui-metal",
  "ferroui-opengl",
  "ferroui-skia",
+ "ferroui-system",
  "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-io-surface",
  "objc2-metal",
  "objc2-open-gl-es",
  "objc2-quartz-core",
  "objc2-ui-kit",
+ "url",
 ]
 
 [[package]]
@@ -979,6 +995,7 @@ dependencies = [
  "ferroui-build-scan",
  "ferroui-controls",
  "ferroui-markup",
+ "url",
 ]
 
 [[package]]
@@ -989,6 +1006,8 @@ dependencies = [
  "ferroui-build-scan",
  "ferroui-markup",
  "ferroui-markup-xaml",
+ "roxmltree 0.20.0",
+ "url",
  "xamlx",
 ]
 
@@ -1013,11 +1032,11 @@ dependencies = [
  "cc",
  "ferroui-base",
  "ferroui-controls",
- "ferroui-dialogs",
  "ferroui-metal",
  "ferroui-microcom",
  "ferroui-opengl",
  "microcom-codegen",
+ "url",
 ]
 
 [[package]]
@@ -1035,6 +1054,7 @@ dependencies = [
 name = "ferroui-remote-protocol"
 version = "0.5.0-preview.1"
 dependencies = [
+ "ferroui-system",
  "uuid",
 ]
 
@@ -1115,6 +1135,7 @@ dependencies = [
  "ferroui-vulkan",
  "microcom-codegen",
  "mozangle",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -1128,8 +1149,10 @@ dependencies = [
  "ferroui-dialogs",
  "ferroui-freedesktop",
  "ferroui-opengl",
+ "ferroui-system",
  "ferroui-vulkan",
  "libc",
+ "url",
  "x11-dl",
 ]
 
@@ -2130,6 +2153,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-io-surface"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
+dependencies = [
+ "bitflags",
+ "objc2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-metal"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2138,6 +2172,7 @@ dependencies = [
  "bitflags",
  "objc2",
  "objc2-foundation",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -2861,8 +2896,6 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 [[package]]
 name = "skia-bindings"
 version = "0.153.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb325787c91b3f6c34a7c6f2b8a2297b20292d733ca53a08c233e5028aec49af"
 dependencies = [
  "bindgen",
  "cc",
