@@ -39,6 +39,7 @@ ferroui-media-video-browser = { version = "=0.5.0-preview.1", path = "FerroUI/sr
 ferroui-media-camera-browser = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Camera.Browser" }
 ferroui-media = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media" }
 ferroui-media3d = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media3D" }
+ferroui-render3d = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Rendering3D" }
 ferroui-media-metal = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Metal" }
 ferroui-media-opengl = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.OpenGL" }
 ferroui-media-android = { version = "=0.5.0-preview.1", path = "FerroUI/src/FerroUI.Media.Android" }
