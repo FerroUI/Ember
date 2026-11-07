@@ -25,6 +25,7 @@ ferroui-markup = { workspace = true }
 ferroui-markup-xaml = { workspace = true }
 ferroui-themes-winui = { workspace = true }
 sample-support = { path = "../FerroUI/samples/SampleSupport" }
+url = { workspace = true }
 
 [build-dependencies]
 sample-build = { path = "../FerroUI/samples/SampleBuild" }

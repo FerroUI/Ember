@@ -56,7 +56,7 @@ impl ReaderView {
                 },
                 Duration::from_millis(180),
                 DispatcherPriority::BACKGROUND,
-            );
+            ).detach();
         });
         let weak = self.to_ref().downgrade();
         field.add_handler(

@@ -22,7 +22,6 @@ use ferroui_base::interactivity::{InteractiveImpl, RoutedEventArgs, RoutedEventH
 use ferroui_base::layout::LayoutableImpl;
 use ferroui_base::rendering::composition::{ElementComposition, ICompositionObjectAnimations};
 use ferroui_base::threading::{Dispatcher, DispatcherPriority, DispatcherTimer};
-use ferroui_base::utilities::Uri;
 use ferroui_base::{
     ferro_class, ferro_class_info, ferro_impl_classes, instantiate, BoxedValue, FerroObjectImpl,
     Ref, StyledElementImpl, Thickness, VisualImpl, WeakRef,
@@ -966,7 +965,7 @@ impl ReaderView {
                 },
                 DispatcherPriority::LOADED,
             );
-        });
+        }).detach();
     }
     fn connect_platform_back(&self) {
         if self.back_handler.borrow().is_some() {
@@ -2051,7 +2050,7 @@ impl ReaderView {
                     v.copy_text(&ember_core::item_url(id), "Hacker News link copied.")
                 }),
             );
-        });
+        }).detach();
         card.set_context_menu(menu);
     }
     fn wire_card_swipe(&self, card: &StoryCard, id: u64) {
@@ -2808,7 +2807,7 @@ impl ReaderView {
                 menu_release.set_is_visible(verified && !command.is_visible());
                 menu_release.set_is_enabled(command.is_enabled());
             }
-        });
+        }).detach();
         self.button("ToolbarMore").set_flyout(menu);
     }
     fn update_thread_commands(&self) {
@@ -3100,7 +3099,7 @@ impl ReaderView {
             },
             Duration::from_millis(180),
             DispatcherPriority::BACKGROUND,
-        );
+        ).detach();
     }
 
     fn display_pending_find(&self, composing: bool, has_text: bool) {
@@ -3594,7 +3593,7 @@ impl ReaderView {
             self.status("This link is not a supported web address.");
             return;
         };
-        let Ok(uri) = Uri::absolute(&url) else {
+        let Ok(uri) = url::Url::parse(&url) else {
             return;
         };
         let Some(top) = TopLevel::get_top_level(Some(self)) else {

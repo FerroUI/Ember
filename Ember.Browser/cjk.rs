@@ -6,7 +6,6 @@ use ferroui_base::media::{
     GlyphTypeface, UnicodeRange, UnicodeRangeSegment,
 };
 use ferroui_base::threading::Dispatcher;
-use ferroui_base::utilities::Uri;
 use ferroui_base::{Ref, Visual};
 use ferroui_controls::presenters::TextPresenter;
 use ferroui_controls::{AppBuilder, Application, TextBlock, TextBox, TopLevel};
@@ -56,7 +55,7 @@ enum LoadState {
 
 struct CjkCollection {
     base: FontCollectionBase,
-    key: Uri,
+    key: url::Url,
     weak: Weak<Self>,
     load: LoadFont,
     state: Cell<LoadState>,
@@ -67,7 +66,7 @@ impl CjkCollection {
     fn new(load: LoadFont) -> Rc<Self> {
         Rc::new_cyclic(|weak| Self {
             base: FontCollectionBase::new(),
-            key: Uri::absolute(COLLECTION).expect("a valid CJK collection key"),
+            key: url::Url::parse(COLLECTION).expect("a valid CJK collection key"),
             weak: weak.clone(),
             load,
             state: Cell::new(LoadState::Idle),
@@ -140,7 +139,7 @@ impl FontCollectionBaseImpl for CjkCollection {
         &this.base
     }
 
-    fn key(this: &Self) -> Uri {
+    fn key(this: &Self) -> url::Url {
         this.key.clone()
     }
 

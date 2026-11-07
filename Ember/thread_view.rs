@@ -1505,7 +1505,7 @@ fn comment_menu(
             ThreadAction::OpenUrl(ember_core::item_url(id)),
             &actions,
         );
-    });
+    }).detach();
     more.set_flyout(menu);
     more
 }
