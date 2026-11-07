@@ -12,33 +12,36 @@ together. A compact window presents one pane at a time with bottom navigation.
 
 ## Rendered screens
 
-These captures use deterministic HN fixtures and the actual FerroUI control tree,
-rendered by Skia/HarfBuzz through the native test host.
+All previews use deterministic Hacker News data. Chromium captured the release WebAssembly reading and swipe interactions, partial feed recovery, search corrections, multilingual text, code tools, Downloads, and storage and mute controls. The native test host rendered the other views with Skia and HarfBuzz.
 
 ![Ember in the light desktop theme](images/ember-desktop-light.png)
 
-[Dark desktop](images/ember-desktop-dark.png) ·
-[Phone feed](images/ember-phone-dark.png) ·
-[Custom tablet theme](images/ember-tablet-custom.png) ·
-[Phone discussion in the browser](images/ember-phone-comments.png)
+| View | Previews |
+| --- | --- |
+| Reading | [Reading desk](images/ember-tablet-reading-desk.png) · [Dark desktop](images/ember-desktop-dark.png) · [Phone feed](images/ember-phone-dark.png) · [Compact feed](images/ember-compact-feed.png) · [Retry unavailable stories](images/ember-feed-recovery.png) · [Swipe preview](images/ember-swipe-preview.png) · [Landscape reader](images/ember-landscape-reader.png) · [Custom tablet theme](images/ember-tablet-custom.png) |
+| Discussions | [Phone discussion](images/ember-phone-comments.png) · [Multilingual discussion and editor](images/ember-multilingual-reader.png) · [Sibling reply navigation](images/ember-reply-navigation.png) · [Focus reading with Find](images/ember-focus-find.png) · [Read in context on phone](images/ember-find-context-phone.png) · [Read in context on desktop](images/ember-find-context-desktop.png) · [New replies](images/ember-new-replies.png) · [Code tools](images/ember-code-tools.png) · [Search this discussion](images/ember-discussion-search.png) |
+| Discovery and library | [Open a permalink](images/ember-open-link.png) · [Author profile](images/ember-desktop-profile.png) · [Correct a username](images/ember-profile-correction.png) · [Explore on a phone](images/ember-phone-explore.png) · [Downloaded shelf](images/ember-phone-downloaded.png) · [Find in a collection](images/ember-library-find.png) |
+| Preferences | [Custom appearance](images/ember-tablet-settings.png) · [Text presets](images/ember-text-presets.png) · [Preference draft](images/ember-preference-draft.png) · [Domain mute on a phone](images/ember-domain-mute.png) · [Discard mute edits](images/ember-mute-drafts.png) · [Offline storage](images/ember-offline-storage.png) · [Background download](images/ember-offline-progress.png) |
 
-The phone discussion capture comes from the compiled WebAssembly application in
-Chrome, using the same reader controls and deterministic API fixtures.
+The focus view keeps the discussion in a centered column as the window grows. The toolbar retains the story title while you read replies.
 
 ## Reading and discovery
 
 | Area | Implemented behavior |
 | --- | --- |
-| Feeds | Front page, Latest, Best, Ask HN, Show HN and Jobs; server-ranked pagination and explicit refresh. |
-| Search | Algolia full-text search for stories, comments, all items, Ask HN, Show HN and polls; relevance or newest order; author, minimum points/comments, recent time presets and a custom UTC date range. |
-| Discussion | Ranked, newest or oldest branches; branch and top-level collapse; local comment search with ancestor context; parent navigation; deleted/dead item handling; new-comment indicators and restored reading position. |
-| Long threads | Virtualized native list containers, bounded loading, explicit missing/pending counts, and a load-more action. Poll options retain their scores and HN order. |
-| Profiles | User biography, karma, account creation information and submissions through the public HN API. |
-| Local library | Saved stories, read history, hidden stories, domain/user/keyword mutes, and hide-read filtering. |
-| Offline reading | Cache fallback for visited content; an explicit Download discussion action verifies that the complete loaded discussion is persisted before reporting completion. |
-| Sharing and accounts | Copy the canonical discussion link, open the article or HN page, and open HN for sign-in, voting, replies and submission. |
-| Appearance | System, light, dark and custom themes; custom accent/background; reading font size and line height; compact density and reduced motion. |
-| Data controls | Versioned JSON export/import of local reading state, cache clearing and history clearing. |
+| Feeds | Browse the front page, Latest, Best, Ask HN, Show HN and Jobs. Switching between public feeds restores each tab’s loaded pages, pagination cursor and scroll position for this session. Tap the active tab again to scroll to the top. The **Unread** count covers the loaded pages and respects mute and visibility settings. With the filter enabled, **Find more unread** checks up to three more pages and stops at the first that adds a visible unread item. Turn the filter off to see the loaded stories again. In split view, the reading desk suggests an unread story from the current list, or the last opened item in History. |
+| Explore | Open **More** to browse feeds and see counts for downloaded discussions, reading history and hidden stories. Reader tools include Settings and a keyboard shortcut reference. |
+| Search | Search stories, comments, Ask HN, Show HN and polls by relevance or date. Filter by author, discussion, points, comments or a UTC date range. **Search this discussion** in a story or poll menu searches indexed comments beyond the loaded thread. Search results open the exact comment. Under **More filters**, the Discussion field accepts an HN item ID or permalink. Paste a Hacker News item or profile URL into either search field to open it directly. **Edit search** reopens the query from the results header. In **Recent searches**, edit, run or remove one of the last 20 terms. Replaying a term keeps the active filters. |
+| Discussion | Browse ranked, newest or oldest branches. Collapsed branches show their reply count. A comment’s menu copies its permalink or jumps to its parent, neighboring top-level comments and the story. Find highlights matching text and keeps its ancestors visible for context. |
+| Long threads and polls | The footer counts loaded comments, pending items and unavailable items. Load the next batch or retry missing items directly. Polls retain HN option order and show vote shares once all counts are available and at least one vote has been cast. |
+| Profiles | Read the biography and preview up to five recent submissions in HN order. Open an item directly or choose **All stories** or **All comments** to search by that author. **Mute in feeds** hides that author from feeds and search results until you turn it off, here or in Settings. **Copy profile link** copies the HN profile URL. If lookup fails, **Edit username** selects the name for correction. |
+| Local library | Browse saved stories, reading history and hidden stories. Use **Find in this collection** to search the selected list on this device. In Settings, choose **Domains**, **Authors** or **Title keywords** to edit mute rules. Switching rule types keeps the draft. **Save filters** applies all three. **Discard filter edits** restores all three to their last saved values. Paste an article URL to mute its domain and subdomains, or enter an author with an optional leading @. |
+| Offline reading | Download a discussion to keep its comments on this device. In Saved, select **Downloaded** to open the device’s verified offline discussions. Removing a bookmark leaves its download available. Select the checked download icon to verify or release that copy. |
+| Sharing and accounts | Copy the discussion link or open HN to sign in, vote, reply or submit. A comment permalink opens that comment and provides access to its parent. A poll option permalink links back to its poll. |
+| Appearance | Choose system, light, dark or custom appearance. Pick a named accent or preview a hex color and custom background. **Text presets** previews four combinations of type size and line spacing. Fine-tune either value, or use **Reset theme & type** to preview the default colors, type size and spacing. Choose **Apply preferences** to save. |
+| Data controls | Export or restore local reading state as versioned JSON. Review a backup replacement or clear operation before committing it. |
+
+On a return visit, **New replies** compares the loaded discussion with the copy from your previous visit. A reply that loads for the first time can appear here even if it was posted earlier. The view keeps its earlier parent comments for context, including replies inside folded branches. Switch the filter off to return to your reading position and original folds. Find searches all loaded comments in either view.
 
 The [official Hacker News API](https://github.com/HackerNews/API) exposes public
 read operations. Ember's **Vote on HN**, **Reply on HN**, sign-in and submit actions
@@ -49,37 +52,61 @@ with an HN account. Full-text search uses the separate
 
 ## Navigation, touch and keyboard
 
-The shell uses logical pixel breakpoints rather than identifying the device:
+Ember uses the available width and height in logical pixels. A short landscape
+window uses a single reading pane before the regular width breakpoints apply.
 
-| Available width | Layout |
+| Available space | Layout |
 | --- | --- |
-| Below 900 | One visible story/detail pane and bottom navigation; More exposes the remaining feeds and settings. |
-| 900–1239 | A 74-pixel icon rail, a 340-pixel story pane and the remaining width for detail. |
-| 1240 and above | A 202-pixel labeled rail, a 400-pixel story pane and the remaining width for detail. |
+| 600–959 wide and at most 500 high | The five primary tabs move to a 64-pixel strip on the left. The feed or discussion uses the rest of the window. |
+| Below 760 wide at other heights | One visible pane with bottom tabs. More opens the remaining feeds and settings. |
+| 760–1119 wide at other heights | A 60-pixel icon rail, a 290-pixel story pane and the remaining width for detail. |
+| 1120 wide and above | A 172-pixel labeled rail, a 350-pixel story pane and the remaining width for detail. |
 
-The header search field appears from 1100 pixels; Search remains reachable through
-navigation at smaller widths. Primary buttons, navigation targets, comment actions
-and links provide at least 44 logical pixels of height. Action rows wrap on narrow
-screens. Deep comments cap their visual indentation so text retains usable width.
+The labeled rail layout offers search in the header. The compact rail uses a
+search icon, and the single-pane layouts have a Search tab. In a phone
+discussion, the pinned **Discussion options** menu provides focus reading,
+refresh and link copying. Below 380 pixels it also holds the download action so
+more of the headline stays visible. Primary buttons and navigation targets keep
+a 44-pixel touch area. Action rows wrap and deep comments limit their indentation.
 
 | Input | Action |
 | --- | --- |
-| `Ctrl+K` / `Command+K` | Open search. |
-| `Enter` in header search | Run the query. |
-| `Escape` | Navigate back. |
-| `J` / `K` | Select the next/previous story. |
+| `Ctrl+K` / `Command+K` | Open Search or return focus to the current search draft. |
+| `Enter` in a search field | Open a pasted Hacker News permalink or run the query with its filters. The username field also accepts @names and profile links. |
+| `Ctrl+F` / `Command+F` in a library feed | Find in Saved, Downloaded, History or Hidden. Press `Escape` to close Find and return to the list. |
+| `Ctrl+F` / `Command+F` in a discussion | Open and focus Find. |
+| `Enter` / `Shift+Enter` in discussion Find | Jump to the next or previous matching comment. Enter commits a pending edit at its first match. While typing or composing text, the arrows pause and the reading position stays in place. The count excludes ancestors shown for context. |
+| `Ctrl+Enter` / `Command+Enter` in discussion Find | Read the selected reply in the full thread. The matching row also offers **Read in context**, including in the New replies view. |
+| `F` in a discussion | Enter or exit focus reading. On a phone, choose **Focus reading** from **Discussion options**. |
+| `Escape` or the reader’s Back button | Close Find, then exit focus reading, then navigate back. Closing Find restores the unfiltered reading position. |
+| `J` / `K` | Open the next or previous visible story. With **Unread** enabled, navigation continues from the story you just read even after its row disappears. |
+| `U` in a feed or search results | Toggle the unread filter. |
 | `R` | Refresh the active feed or discussion. |
-| `S` | Toggle the selected story's saved state. |
-| `O` | Open the selected story's article, or its HN page when no article is available. |
-| Swipe a story left | Toggle saved state after an 80-pixel horizontal swipe. |
-| Swipe a story right | Toggle hidden state after an 80-pixel horizontal swipe. |
+| `S` | Toggle the focused feed row’s saved state, or the open discussion’s bookmark when using the discussion pane. |
+| `Ctrl+Z` / `Command+Z` outside a text editor | Undo the most recent story change while the notification offers Undo. |
+| Arrow keys, `Home`, `End` on navigation buttons | Move keyboard focus along the rail or tab bar. Enter or Space opens the focused destination. |
+| `O` | Open the focused feed row’s article, or the active article from the discussion pane. Stories without an article open their HN page. |
+| Swipe a story left | Reveal **Save** or **Unsave**. Release after the checkmark appears to apply it. |
+| Swipe a story right | Reveal **Hide** or **Restore**. Drag back before releasing to cancel. |
 | Pull the feed heading down | Refresh after a 72-pixel touch/pen drag. |
 
-Letter shortcuts do not intercept typing in a text box. Every swipe action also
-has a button path. Browser story navigation updates the URL without reloading the
-application, and Back/Forward routes through the reader. A browser URL with
+Open a story’s context menu by right-clicking, pressing the keyboard menu key, or holding the row on a touch screen. From there you can save, hide, mark read or unread, or copy its HN link. **Undo** in the status bar restores the latest story edit, including a removed bookmark’s original position in Saved. Marking a story unread keeps its visit in History.
+
+Compact story rows combine the source, author and age beneath the headline. Points, replies and reading-state icons remain visible.
+
+In split view, choosing the open story again returns focus to its reader and preserves the loaded replies, reading position and Find query. Selecting More again while Explore is open keeps its expanded sections. A short accent mark identifies the current destination independently of keyboard focus on both the rail and the phone tab bar.
+
+A reply timestamp opens its standalone discussion in Ember. The reply menu can copy the comment as plain text, copy its HN link, open the original on Hacker News, or fold an individual reply. Expanding a folded reply returns keyboard focus to its controls.
+
+Unmodified letter shortcuts are scoped to the feed and discussion. Every swipe action also has a menu command. Reader Back and browser Back use the same discussion history entries, so Forward can reopen a discussion. A direct permalink returns to the feed without leaving Ember. During a browser session, Ember keeps the presentation of the 24 most recently remembered discussion entries for traversal. Two visits to one URL can have different Find queries, selected matches and reading positions. Reloading uses the saved reading position. A browser URL with
 `?item=8863` opens that discussion. The desktop host accepts an initial HN URL as
 its first argument.
+
+Search and reader settings mark invalid fields and announce the first error when
+you submit. Ember opens the relevant filter or settings section, scrolls its
+editor into view, and moves keyboard focus there. Your entries are preserved
+while you correct them. Accent presets have accessible names, a selected state,
+and a check mark.
 
 Page changes combine a 180 ms composition opacity animation with a 220 ms,
 12-pixel vertical entrance. Reduced motion skips both animations. Themes use
@@ -89,15 +116,24 @@ underlying light/dark WinUI theme; the generated main and muted text colors are
 checked against the generated reading surfaces. Reading typography is applied to
 HN HTML without enlarging every navigation label.
 
+If some stories fail to load, the feed footer offers **Retry unavailable stories** with the number still missing. You can load another page or switch public feeds in the meantime. Retrying requests the failed IDs and inserts recovered stories at their original ranks. Stories that HN reports as missing do not stay in the retry count.
+
+The desktop search box recognizes HN story and profile links. Submitting text beyond the search limit keeps the current feed and the typed text visible. From an unavailable profile, **Edit username** returns to the original search draft with the username selected.
+
 ## Content rendering
 
 `ember-content` parses HN story, comment and profile HTML into an inert document
 model. Paragraphs, headings, quotations, nested ordered/unordered lists, code,
 emphasis, strike-through, line breaks and links are rendered with FerroUI controls
 and native text inlines. Text can be selected. Links are focusable controls with
-accessible names and a host navigation callback. Code preserves whitespace and
-scrolls on both axes within a viewport capped at 420 logical pixels high by
-default, with scroll chaining back to its containing discussion.
+accessible names. HN item and profile links in a story, reply, or biography open
+inside Ember. Back returns to the previous view. Other web links open in the browser.
+
+Each preformatted sample has a line count, a **Wrap** toggle and a **Copy code**
+action. Wrap fits that sample to the reading width. Copy takes its full decoded
+source, including indentation, blank lines and trailing newlines, even during
+Find. Long samples scroll inside a viewport capped at 420 logical pixels high,
+with scroll chaining back to the discussion.
 
 The parser removes active subtrees, including scripts, styles, frames, embedded
 objects, forms, SVG and MathML. Remote images become alt text; tables become
@@ -120,11 +156,13 @@ store. The versioned `ReaderState` contains preferences, saved/read/hidden state
 timestamps, collapsed branches, seen comments, reading anchors, mute rules,
 recent searches and the downloaded-discussion manifest. JSON import validates the
 schema and normalizes preferences; an unsupported future version is rejected.
-Export contains this local state, not all cached article/comment payloads.
-Settings displays the JSON in a multiline editor; Copy backup sends it to the
-platform clipboard so it can be pasted into a file. Import reads JSON pasted into
-that editor and replaces local reading state after validation. These controls do
-not present a native file picker or copy the database itself.
+In Settings, **Copy backup** generates the JSON, displays a selectable copy, and sends it
+to the platform clipboard. Paste a backup into **Reading data JSON** and choose
+**Import this backup** to review its saved-story and history counts. Choose
+**Replace reading data** to restore that snapshot. Editing the pasted JSON
+dismisses the pending import. The backup contains library metadata. Import keeps the
+download records already verified on this device and ignores the backup’s download
+claims. A restored bookmark from another device needs its own download here.
 
 Native hosts use a bundled SQLite database, schema version 1, with WAL enabled. A
 dedicated worker owns the connection. Operations resolve after their transaction
@@ -164,12 +202,22 @@ credentials and accepts only the two configured HTTPS API providers.
 
 ### Saved and downloaded content
 
-Saving a story pins its cached root item. It does not implicitly fetch all its
-comments. **Download discussion** traverses the thread and poll options, then
-verifies the resulting item records in durable storage. Only a complete result
-is added to the downloaded manifest and Saved stories. Missing items, failed
-cache writes or an exhausted budget produce an explicit partial/error result
-and can be retried.
+Saving a story keeps its cached headline and root item. **Download thread** also
+fetches the replies and poll options and verifies that their contents reached
+durable storage. The first successful download bookmarks the discussion. Partial
+downloads report missing items, failed writes, or an exhausted budget and offer
+a retry.
+
+The **Downloads** shelf includes every verified local discussion, including those
+whose bookmark you later removed. Open it from Explore or the **Downloaded**
+control in Saved. Reading and paging through the shelf uses the local cache.
+The checked download icon offers **Check offline copy** and **Stop keeping offline**.
+These also appear under **Discussion options** when there is too little width for
+the icon. Releasing a download keeps its bookmark, if present. Its unpinned
+pages become eligible for cleanup. Other verified downloads that use the same
+replies retain them.
+
+**Find in this collection** searches cached headlines, comment previews, authors and source domains. All words in the query must match, in any order and without regard to case. Find scans beyond the pages already on screen and keeps the collection’s ordering. **Load more** continues the scan when more results may be available. The summary counts entries whose local copy is missing. The scan makes no network requests. Clearing the query or closing Find restores the previously loaded list and scroll position.
 
 Interactive thread loading starts with 120 items, extends by 200 and is capped at
 10,000 items in the UI. Download uses a 10,000-item budget. The reusable core
@@ -177,9 +225,23 @@ supports budgets up to 20,000. Traversal is iterative and cycle-safe; missing an
 pending IDs are retained instead of pretending that an incomplete tree is
 complete. Local thread search matches decoded, visible text and authors, retains
 matching comments' ancestors, and does not overwrite stored collapse state.
-Entities and text split across formatting spans remain searchable; link
-attributes and removed active content do not produce matches. Input is debounced
-by 180 ms, and a bounded set of parsed search documents is reused for rendering.
+Entities and text split across formatting spans remain searchable. Find highlights
+up to 128 literal, case-insensitive occurrences in each rendered comment body,
+including code and link captions. Formatting, selection, and link activation
+are preserved. Find navigation counts matching comments, including author
+matches. Buttons and keyboard navigation announce the active comment’s position.
+Input is debounced by 180 ms, and a bounded set of parsed search documents is
+reused for rendering.
+
+Back from a profile or permalink restores the search form’s typed values, open filters and scroll position. Submitting the same search from its results keeps the pages already loaded. In split view, the Find shortcut searches the library when focus is in the feed and searches the discussion when focus is in that pane.
+
+When you leave a long comment or story, Ember remembers the row and the distance into it. Closing Find, returning to the thread or reopening Ember restores that position. Choosing **Read in context** instead takes you to the selected reply and expands its path while keeping other branches folded.
+
+Use **Download for offline reading** from a feed row to save its discussion without opening it or marking it read. The transfer stays visible when you switch tabs. You can cancel while Ember collects items or verifies the saved copy. A canceled first download leaves its bookmark and download flags untouched. Changing a bookmark during the transfer takes precedence over the automatic bookmark on completion. **Check offline copy** reads only this device’s storage.
+
+Reply menus offer **Open comment thread** and navigation between sibling replies when available. Returning with Back restores the previously loaded portion of the discussion as well as its reading position. Opening a fresh discussion starts with its initial item budget.
+
+Settings keeps an unfinished appearance draft when you select Settings again. **Apply preferences** saves changes and **Discard preference edits** restores applied values. An exported backup also remains available as selectable text for manual copying.
 
 The default item cache target is 5,000 records, configurable from 100 to 100,000.
 Pruning removes the oldest unpinned item records while preserving saved roots and
@@ -190,10 +252,19 @@ feed lists and local reading state are retained outside that budget. These are
 record-count targets, not a total byte quota. Browser site-data clearing,
 storage eviction and disk exhaustion still affect persistence.
 
-**Clear cache** removes public cached payloads and the UI's downloaded manifest;
-bookmarks and preferences remain, but the associated content needs fetching
-again. **Clear history** removes read/opened timestamps and seen-comment markers,
-while retaining bookmarks. Export a JSON backup before moving between devices.
+In Settings, expand **Clear local data**. **Check storage use** measures cached
+data in bytes, KiB or MiB and shows the number of cached items and verified
+downloads. A visible measurement updates after cleanup.
+
+- **Clean temporary cache** removes unpinned story or comment payloads, cached
+  searches and profiles. Bookmarked roots, downloaded discussions and feed lists
+  stay on the device.
+- **Clear cached content** also removes verified offline copies and cached feed
+  lists. Bookmarks remain in Saved and can be downloaded again.
+- **Clear reading history** removes read markers, reading positions, seen-comment
+  markers and recent search terms.
+
+Each cleanup opens a review. **Cancel** or Escape returns focus to its control.
 A failed initial state read pauses automatic writes to protect the existing data.
 A validated backup imported while that read is pending takes precedence over its
 late result. There is no cross-device or concurrent multi-tab state merge.
@@ -272,6 +343,8 @@ scripts/build-browser.sh
 python3 -m http.server 8080 --directory "${CARGO_TARGET_DIR:-target}/browser/ember-browser"
 ```
 
+The browser packager includes the unmodified Noto Sans CJK SC Regular 2.004 face (16,437,364 bytes) as a separate, same-origin fallback. Opening an ordinary Latin feed and installing the offline shell transfer no font payload. When the renderer requests the fallback, Ember verifies the SHA-256 digest before displaying or caching it. A later visit can reuse the verified face offline. For a network-free packaging step, set `EMBER_CJK_FONT` to a local copy of the pinned upstream OTF. [Font source and license](../NOTICE.md)
+
 Open `http://localhost:8080/`. The build uses FerroUI's
 `wasm32-unknown-emscripten` toolchain. The wrapper accepts `--out`, `--debug`,
 `--features vello`, `--threads` and `--both`. The default renderer is Skia;
@@ -297,13 +370,17 @@ requires the SDK/NDK prerequisites of FerroUI; iOS packaging requires macOS/Xcod
 directory. iOS uses `Library/Application Support/Ember` within its application
 sandbox. Signing and installation follow the existing platform scripts.
 
+## Performance
+
+[Measurement methods, workload sizes and reproduction commands](performance.md)
+
 ## Verification and CI
 
 The [CI workflow](../.github/workflows/ci.yml) calls FerroUI's shared application
 workflow (`FerroUI/docs/apps.md`): on Linux it runs the core/parser tests, the actual
 control-tree/render tests, a desktop compile check and the browser service-provider
-tests, builds the browser site and publishes it to GitHub Pages from main. Android/iOS
-packaging needs its platform toolchains and is not part of CI.
+tests, builds the browser site and publishes it to GitHub Pages from main. The
+workflow also requests an Android APK and an iOS simulator app bundle as artifacts.
 
 ```sh
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
@@ -357,8 +434,8 @@ bounds and hit-test availability; it does not provide a second UI implementation
 | Linux desktop | Native host, SQLite/HTTP and shared reader controls | `cargo check -p ember-desktop` in CI; the shared UI tests exercise the actual control tree through Skia/HarfBuzz. |
 | Browser | WebAssembly reader, Fetch, IndexedDB, URL history and default offline shell | The JavaScript tests of the platform providers and the offline worker in CI. The Chrome smoke test (desktop and phone: touch gestures, themes, URL history, downloads, IndexedDB persistence, an offline reload through the offline shell) is run by hand; it is not part of CI. |
 | Windows/macOS | Shared desktop host with the existing FerroUI platform services | The shared UI tests run on Linux in CI; no interactive Windows or macOS session is claimed. |
-| Android | Native host and packaging-script integration | Physical-device layout, IME, lifecycle and signed-package behavior remain unverified. |
-| iOS | Native host and bundling-script integration | Physical-device layout, safe areas, lifecycle and signed-package behavior remain unverified. |
+| Android | Native host and Android APK packaging job | CI requests the `android-apk` artifact. Physical-device layout, IME and lifecycle still require device testing. |
+| iOS | Native host and iOS simulator bundle job | CI requests the `ios-app` artifact. Physical-device safe areas, lifecycle and signing still require device testing. |
 
 ## Current boundaries
 

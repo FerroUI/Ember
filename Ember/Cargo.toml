@@ -16,6 +16,7 @@ build = "build.rs"
 path = "lib.rs"
 
 [dependencies]
+futures-util = { workspace = true }
 ember-core = { path = "../Ember.Core" }
 ember-content = { path = "../Ember.Content" }
 ferroui-base = { workspace = true, features = ["markup-functions"] }
@@ -24,6 +25,7 @@ ferroui-markup = { workspace = true }
 ferroui-markup-xaml = { workspace = true }
 ferroui-themes-winui = { workspace = true }
 sample-support = { path = "../FerroUI/samples/SampleSupport" }
+url = { workspace = true }
 
 [build-dependencies]
 sample-build = { path = "../FerroUI/samples/SampleBuild" }

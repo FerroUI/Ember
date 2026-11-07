@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import "fake-indexeddb/auto";
-import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
+import { databaseGet, databasePut, databaseRemove, databaseScan, fetchJson, locationItem, observeLocation, requestBrowserBack, setLocation, validateApiUrl } from "../wwwroot/ember-platform.js";
 
 const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
@@ -113,4 +113,141 @@ test("reader navigation retains rendering options and does not duplicate browser
         if (location === undefined) delete globalThis.location; else globalThis.location = location;
         if (history === undefined) delete globalThis.history; else globalThis.history = history;
     }
+});
+
+test("legacy discussion URLs can return to the feed and keep unrelated URL state", () => {
+    const original = { location: globalThis.location, history: globalThis.history };
+    const base = "https://example.test/Ember/?Renderer=Vello";
+    globalThis.history = { pushState: (_state, _title, href) => { globalThis.location.href = href; } };
+    try {
+        for (const route of ["&id=00042", "&item/42", "#id=42", "#/item/42", "#item=42&debug", "&id=42&item=7#item/9"]) {
+            globalThis.location = { href: base + route };
+            assert.equal(locationItem(globalThis.location.href), "42");
+            setLocation("42");
+            assert.equal(globalThis.location.href, base + route);
+            setLocation("64");
+            assert.equal(locationItem(globalThis.location.href), "64");
+            setLocation(null);
+            assert.equal(globalThis.location.href, base + (route.includes("debug") ? "#debug" : ""));
+        }
+        assert.equal(locationItem(base + "&id=18446744073709551615"), "18446744073709551615");
+        assert.equal(locationItem(base + "&id=18446744073709551616"), null);
+        assert.equal(locationItem(base + "&id=0"), null);
+    } finally {
+        for (const [key, value] of Object.entries(original)) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
+    }
+});
+
+test("reader Back reuses owned entries, queues rapid actions and replaces an initial permalink", t => {
+    const start = "https://example.test/read/?theme=dark#id=5&debug";
+    const entries = [{ href: start, state: { renderer: "native" } }];
+    const events = new EventTarget();
+    let position = 0;
+    let moving = false;
+    const location = { href: start };
+    const history = {
+        get state() { return entries[position].state; },
+        pushState(state, _, href) {
+            entries.splice(++position, Infinity, { state, href });
+            location.href = href;
+        },
+        replaceState(state, _, href) {
+            entries[position] = { state, href };
+            location.href = href;
+        },
+        back() {
+            assert.ok(position > 0 && !moving, "Only one owned traversal may be pending");
+            moving = true;
+        },
+    };
+    const traverse = delta => {
+        moving = false;
+        position += delta;
+        location.href = entries[position].href;
+        events.dispatchEvent(new Event("popstate"));
+        events.dispatchEvent(new Event("hashchange"));
+    };
+    const original = new Map(["location", "history", "navigation", "addEventListener"].map(key => [key, globalThis[key]]));
+    Object.assign(globalThis, { location, history, navigation: { currentEntry: { index: -1 } },
+        addEventListener: events.addEventListener.bind(events) });
+    t.after(() => {
+        for (const [key, value] of original) {
+            if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+        }
+    });
+    const visits = [], directions = [];
+    observeLocation((href, _, backward) => { visits.push(locationItem(href)); directions.push(backward); });
+    assert.equal(requestBrowserBack(), false);
+    setLocation(null, true);
+    assert.equal(entries.length, 1);
+    assert.equal(location.href, "https://example.test/read/?theme=dark#debug");
+    assert.equal(history.state.renderer, "native");
+    setLocation("10");
+    setLocation("20");
+    setLocation("10", true);
+    setLocation(null, true);
+    setLocation("30");
+    assert.equal(entries.length, 3);
+    traverse(-1);
+    assert.ok(moving);
+    traverse(-1);
+    assert.equal(locationItem(location.href), "30");
+    assert.equal(entries.length, 2, "Only opening a new item should truncate Forward");
+    assert.deepEqual(visits, [], "Reader-initiated traversals must preserve restored views");
+    traverse(-1);
+    traverse(1);
+    assert.deepEqual(visits, [null, "30"]);
+    assert.deepEqual(directions, [true, false]);
+    assert.equal(requestBrowserBack(), true);
+    traverse(-1);
+    assert.deepEqual(visits, [null, "30", null], "A delegated toolbar Back must navigate the reader");
+    assert.equal(requestBrowserBack(), false);
+    for (const address of ["not a URL", "https://unrelated.test/read/?item=4"]) {
+        entries[position].state.emberPreviousHref = address;
+        assert.equal(requestBrowserBack(), false);
+    }
+});
+
+test("ordered batch reads use one transaction and range cleanup preserves neighboring keys", async () => {
+    const { databaseCount, databaseGetMany, databaseRemoveMany, databaseRemovePrefix } = await import("../wwwroot/ember-platform.js");
+    const prefix = "batch/%_/\uffff";
+    const keys = [prefix + "3", prefix + "😀", prefix + "\uffffZ"];
+    for (const key of [...keys, "batch/%_/X"]) await databasePut(key, key);
+    const original = IDBDatabase.prototype.transaction;
+    let transactions = 0;
+    IDBDatabase.prototype.transaction = function (...args) {
+        transactions++;
+        return original.apply(this, args);
+    };
+    try {
+        assert.deepEqual(await databaseGetMany([keys[2], prefix + "missing", keys[0], keys[2]]),
+            [keys[2], null, keys[0], keys[2]]);
+        assert.equal(transactions, 1);
+        assert.equal(await databaseCount(prefix), 3);
+        await databaseRemoveMany([keys[0], keys[1]]);
+        assert.equal(transactions, 3);
+        assert.equal(await databaseCount(prefix), 1);
+        await databaseRemovePrefix(prefix);
+        assert.equal(await databaseCount(prefix), 0);
+        assert.equal(await databaseGet("batch/%_/X"), "batch/%_/X");
+    } finally {
+        IDBDatabase.prototype.transaction = original;
+    }
+});
+
+test("paged size scans return ordered UTF-8 lengths without returning cached documents", async () => {
+    const { databaseCount, databaseRemoveMany, databaseRemovePrefix, databaseSizes } = await import("../wwwroot/ember-platform.js");
+    const prefix = "\uffff";
+    const entries = Array.from({ length: 139 }, (_, i) => [prefix + i.toString().padStart(3, "0"), "Ł😀" + i]);
+    await Promise.all(entries.map(([key, value]) => databasePut(key, value)));
+    assert.equal(await databaseCount(prefix), entries.length);
+    assert.deepEqual(JSON.parse(await databaseSizes(prefix)), entries.map(([key, value]) => [key, Buffer.byteLength(value)]));
+    assert.deepEqual(JSON.parse(await databaseScan(prefix)), entries);
+    // An invalid key after the first queued delete aborts the entire transaction.
+    await assert.rejects(databaseRemoveMany([entries[0][0], null]));
+    assert.equal(await databaseCount(prefix), entries.length);
+    await databaseRemovePrefix(prefix);
+    assert.equal(await databaseCount(prefix), 0);
 });

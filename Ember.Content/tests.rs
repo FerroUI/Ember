@@ -237,6 +237,121 @@ mod render {
     }
 
     #[test]
+    fn headings_and_formatted_link_captions_keep_their_native_structure() {
+        use ferroui_controls::automation::AutomationProperties;
+        use ferroui_controls::documents::Bold;
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let document = HtmlDocument::parse(
+            "<h3>Release notes</h3><p><a href='https://example.com'><b>Important</b> changes</a></p>"
+        );
+        let control = crate::render(&document, &crate::RenderOptions::default(), Rc::new(|_| {}));
+        let heading = control
+            .get_logical_descendants()
+            .find(|node| node.classes().contains("ember-html-heading"))
+            .expect("document heading");
+        assert_eq!(AutomationProperties::get_heading_level(&heading), 3);
+        let link = control
+            .get_logical_descendants()
+            .find_map(|node| node.cast::<HyperlinkButton>())
+            .unwrap();
+        assert_eq!(
+            AutomationProperties::get_name(&link).as_deref(),
+            Some("Important changes")
+        );
+        assert!(link.get_logical_descendants().any(|node| node.is::<Bold>()));
+    }
+
+    #[test]
+    fn find_paints_decoded_text_across_native_runs_links_and_code() {
+        use ferroui_base::media::Brushes;
+        use ferroui_controls::documents::{Italic, Run};
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let observed = calls.clone();
+        let doc = HtmlDocument::parse("<p>before <b>Bold</b> &amp; <a href='https://example.com/'><i>link</i></a><code>()</code> after</p><pre>example Bold &amp; link() code</pre>");
+        let bg: Rc<dyn ferroui_base::media::IBrush> = Brushes::yellow();
+        let control = crate::render_with_find(
+            &doc,
+            &crate::RenderOptions::default(),
+            crate::FindHighlight {
+                query: "bOlD & liNk()",
+                foreground: Brushes::black(),
+                background: bg.clone(),
+            },
+            Rc::new(move |url| observed.borrow_mut().push(url.to_owned())),
+        );
+        let runs: Vec<_> = control
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Run>())
+            .collect();
+        let painted: Vec<_> = runs
+            .iter()
+            .filter(|r| r.background().is_some_and(|b| Rc::ptr_eq(&b, &bg)))
+            .collect();
+        assert_eq!(
+            painted.iter().filter_map(|r| r.text()).collect::<String>(),
+            "Bold & link()Bold & link()"
+        );
+        assert_eq!(
+            runs.iter().filter_map(|r| r.text()).collect::<String>(),
+            "before Bold & link() afterexample Bold & link() code"
+        );
+        let link = control
+            .get_logical_descendants()
+            .find_map(|node| node.cast::<HyperlinkButton>())
+            .unwrap();
+        assert!(link
+            .get_logical_descendants()
+            .any(|node| node.is::<Italic>()));
+        assert!(link.navigate_uri().is_none());
+        link.raise_event(&RoutedEventArgs::with_event(Button::click_event()));
+        assert_eq!(*calls.borrow(), vec!["https://example.com/"]);
+    }
+
+    #[test]
+    fn repetitive_search_terms_bound_styling_without_truncating_the_document() {
+        use ferroui_base::media::Brushes;
+        use ferroui_controls::documents::Run;
+
+        let clock = Rc::new(TestGlobalClock::default());
+        let _app = UnitTestApplication::start(sample_testing::services(clock));
+        let line = "a ".repeat(200);
+        let doc = HtmlDocument {
+            blocks: vec![Block::Paragraph(vec![Inline::Text(line.clone())]); 2],
+            truncated: false,
+        };
+        let bg: Rc<dyn ferroui_base::media::IBrush> = Brushes::yellow();
+        let control = crate::render_with_find(
+            &doc,
+            &crate::RenderOptions::default(),
+            crate::FindHighlight {
+                query: "a",
+                foreground: Brushes::black(),
+                background: bg.clone(),
+            },
+            Rc::new(|_| {}),
+        );
+        let runs: Vec<_> = control
+            .get_logical_descendants()
+            .filter_map(|node| node.cast::<Run>())
+            .collect();
+        assert_eq!(
+            runs.iter()
+                .filter(|r| r.background().is_some_and(|b| Rc::ptr_eq(&b, &bg)))
+                .count(),
+            128
+        );
+        assert_eq!(
+            runs.iter().filter_map(|r| r.text()).collect::<String>(),
+            line.repeat(2)
+        );
+    }
+
+    #[test]
     fn manually_constructed_model_cannot_bypass_url_check() {
         let clock = Rc::new(TestGlobalClock::default());
         let _app = UnitTestApplication::start(sample_testing::services(clock));
@@ -255,5 +370,32 @@ mod render {
         assert!(!control
             .get_logical_descendants()
             .any(|node| node.is::<HyperlinkButton>()));
+    }
+}
+
+#[test]
+#[ignore = "plain and formatted content parsing timing workload"]
+fn measure_content_parse_and_extract() {
+    let inputs = (0..4096)
+        .map(|id| format!("GPU text  layout {id}: a scoped experiment — Ελληνικά"))
+        .collect::<Vec<_>>();
+    let rich = inputs
+        .iter()
+        .map(|s| format!("<p>{s} <i>on</i> a <b>phone</b>.</p>"))
+        .collect::<Vec<_>>();
+    for (label, inputs) in [("plain", inputs), ("formatted", rich)] {
+        let mut times = Vec::new();
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            for input in &inputs {
+                std::hint::black_box(HtmlDocument::parse(input).plain_text());
+            }
+            times.push(start.elapsed().as_micros());
+        }
+        times.sort_unstable();
+        eprintln!(
+            "4096 {label} parse + text extractions; median {} us; samples {times:?}",
+            times[3]
+        );
     }
 }

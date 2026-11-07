@@ -216,20 +216,136 @@ impl Store for SqliteStore {
             Ok(())
         })
     }
+    fn get_many<'a>(
+        &'a self,
+        keys: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<Option<String>>, ReaderError>> {
+        let keys = keys.to_vec();
+        self.execute(move |db| {
+            let tx = db.transaction().map_err(storage_error)?;
+            let values = {
+                let mut stmt = tx
+                    .prepare_cached("SELECT value FROM ember_records WHERE key=?1")
+                    .map_err(storage_error)?;
+                keys.iter()
+                    .map(|key| stmt.query_row([key], |row| row.get(0)).optional())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage_error)?
+            };
+            tx.commit().map_err(storage_error)?;
+            Ok(values)
+        })
+    }
+
+    fn remove_many<'a>(&'a self, keys: &'a [String]) -> BoxFuture<'a, Result<(), ReaderError>> {
+        let keys = keys.to_vec();
+        self.execute(move |db| {
+            let tx = db.transaction().map_err(storage_error)?;
+            {
+                let mut stmt = tx
+                    .prepare_cached("DELETE FROM ember_records WHERE key=?1")
+                    .map_err(storage_error)?;
+                for key in keys {
+                    stmt.execute([key]).map_err(storage_error)?;
+                }
+            }
+            tx.commit().map_err(storage_error)
+        })
+    }
+
+    fn remove_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<(), ReaderError>> {
+        let prefix = prefix.to_owned();
+        self.execute(move |db| {
+            if let Some(end) = prefix_end(&prefix) {
+                db.execute(
+                    "DELETE FROM ember_records WHERE key>=?1 AND key<?2",
+                    [&prefix, &end],
+                )
+            } else {
+                db.execute("DELETE FROM ember_records WHERE key>=?1", [&prefix])
+            }
+            .map(drop)
+            .map_err(storage_error)
+        })
+    }
+
+    fn count_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Result<usize, ReaderError>> {
+        let prefix = prefix.to_owned();
+        self.execute(move |db| {
+            if let Some(end) = prefix_end(&prefix) {
+                db.query_row(
+                    "SELECT count(*) FROM ember_records WHERE key>=?1 AND key<?2",
+                    [&prefix, &end],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)
+            } else {
+                db.query_row(
+                    "SELECT count(*) FROM ember_records WHERE key>=?1",
+                    [&prefix],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)
+            }
+        })
+    }
+
     fn scan_prefix<'a>(
         &'a self,
         prefix: &'a str,
     ) -> BoxFuture<'a, Result<Vec<(String, String)>, ReaderError>> {
         let prefix = prefix.to_owned();
         self.execute(move |db| {
-            // SQLite LIKE is ASCII case-insensitive by default. Record prefixes
-            // are exact and case-sensitive, including usernames and literal %/_ .
-            let mut statement = db.prepare("SELECT key,value FROM ember_records WHERE key>=?1 AND substr(key,1,length(?1))=?1 COLLATE BINARY ORDER BY key")
-                .map_err(storage_error)?;
-            let rows = statement.query_map([prefix], |row| Ok((row.get(0)?, row.get(1)?))).map_err(storage_error)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+            scan_values(
+                db,
+                &prefix,
+                "SELECT key,value FROM ember_records WHERE key>=?1 ORDER BY key",
+            )
         })
     }
+
+    fn scan_sizes<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, usize)>, ReaderError>> {
+        let prefix = prefix.to_owned();
+        self.execute(move |db| scan_values(db, &prefix, "SELECT key,length(CAST(value AS BLOB)) FROM ember_records WHERE key>=?1 ORDER BY key"))
+    }
+}
+
+fn scan_values<T: rusqlite::types::FromSql>(
+    db: &Connection,
+    prefix: &str,
+    query: &str,
+) -> Result<Vec<(String, T)>, ReaderError> {
+    let mut stmt = db.prepare_cached(query).map_err(storage_error)?;
+    let mut rows = stmt.query([prefix]).map_err(storage_error)?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().map_err(storage_error)? {
+        let key: String = row.get(0).map_err(storage_error)?;
+        if !key.starts_with(prefix) {
+            break;
+        }
+        records.push((key, row.get(1).map_err(storage_error)?));
+    }
+    Ok(records)
+}
+
+/// SQLite's default BINARY collation orders UTF-8 keys by Unicode scalar.
+fn prefix_end(prefix: &str) -> Option<String> {
+    for (offset, ch) in prefix.char_indices().rev() {
+        if ch != char::MAX {
+            let next = if ch == '\u{d7ff}' {
+                '\u{e000}'
+            } else {
+                char::from_u32(ch as u32 + 1)?
+            };
+            let mut end = prefix[..offset].to_owned();
+            end.push(next);
+            return Some(end);
+        }
+    }
+    None
 }
 
 fn storage_error(error: impl std::fmt::Display) -> ReaderError {

@@ -11,6 +11,32 @@ pub(crate) fn set_accent(theme: &WinUITheme, hex: &str) {
         return;
     };
     let (d1, d2, d3, l1, l2, l3) = SystemAccentColors::calculate_accent_shades(accent);
+    // Small accent labels and selection indicators share one ink per theme.
+    // Use the lowest-contrast reading surface in each built-in palette.
+    for (keys, surface, ink) in [
+        (
+            [
+                "EmberLightAccentColor",
+                "EmberLightAccentHover",
+                "EmberLightAccentPressed",
+            ],
+            Color::from_rgb(232, 227, 222),
+            Color::from_rgb(0, 0, 0),
+        ),
+        (
+            [
+                "EmberDarkAccentColor",
+                "EmberDarkAccentHover",
+                "EmberDarkAccentPressed",
+            ],
+            Color::from_rgb(63, 54, 49),
+            Color::from_rgb(255, 255, 255),
+        ),
+    ] {
+        for (key, color) in keys.into_iter().zip(accent_states(accent, surface, ink)) {
+            theme.resources().set(key, Some(Rc::new(color)));
+        }
+    }
     let keys = [
         SystemAccentColors::ACCENT_KEY,
         SystemAccentColors::ACCENT_DARK1_KEY,
@@ -24,60 +50,76 @@ pub(crate) fn set_accent(theme: &WinUITheme, hex: &str) {
         theme.resources().set(key, Some(Rc::new(color)));
     }
 }
-pub(crate) fn apply(preferences: &Preferences) {
+pub(crate) fn apply(preferences: &Preferences, previous: Option<&Preferences>) {
     if let Some(application) = Application::current() {
-        // Overrides live in the ordinary dictionary; the built-in Light/Dark
-        // dictionaries remain intact and become visible again on a mode change.
-        for key in CUSTOM_KEYS {
-            application.resources().remove(&ResourceKey::from(key));
+        let palette_changed = previous.is_none_or(|old| {
+            old.theme != preferences.theme
+                || (preferences.theme == ThemeMode::Custom
+                    && (old.custom_background != preferences.custom_background
+                        || old.accent != preferences.accent))
+        });
+        if palette_changed {
+            apply_palette(&application, preferences);
         }
-        let custom = (preferences.theme == ThemeMode::Custom).then(|| {
+        if previous.is_none_or(|old| old.font_size != preferences.font_size) {
+            application
+                .resources()
+                .set("EmberReadingFontSize", Some(Rc::new(preferences.font_size)));
+        }
+        let height = preferences.font_size * preferences.line_height;
+        if previous.is_none_or(|old| old.font_size * old.line_height != height) {
+            application
+                .resources()
+                .set("EmberReadingLineHeight", Some(Rc::new(height)));
+        }
+    }
+    if let Some(theme) = crate::App::theme() {
+        if previous.is_none_or(|old| old.accent != preferences.accent) {
+            set_accent(&theme, &preferences.accent);
+        }
+        if previous.is_none_or(|old| old.compact != preferences.compact) {
+            theme.set_density_style(if preferences.compact {
+                DensityStyle::Compact
+            } else {
+                DensityStyle::Normal
+            });
+        }
+    }
+}
+
+fn apply_palette(application: &Application, preferences: &Preferences) {
+    let variant = match preferences.theme {
+        ThemeMode::System => None,
+        ThemeMode::Light => Some(ThemeVariant::light()),
+        ThemeMode::Dark => Some(ThemeVariant::dark()),
+        ThemeMode::Custom => {
             let background = preferences
                 .custom_background
                 .as_deref()
                 .and_then(|s| Color::parse(s).ok())
                 .unwrap_or(Color::from_rgb(24, 27, 31));
             let accent = Color::parse(&preferences.accent).unwrap_or(Color::from_rgb(255, 107, 53));
-            custom_palette(background, accent)
-        });
-        application.set_requested_theme_variant(match preferences.theme {
-            ThemeMode::System => None,
-            ThemeMode::Light => Some(ThemeVariant::light()),
-            ThemeMode::Dark => Some(ThemeVariant::dark()),
-            ThemeMode::Custom => Some(if custom.as_ref().is_some_and(|p| p.dark) {
-                ThemeVariant::dark()
-            } else {
-                ThemeVariant::light()
-            }),
-        });
-        if let Some(palette) = custom {
+            let palette = custom_palette(background, accent);
             for (key, color) in CUSTOM_KEYS.into_iter().zip(palette.colors) {
                 application
                     .resources()
                     .set(key, Some(Rc::new(SolidColorBrush::with_color(color))));
             }
+            application.set_requested_theme_variant(Some(if palette.dark {
+                ThemeVariant::dark()
+            } else {
+                ThemeVariant::light()
+            }));
+            return;
         }
-        // Available to markup and future reading controls without scaling the
-        // navigation chrome. Rich HN content already consumes these preferences.
-        application
-            .resources()
-            .set("EmberReadingFontSize", Some(Rc::new(preferences.font_size)));
-        application.resources().set(
-            "EmberReadingLineHeight",
-            Some(Rc::new(preferences.font_size * preferences.line_height)),
-        );
+    };
+    for key in CUSTOM_KEYS {
+        application.resources().remove(&ResourceKey::from(key));
     }
-    if let Some(theme) = crate::App::theme() {
-        set_accent(&theme, &preferences.accent);
-        theme.set_density_style(if preferences.compact {
-            DensityStyle::Compact
-        } else {
-            DensityStyle::Normal
-        });
-    }
+    application.set_requested_theme_variant(variant);
 }
 
-const CUSTOM_KEYS: [&str; 9] = [
+const CUSTOM_KEYS: [&str; 10] = [
     "EmberBackground",
     "EmberRail",
     "EmberSurface",
@@ -87,10 +129,11 @@ const CUSTOM_KEYS: [&str; 9] = [
     "EmberMuted",
     "EmberTint",
     "EmberCode",
+    "EmberAccentInk",
 ];
 struct CustomPalette {
     dark: bool,
-    colors: [Color; 9],
+    colors: [Color; 10],
 }
 
 /// The base variant follows relative sRGB luminance. Derived reading surfaces
@@ -108,23 +151,44 @@ fn custom_palette(background: Color, accent: Color) -> CustomPalette {
     let tint = safe_surface(surface, accent, 0.14, text);
     let border = blend(background, text, 0.22);
     let surfaces = [background, rail, surface, card, tint, code];
-    let mut muted = text;
-    for step in 0..=20 {
-        let candidate = blend(blend(text, background, 0.35), text, step as f64 / 20.0);
+    let muted = readable_ink(blend(text, background, 0.35), text, &surfaces);
+    let accent_ink = readable_ink(accent, text, &surfaces);
+    CustomPalette {
+        dark,
+        colors: [
+            background, rail, surface, card, border, text, muted, tint, code, accent_ink,
+        ],
+    }
+}
+
+// The resting fill doubles as accent text on the reading surfaces. Hover and
+// press use opaque shades so their label contrast holds over any custom canvas.
+fn accent_states(accent: Color, surface: Color, ink: Color) -> [Color; 3] {
+    let rest = readable_ink(accent, ink, &[surface]);
+    // Make states distinct even for an accent at either end of the tonal range.
+    let toward = if contrast(rest, surface) >= 9.0 {
+        surface
+    } else {
+        ink
+    };
+    [
+        rest,
+        safe_surface(rest, toward, 0.10, surface),
+        safe_surface(rest, toward, 0.20, surface),
+    ]
+}
+
+fn readable_ink(preferred: Color, fallback: Color, surfaces: &[Color]) -> Color {
+    for step in 0..=32 {
+        let candidate = blend(preferred, fallback, step as f64 / 32.0);
         if surfaces
             .iter()
             .all(|&surface| contrast(candidate, surface) >= 4.5)
         {
-            muted = candidate;
-            break;
+            return candidate;
         }
     }
-    CustomPalette {
-        dark,
-        colors: [
-            background, rail, surface, card, border, text, muted, tint, code,
-        ],
-    }
+    fallback
 }
 
 fn safe_surface(base: Color, target: Color, amount: f64, foreground: Color) -> Color {
@@ -161,12 +225,40 @@ fn contrast(a: Color, b: Color) -> f64 {
 mod tests {
     use super::*;
     #[test]
+    fn primary_actions_keep_contrast_and_distinct_pointer_states_for_any_accent() {
+        let white = Color::from_rgb(255, 255, 255);
+        let black = Color::from_rgb(0, 0, 0);
+        for (surface, ink, label) in [
+            (Color::from_rgb(232, 227, 222), black, white),
+            (Color::from_rgb(63, 54, 49), white, black),
+        ] {
+            for r in (0..=255).step_by(17) {
+                for g in (0..=255).step_by(17) {
+                    for b in (0..=255).step_by(17) {
+                        let [normal, hover, pressed] =
+                            accent_states(Color::from_rgb(r, g, b), surface, ink);
+                        assert_ne!(normal, hover);
+                        assert_ne!(hover, pressed);
+                        for fill in [normal, hover, pressed] {
+                            assert!(contrast(label, fill) >= 4.5);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn custom_palettes_keep_readable_body_and_secondary_text() {
         for hex in [
             "#000000", "#FFFFFF", "#747474", "#777777", "#172126", "#FFEFC0", "#0055FF", "#CA2070",
         ] {
             let palette = custom_palette(Color::parse(hex).unwrap(), Color::from_rgb(255, 107, 53));
             for index in [0, 1, 2, 3, 7, 8] {
+                assert!(
+                    contrast(palette.colors[9], palette.colors[index]) >= 4.5,
+                    "{hex}, accent ink on surface {index}"
+                );
                 assert!(
                     contrast(palette.colors[5], palette.colors[index]) >= 4.5,
                     "{hex}, surface {index}"

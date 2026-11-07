@@ -2,6 +2,7 @@
 // Usage: CHROME=/path/to/chrome node Ember.Browser/tests/browser-smoke.mjs [site]
 // Only the HTTP boundary is deterministic; rendering, navigation, DB and controls are real.
 import fs from "node:fs";
+import { verifyCjkFallback } from "./browser-font.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { open, run, assert, sleep, colours } from "../../FerroUI/scripts/browser/harness.mjs";
@@ -18,21 +19,28 @@ const fixtures = {
     103: { id: 103, type: "story", title: "Ask HN: What have you learned by building something slowly?", by: "curious", time: 1792567200, score: 142, descendants: 0, text: "<p>What did the process teach you?</p>" },
     201: { id: 201, type: "comment", by: "reader", parent: 101, time: 1792573800, kids: [202], text: "<p>Small details make a <b>meaningful difference</b>. A native reading experience feels wonderful.</p><p>See <a href=\"https://example.org/details\">the design notes</a>.</p>" },
     202: { id: 202, type: "comment", by: "maker", parent: 201, time: 1792574000, text: "<p>Thank you! Here is the tiny core:</p><pre><code>fn main() {\n    println!(\"Stay curious.\");\n}</code></pre>" },
-    203: { id: 203, type: "comment", by: "engineer", parent: 101, time: 1792574400, text: "<blockquote>Make the important things easy.</blockquote><p>Offline reading is a feature I use every day.</p><script>globalThis.__emberUnsafeHtml = true</script>" },
+    250: { id: 250, type: "comment", by: "archivist", parent: 101, time: 1792574450, text: "<p>Margin notes are part of the archive.</p>" },
+    203: { id: 203, type: "comment", by: "engineer", parent: 101, time: 1792574400, text: "<blockquote>Make the important things easy.</blockquote><p>I keep the design notes available offline.</p><script>globalThis.__emberUnsafeHtml = true</script>" },
 };
 const initScript = `(() => {
     const original = globalThis.fetch.bind(globalThis);
-    const items = ${JSON.stringify(fixtures)};
+    const items = globalThis.__emberFixtureItems = ${JSON.stringify(fixtures)};
     globalThis.fetch = async (input, options) => {
         const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
         if (!["hacker-news.firebaseio.com", "hn.algolia.com"].includes(url.hostname)) return original(input, options);
         globalThis.__emberApiRequests = (globalThis.__emberApiRequests ?? 0) + 1;
         if (sessionStorage.getItem("ember-test-offline") === "1") throw new TypeError("Simulated offline connection");
         let value = null;
-        if (url.hostname === "hn.algolia.com") value = { hits: [{ objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url }], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
-        else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
+        if (url.hostname === "hn.algolia.com") {
+            globalThis.__emberLastSearch = url.href;
+            const scoped = url.searchParams.get("tags") === "comment,story_101";
+            const hit = scoped
+                ? { objectID: "250", story_id: 101, story_title: items[101].title, comment_text: items[250].text, author: items[250].by, _tags: ["comment"] }
+                : { objectID: "101", title: items[101].title, author: "maker", points: 284, num_comments: 3, created_at_i: 1792573200, url: items[101].url };
+            value = { hits: [hit], nbHits: 1, nbPages: 1, page: 0, hitsPerPage: 30 };
+        } else if (/stories\\.json$/.test(url.pathname)) value = [101, 102, 103];
         else if (/\\/item\\//.test(url.pathname)) value = items[Number(url.pathname.split("/").pop().replace(".json", ""))] ?? null;
-        else if (/\\/user\\//.test(url.pathname)) value = { id: "maker", karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
+        else if (/\\/user\\//.test(url.pathname)) value = { id: decodeURIComponent(url.pathname.split("/").pop().slice(0, -5)), karma: 1234, created: 1500000000, about: "<p>I build small things.</p>", submitted: [101, 202] };
         return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
     };
 })();`;
@@ -51,14 +59,16 @@ const byName = (page, name) => click(page, element => element.name === name, nam
 const byText = (page, text) => click(page, element => element.text === text, text);
 const byAutomation = (page, name) => click(page, element => element.automationName === name, name);
 
-async function touchDrag(page, x, y, endX, endY) {
+async function touchDrag(page, x, y, endX, endY, beforeRelease) {
     await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
     const point = (x, y) => ({ x, y, id: 1, radiusX: 6, radiusY: 6, force: 1 });
+    const move = (x, y) => page.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(x, y)] });
     await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point(x, y)] });
     for (let step = 1; step <= 10; ++step) {
-        await page.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(x + (endX - x) * step / 10, y + (endY - y) * step / 10)] });
+        await move(x + (endX - x) * step / 10, y + (endY - y) * step / 10);
         await sleep(20);
     }
+    if (beforeRelease) await beforeRelease(move);
     await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await sleep(300);
 }
@@ -93,6 +103,61 @@ async function applyTheme(page, index) {
     await sleep(350);
 }
 
+async function reviewLocalData(page) {
+    const revealAction = async name => {
+        await reveal(page, element => element.automationName === name);
+        await byAutomation(page, name);
+    };
+    await revealAction("Import this backup");
+    await waitText(page, "Paste an Ember backup first.");
+    // Validation puts focus back in the JSON field so the correction can be typed directly.
+    await page.type("{}");
+    assert(!(await state(page)).elements.some(e => e.text === "Paste an Ember backup first."), "The corrected import still reports an empty field");
+    await revealAction("Import this backup");
+    await waitText(page, "Replace reading data");
+    await byName(page, "BackButton");
+    assert(!(await state(page)).elements.some(e => e.automationName === "Replace reading data"), "Back left a restore confirmation active");
+    await reveal(page, element => element.automationName === "Copy backup", -1);
+    await byAutomation(page, "Copy backup");
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Generated backup JSON')");
+    await byName(page, "BackButton");
+    const settings = (await state(page)).elements;
+    assert(settings.some(e => e.name === "DetailTitle" && e.text === "Settings"), "Closing the backup left Settings");
+    assert(!settings.some(e => e.automationName === "Generated backup JSON"), "Backup output remained after Back");
+
+    await reveal(page, element => element.text === "Clear local data");
+    await byText(page, "Clear local data");
+    await revealAction("Clear cached content");
+    await waitText(page, "Remove cached content");
+    await page.press("Escape");
+    assert(!(await state(page)).elements.some(e => e.automationName === "Remove cached content"), "Escape did not cancel cache removal");
+}
+
+async function verifyProfileActivity(page) {
+    await byAutomation(page, "View maker’s profile");
+    const comment = e => e.automationName?.startsWith("Thank you! Here is the tiny core:");
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.automationName?.startsWith('Thank you! Here is the tiny core:'))");
+    await page.screenshot(path.join(captures, "desktop-profile.png"));
+    await page.resize(390, 844);
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'MobileMore' && e.hit)");
+    await page.screenshot(path.join(captures, "phone-profile.png"));
+    await click(page, comment, "maker’s recent comment");
+    await page.waitFor("new URL(location.href).searchParams.get('item') === '202'");
+    await waitText(page, "Comment by maker");
+    await byName(page, "BackButton");
+    await waitText(page, "Recent activity");
+    await byAutomation(page, "All comments");
+    await page.waitFor("globalThis.__emberLastSearch?.includes('author_maker')");
+    const search = new URL(await page.evaluate("globalThis.__emberLastSearch"));
+    assert(search.searchParams.get("tags") === "comment,author_maker" && search.pathname.endsWith("/search_by_date"),
+        "Profile comments must request recent results scoped to this author");
+    await page.resize(1440, 960);
+    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavMore' && e.hit)");
+    await byName(page, "NavMore");
+    await waitText(page, "Your library");
+    await page.screenshot(path.join(captures, "desktop-explore.png"));
+}
+
 async function start(width, height) {
     const page = await open(site, { width, height, initScript });
     try { await page.waitForView(); await waitText(page, title); return page; }
@@ -107,27 +172,669 @@ async function failure(page, name) {
 }
 
 await run([
+    ["reader Back and browser Forward traverse the same discussion entries", async () => {
+        const page = await open(site, { width: 1280, height: 800, query: "?RenderThread=false", initScript });
+        const second = fixtures[102].title;
+        const at = (id, text) => page.waitFor(`new URL(location.href).searchParams.get("item") === ${JSON.stringify(id)} &&
+            JSON.parse(ember.emberState()).elements.some(e => e.name === "DetailTitle" && e.text === ${JSON.stringify(text)})`);
+        try {
+            await page.waitForView();
+            await byText(page, title);
+            await at("101", title);
+            await byText(page, second);
+            await at("102", second);
+            const length = await page.evaluate("history.length");
+            await byName(page, "BackButton");
+            await at("101", title);
+            assert(await page.evaluate("history.length") === length, "Reader Back appended a duplicate discussion");
+            await page.evaluate("history.forward()");
+            await at("102", second);
+            await page.evaluate("history.back()");
+            await at("101", title);
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('RenderThread')") === "false",
+                "Back discarded a renderer setting");
+            await page.evaluate("history.forward()");
+            await at("101", title);
+            // Distinct visits to one URL retain their own Find state, even when
+            // a browser traversal jumps over the intermediate discussion.
+            await byName(page, "FindButton");
+            await page.type("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            await byText(page, second);
+            await at("102", second);
+            await byText(page, title);
+            await at("101", title);
+            await byName(page, "FindButton");
+            await page.type("wonderful");
+            await waitText(page, "1 matching comment");
+            const expectFind = text => page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
+                e.name === "ThreadFind" && e.text === ${JSON.stringify(text)})`);
+            await page.evaluate("history.go(-2)");
+            await expectFind("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            await page.evaluate("history.go(2)");
+            await expectFind("wonderful");
+            await byName(page, "BackButton"); // close Find before leaving the discussion
+            await byName(page, "BackButton");
+            await at("102", second);
+            await page.evaluate("history.forward()");
+            await at("101", title);
+            await page.evaluate("history.back()");
+            await at("102", second);
+            const third = fixtures[103].title;
+            await byText(page, third);
+            await at("103", third);
+            // Opening C at B replaces the former Forward branch to the second A.
+            const tail = await page.evaluate("history.state.emberEntry");
+            await page.evaluate("history.forward()");
+            await sleep(200);
+            assert(await page.evaluate("history.state.emberEntry") === tail, "An abandoned Forward branch survived");
+            await page.evaluate("history.go(-2)");
+            await expectFind("design notes");
+            await page.evaluate("history.go(2)");
+            await at("103", third);
+            await byName(page, "BackButton");
+            await at("102", second);
+            await page.evaluate("history.forward()");
+            await at("103", third);
+            // An explicit tab selection starts a new feed entry and clears the
+            // in-reader detail trail. Browser Back still exposes C, B and A.
+            await byName(page, "NavTop");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            const detachedLength = await page.evaluate("history.length");
+            await page.evaluate("history.back()");
+            await at("103", third);
+            await byName(page, "BackButton");
+            await at("102", second);
+            await byName(page, "BackButton");
+            await at("101", title);
+            await expectFind("design notes");
+            await byName(page, "BackButton"); // close the original A's restored Find
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            assert(await page.evaluate("history.length") === detachedLength, "Returning to the feed duplicated a browser entry");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } finally { await page.close(); }
+        const direct = await open(site, { width: 390, height: 844, query: "?id=101&RenderThread=false#note", initScript });
+        try {
+            await direct.waitForView();
+            await waitText(direct, title);
+            const length = await direct.evaluate("history.length");
+            await byName(direct, "BackButton");
+            await direct.waitFor("!new URL(location.href).searchParams.has('id')");
+            await waitText(direct, "Front page");
+            assert(await direct.evaluate("history.length") === length, "Leaving an initial permalink pushed another entry");
+            assert(await direct.evaluate("location.hash === '#note' && new URL(location.href).searchParams.get('RenderThread') === 'false'"),
+                "Leaving a permalink discarded unrelated address state");
+            assert(direct.errors.length === 0, direct.errors.join("\n"));
+        } finally { await direct.close(); }
+    }],
+    ["optional CJK glyphs shape in place and remain available offline", () => verifyCjkFallback(site, captures)],
+    ["primary navigation follows the layout and the selected discussion keeps Find", async () => {
+        const page = await open(site, { width: 390, height: 844, initScript });
+        try {
+            await page.waitForView();
+            await waitText(page, title);
+            await byName(page, "MobileHome");
+            await page.press("End");
+            assert((await state(page)).elements.some(e => e.name === "FeedTitle" && e.text === "Front page"),
+                "Moving navigation focus activated a destination");
+            await page.press("Enter");
+            await waitText(page, "Explore Ember");
+            await page.screenshot(path.join(captures, "phone-primary-navigation.png"));
+            await byName(page, "MobileHome");
+            await page.resize(844, 390);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 844");
+            await byName(page, "MobileNew");
+            await page.press("ArrowDown");
+            await page.press("Enter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Search terms' && e.hit)");
+            await page.resize(1280, 800);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop' && e.hit)");
+            await byName(page, "NavTop");
+            await byText(page, title);
+            await byName(page, "FindButton");
+            await page.type("design notes");
+            await waitText(page, "1 of 2 matching comments");
+            const row = (await state(page)).elements.find(e => e.hit && e.automationName?.startsWith(title + ","));
+            assert(row, "Selected story is missing from the feed");
+            await page.click(row.x + row.width / 2, row.y + row.height / 2);
+            await waitText(page, "1 of 2 matching comments");
+            await byName(page, "SaveButton");
+            await byAutomation(page, "Remove saved story");
+            // Undo the second edit while focus is on a reader command.
+            await page.press("z", ["ctrl"]);
+            await waitText(page, "Change undone.");
+            assert((await state(page)).elements.some(e => e.name === "SaveButton" && e.automationName === "Remove saved story"),
+                "Undo did not restore the story bookmark");
+            await page.screenshot(path.join(captures, "desktop-selected-discussion.png"));
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } finally { await page.close(); }
+    }],
+    ["a failed final feed page retries only its missing stories and keeps their rank", async () => {
+        const testFeed = initScript + `(() => {
+            const original = fetch.bind(globalThis);
+            const ids = Array.from({length: 33}, (_, index) => index + 1);
+            globalThis.retryRequests = [];
+            globalThis.fetch = async (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                if (url.hostname !== "hacker-news.firebaseio.com") return original(input, options);
+                if (url.pathname.endsWith("/topstories.json")) return Response.json(ids);
+                const id = Number(url.pathname.match(/item\\/(\\d+)/)?.[1]);
+                if (globalThis.feedOnline) retryRequests.push(id);
+                if (id > 30 && !globalThis.feedOnline) throw new TypeError("Page unavailable");
+                return Response.json({id, type:"story", by:"reader", title:"Ranked story " + id});
+            };
+        })();`;
+        const page = await open(site, {width:390, height:844, initScript:testFeed});
+        try {
+            await page.waitForView();
+            await waitText(page, "Unread · 30");
+            await byName(page, "LoadMoreButton");
+            await waitText(page, "Retry 3 unavailable stories");
+            await waitText(page, "30 of 33 loaded · 3 unavailable");
+            assert(!(await state(page)).elements.some(e => e.name === "StatusText" && e.text),
+                "Per-row failures should be reported once by the recovery controls");
+            assert(!(await state(page)).elements.some(e => e.name === "LoadMoreButton" && e.hit),
+                "There is no page beyond this failed final page");
+            await page.screenshot(path.join(captures, "phone-feed-recovery.png"));
+            for (const [width, height] of [[320, 568], [700, 360]]) {
+                await page.resize(width, height);
+                await page.waitFor(`JSON.parse(ember.emberState()).width === ${width}`);
+                const retry = (await state(page)).elements.find(e => e.name === "RetryFeedItems" && e.hit);
+                assert(retry && retry.x >= 0 && retry.y >= 0 && retry.x + retry.width <= width + 1 &&
+                    retry.y + retry.height <= height + 1 && retry.height >= 44, "Retry target is clipped or undersized");
+            }
+            await page.resize(390, 844);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 390");
+            await page.evaluate("globalThis.feedOnline = true");
+            await byName(page, "RetryFeedItems");
+            await waitText(page, "Unread · 33");
+            assert(JSON.stringify(await page.evaluate("retryRequests.slice().sort((a,b) => a-b)")) === "[31,32,33]",
+                "Retry requested stories already present in the feed");
+            await reveal(page, e => e.hit && e.automationName?.startsWith("Ranked story 33,"));
+            const {elements} = await state(page);
+            const rows = [31, 32, 33].map(id => elements.find(e => e.hit && e.automationName?.startsWith("Ranked story " + id + ",")));
+            assert(rows.every(Boolean) && rows[0].y < rows[1].y && rows[1].y < rows[2].y,
+                "Recovered stories should be visible in provider order");
+            assert(!(await state(page)).elements.some(e => e.name === "RetryFeedItems" && e.hit),
+                "Successful recovery left a stale retry action");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "feed-page-recovery"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["feed tabs resume their paged viewport and shortcuts target the focused story", async () => {
+        const feeds = initScript + `(() => {
+            const original = globalThis.fetch;
+            const ids = Array.from({ length: 60 }, (_, i) => 1001 + i);
+            for (const id of ids) globalThis.__emberFixtureItems[id] = {
+                id, type: "story", by: "editor", title: "Archive story " + id, kids: []
+            };
+            globalThis.fetch = (input, options) => {
+                const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
+                if (url.hostname === "hacker-news.firebaseio.com" && url.pathname === "/v0/topstories.json") {
+                    return Promise.resolve(new Response(JSON.stringify(ids)));
+                }
+                return original(input, options);
+            };
+        })();`;
+        for (const width of [390, 1280]) {
+            const phone = width < 760;
+            const page = await open(site, { width, height: 844, initScript: feeds });
+            try {
+                await page.waitForView();
+                await waitText(page, "Archive story 1001");
+                await byName(page, "LoadMoreButton");
+                await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'LoadMoreButton' && e.hit)");
+                let anchor;
+                for (let step = 0; step < 16 && !anchor; step++) {
+                    await page.wheel(phone ? 160 : 350, 470, 0, 520);
+                    anchor = (await state(page)).elements.find(e => {
+                        const match = /^Archive story (\d+),/.exec(e.automationName ?? "");
+                        return e.hit && match && Number(match[1]) > 1030 && Number(match[1]) < 1058
+                            && e.y > 130 && e.y + e.height < 730;
+                    });
+                }
+                assert(anchor, "A fully visible story on the second page was not found");
+                await byName(page, phone ? "MobileNew" : "NavNew");
+                await waitText(page, title);
+                await byName(page, phone ? "MobileHome" : "NavTop");
+                await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e => e.hit
+                    && e.automationName === ${JSON.stringify(anchor.automationName)} && Math.abs(e.y - ${anchor.y}) < 2)`, 10000);
+                assert(!(await state(page)).elements.some(e => e.name === "LoadMoreButton" && e.hit),
+                    "The restored feed lost its final page");
+                if (!phone) {
+                    const id = Number(/^Archive story (\d+),/.exec(anchor.automationName)[1]);
+                    await byAutomation(page, anchor.automationName);
+                    await page.waitFor(`new URL(location.href).searchParams.get("item") === "${id}"`);
+                    // ArrowDown focuses the next native ListBoxItem while the prior discussion stays open.
+                    await page.press("ArrowDown");
+                    await page.press("s");
+                    await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
+                        e.automationName?.startsWith("Archive story ${id + 1},") && e.helpText?.startsWith("Saved"))`, 10000);
+                    await page.press("j");
+                    await page.waitFor(`new URL(location.href).searchParams.get("item") === "${id + 2}"`, 10000);
+                }
+                assert(page.errors.length === 0, page.errors.join("\n"));
+            } catch (error) { await failure(page, `feed-tabs-${width}`); throw error; }
+            finally { await page.close(); }
+        }
+    }],
+    ["startup recovery keeps the discussion reachable by keyboard on a narrow screen", async () => {
+        const page = await open(site, {
+            width: 320, height: 420, query: "?item=08",
+            initScript: 'Object.defineProperty(globalThis, "WebAssembly", {value: undefined})',
+        });
+        try {
+            await page.waitFor("document.activeElement?.id === 'error-title'");
+            assert(await page.evaluate("document.querySelector('#out p').textContent.includes('WebAssembly')"), "Missing capability explanation");
+            await page.press("Tab");
+            assert(await page.evaluate("document.activeElement?.textContent === 'Reload reader'"), "Reload is unreachable by keyboard");
+            await page.press("Tab");
+            const link = await page.evaluate(`(() => {
+                const { href, textContent } = document.activeElement;
+                const { width, height, left, right } = document.activeElement.getBoundingClientRect();
+                return { href, textContent, width, height, left, right };
+            })()`);
+            assert(link.href === "https://news.ycombinator.com/item?id=8", "The fallback lost the discussion ID");
+            assert(link.height >= 44 && link.left >= 0 && link.right <= 320, "Fallback link is clipped or too small");
+        } finally { await page.close(); }
+    }],
     ["desktop renders and opens a rich thread with shareable history", async () => {
         const page = await start(1440, 960);
         try {
             const screen = await state(page);
             assert(screen.elements.some(element => element.name === "NavTop"), "Desktop navigation rail is absent");
-            await byText(page, title);
+            await byName(page, "WelcomeOpen");
             await page.waitFor("location.search.includes('item=101')");
-            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             assert(!(await page.evaluate("globalThis.__emberUnsafeHtml === true")), "HN content executed script");
+            await page.resize(2080, 960);
+            await page.waitFor(`(() => {
+                const view = JSON.parse(ember.emberState());
+                const back = view.elements.find(e => e.name === "BackButton" && e.hit);
+                const focus = view.elements.find(e => e.name === "FocusButton" && e.hit);
+                return view.width === 2080 && back && focus && focus.x + focus.width - back.x <= 860;
+            })()`);
+            await byName(page, "FocusButton");
+            assert(!(await state(page)).elements.some(e => e.name === "NavTop"), "The feed rail remains visible in focus reading");
+            await byAutomation(page, "Exit focus reading");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'NavTop')");
+            await page.resize(1440, 960);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 1440");
+            await byName(page, "FindButton");
+            await byAutomation(page, "Find in thread");
+            // Both the prefix and the completed query match the same two comments.
+            // Treat a settled count as belonging to the exact text visible beside it.
+            await page.type("design note");
+            await waitText(page, "1 of 2 matching comments");
+            await page.press("Enter");
+            await waitText(page, "2 of 2 matching comments");
+            await page.evaluate(`(() => {
+                const check = globalThis.findFeedbackCheck = { stale: false, done: false };
+                function frame() {
+                    if (check.done) return;
+                    const {elements} = JSON.parse(ember.emberState());
+                    if (elements.some(e => e.name === "ThreadFind" && e.text === "design notes") &&
+                        elements.some(e => e.name === "FindCount" && e.text === "2 of 2 matching comments")) {
+                        check.stale = true;
+                    }
+                    requestAnimationFrame(frame);
+                }
+                requestAnimationFrame(frame);
+            })()`);
+            await page.type("s");
+            await waitText(page, "1 of 2 matching comments");
+            assert(await page.evaluate("findFeedbackCheck.done = true; !findFeedbackCheck.stale"),
+                "The visible Find count described a previous query");
+
+            await page.press("Enter");
+            await waitText(page, "2 of 2 matching comments");
+            await page.press("Enter", ["shift"]);
+            await waitText(page, "1 of 2 matching comments");
+            await page.press("Escape");
+            assert(!(await state(page)).elements.some(e => e.name === "ThreadFind"), "Escape should close find without leaving the discussion");
             const shot = await page.screenshot(path.join(captures, "desktop-thread.png"));
             assert(colours(shot) > 40, "The screenshot does not contain a rendered reader");
+            await verifyProfileActivity(page);
             await byName(page, "ThemeButton");
-            await waitText(page, "Make Ember yours");
+            await waitText(page, "Appearance & reading");
             await page.screenshot(path.join(captures, "desktop-settings.png"));
             await applyTheme(page, 2);
             const dark = await page.screenshot(path.join(captures, "desktop-dark.png"));
             assert(dark.pixel(4, 4).reduce((sum, channel) => sum + channel, 0) < shot.pixel(4, 4).reduce((sum, channel) => sum + channel, 0) - 80, "Dark theme did not change the reader surface");
             await applyTheme(page, 3);
             await page.screenshot(path.join(captures, "desktop-custom.png"));
+            await reviewLocalData(page);
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "desktop"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["phone and desktop retain Find on repeated navigation and reveal a reply in context", async () => {
+        for (const width of [390, 1280]) {
+            const page = await start(width, 844);
+            try {
+                await page.evaluate("location.hash = 'id=0101'");
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton' && e.hit)");
+                await byName(page, "FindButton");
+                await page.type("DESIGN NOTES");
+                await waitText(page, "1 of 2 matching comments");
+                await page.press("Enter");
+                await waitText(page, "2 of 2 matching comments");
+                await reveal(page, e => e.automationName === "View engineer’s profile");
+                await byAutomation(page, "View engineer’s profile");
+                await waitText(page, "Recent activity");
+                await byName(page, "BackButton");
+                await waitText(page, "2 of 2 matching comments");
+                assert((await state(page)).elements.find(e => e.name === "ThreadFind")?.text === "DESIGN NOTES",
+                    "Back replaced or normalized the user's Find text");
+                await byName(page, "ThreadFind");
+                await page.press("a", ["ctrl"]);
+                await page.type("tiny core");
+                await waitText(page, "1 matching comment");
+                // Browsers may deliver both events when traversing a hash URL.
+                await page.evaluate("dispatchEvent(new PopStateEvent('popstate'))");
+                await waitText(page, "1 matching comment");
+                const context = e => e.name === "ReadInContext";
+                await reveal(page, context);
+                await page.screenshot(path.join(captures, `find-context-${width}.png`));
+                if (width < 760) {
+                    const button = (await state(page)).elements.find(e => e.hit && context(e));
+                    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+                    await page.send("Input.dispatchTouchEvent", {
+                        type: "touchStart",
+                        touchPoints: [{ x: button.x + button.width / 2, y: button.y + button.height / 2 }],
+                    });
+                    await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+                } else {
+                    await byName(page, "ThreadFind");
+                    await page.press("Enter", ["ctrl"]);
+                }
+                await page.waitFor("!JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+                // Only the selected nested reply contains a code block.
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Wrap code lines')");
+                await byName(page, "BackButton");
+                await page.waitFor("!location.hash && !new URL(location.href).searchParams.has('item')");
+                assert(page.errors.length === 0, page.errors.join("\n"));
+            } catch (error) { await failure(page, `context-${width}`); throw error; }
+            finally { await page.close(); }
+        }
+    }],
+    ["settings retain preference drafts and discard them across desktop and phone layouts", async () => {
+        const page = await start(1440, 960);
+        const field = label => element => element.automationName === label;
+        const readText = async label => (await state(page)).elements.find(field(label))?.text;
+        try {
+            await byName(page, "ThemeButton");
+            await reveal(page, field("Ocean accent"));
+            await byAutomation(page, "Ocean accent");
+            await byName(page, "ThemeButton");
+            assert(await readText("Accent color") === "#2864A7", "Opening Settings again lost the draft accent");
+            await byName(page, "UnreadButton");
+            await page.resize(390, 844);
+            await page.waitFor("JSON.parse(ember.emberState()).width === 390");
+            await reveal(page, field("Discard preference edits"));
+            await page.screenshot(path.join(captures, "phone-preference-draft.png"));
+            await byAutomation(page, "Discard preference edits");
+            await waitText(page, "Preference edits discarded.");
+            await reveal(page, field("Accent color"), -1);
+            assert(await readText("Accent color") === "#FF6B35", "Discard did not restore the saved accent");
+
+            await reveal(page, field("Forest accent"));
+            await byAutomation(page, "Forest accent");
+            await reveal(page, field("Apply preferences"));
+            await byAutomation(page, "Apply preferences");
+            await waitText(page, "Preferences applied.");
+            const saved = await page.evaluate(`import("./ember-platform.js")
+                .then(async m => JSON.parse(await m.databaseGet("reader:state"))?.preferences)`);
+            assert(saved?.accent === "#216E58" && saved.hide_read === true,
+                "Applying the draft lost the live unread filter or saved the wrong accent");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "settings-draft"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["an offline download can be started from a feed, canceled from another tab and retried", async () => {
+        const page = await start(390, 844);
+        try {
+            await page.evaluate(`(() => {
+                const original = globalThis.fetch;
+                const gate = new Promise(resolve => { globalThis.__releaseReply = resolve; });
+                globalThis.fetch = async (input, options) => {
+                    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
+                    if (url.hostname === "hacker-news.firebaseio.com" && url.pathname === "/v0/item/201.json") {
+                        globalThis.__waitingForReply = true;
+                        await gate;
+                    }
+                    return original(input, options);
+                };
+            })()`);
+            const download = async () => {
+                const row = (await state(page)).elements.find(e => e.hit && e.text === title);
+                const x = row.x + row.width / 2, y = row.y + row.height / 2;
+                await page.mouseMove(x, y);
+                for (const [type, buttons] of [["mousePressed", 2], ["mouseReleased", 0]]) {
+                    await page.send("Input.dispatchMouseEvent", { type, button: "right", buttons, pointerType: "mouse", x, y, clickCount: 1 });
+                }
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.text === 'Download for offline reading')", 10000);
+                await byText(page, "Download for offline reading");
+            };
+            await download();
+            await page.waitFor("globalThis.__waitingForReply === true");
+            await byName(page, "MobileSaved");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'CancelTransfer' && e.hit)");
+            await page.screenshot(path.join(captures, "phone-offline-progress.png"));
+            await byName(page, "CancelTransfer");
+            await waitText(page, "Download canceled.");
+            await page.evaluate("globalThis.__releaseReply()");
+            await byName(page, "MobileHome");
+            await download();
+            await waitText(page, "Discussion downloaded. It is available offline in Saved stories.");
+            const saved = await page.evaluate(`import("./ember-platform.js").then(async m => JSON.parse(await m.databaseGet("reader:state")))`);
+            assert(saved.downloaded_threads["101"] && !saved.items["101"].read_at, "Saving a feed download should leave it unread");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "transfer"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["storage cleanup releases temporary items and preserves verified downloads", async () => {
+        const page = await start(1024, 820);
+        try {
+            await byName(page, "WelcomeOpen");
+            await waitText(page, title);
+            await byName(page, "DownloadButton");
+            await waitText(page, "Discussion downloaded. It is available offline in Saved stories.");
+            await byName(page, "ThemeButton");
+            await reveal(page, element => element.text === "Clear local data");
+            await byText(page, "Clear local data");
+            const activate = async label => {
+                await reveal(page, element => element.automationName === label);
+                await byAutomation(page, label);
+            };
+            await activate("Check storage use");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.endsWith('6 items · 1 download'))");
+            await activate("Clean temporary cache");
+            await waitText(page, "Clean temporary data");
+            await page.press("Escape");
+            const cached = id => page.evaluate(`import('./ember-platform.js').then(m => m.databaseGet('cache:item:${id}'))`);
+            assert(await cached(102), "Cancelling cleanup lost a cached story");
+            await activate("Clean temporary cache");
+            await activate("Clean temporary data");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.text?.endsWith('4 items · 1 download'))");
+            assert(!await cached(102) && await cached(101) && await cached(203),
+                "Cleanup must preserve the downloaded root and replies and release ordinary cached stories");
+            await page.screenshot(path.join(captures, "tablet-offline-storage.png"));
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "storage"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["phone readers wrap and copy a code block and follow an internal rich link", async () => {
+        const page = await start(390, 844);
+        try {
+            const source = "fn measure(column: &str, gutter: usize, margin: usize) -> usize {\n    column.len() + 2 * margin + gutter\n}\n";
+            const html = "<p>A width calculation:</p><pre>" +
+                source.replaceAll("&", "&amp;").replaceAll(">", "&gt;") +
+                "</pre><p>See <a href='/item?id=202'>the related reply</a>.</p>";
+            await page.evaluate(`(() => {
+                globalThis.__emberFixtureItems[201].text = ${JSON.stringify(html)};
+                globalThis.__emberFixtureItems[202].text = "<p>That is the same layout function I use.</p>";
+            })()`);
+            await byText(page, title);
+            await reveal(page, e => e.automationName === "Wrap code lines");
+            await byAutomation(page, "Wrap code lines");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            await byAutomation(page, "Copy code");
+            await waitText(page, "Code copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === source,
+                "Wrapping changed the code copied to the clipboard");
+            await byName(page, "DismissStatus");
+            await reveal(page, e => e.automationName === "the related reply");
+            await page.screenshot(path.join(captures, "phone-code-tools.png"));
+            await byAutomation(page, "the related reply");
+            await waitText(page, "Comment by maker");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "202",
+                "A rich HN permalink must open its exact item in the reader");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "101",
+                "Back should restore the original discussion");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "code-tools"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["discussion search opens an indexed comment beyond the loaded thread", async () => {
+        const page = await start(390, 844);
+        try {
+            await byText(page, title);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'More story actions' && e.hit)");
+            await byAutomation(page, "More story actions");
+            await page.press("Home");
+            await page.press("ArrowDown");
+            await page.press("Enter");
+            await waitText(page, "Discussion 101");
+            await byAutomation(page, "Search terms");
+            await page.type("margin notes");
+            await page.screenshot(path.join(captures, "phone-discussion-search.png"));
+            await page.press("Enter");
+            await waitText(page, "Margin notes are part of the archive.");
+            const query = new URL(await page.evaluate("globalThis.__emberLastSearch"));
+            assert(query.searchParams.get("tags") === "comment,story_101", "Discussion scope was lost");
+            assert(query.searchParams.get("query") === "margin notes", "Search terms were lost");
+            await byText(page, "Margin notes are part of the archive.");
+            await waitText(page, "Comment by archivist");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '250'"), "Search opened the containing story instead of the exact comment");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "scoped-search"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["nested replies can jump over a subthread and open a single reply on a phone", async () => {
+        const page = await start(390, 844);
+        try {
+            await page.evaluate(`(() => {
+                const items = globalThis.__emberFixtureItems;
+                items[201].kids.push(204);
+                items[202].kids = [205];
+                items[202].by = "designer";
+                items[204] = { id: 204, parent: 201, type: "comment", by: "visitor",
+                    text: "<p>I kept my <b>reading position</b> &amp; context.</p><p>Even across pages.</p>" };
+                items[205] = { id: 205, parent: 202, type: "comment", by: "typesetter",
+                    text: "<p>A longer exchange about the details of the implementation.</p>".repeat(20) };
+            })()`);
+            await byText(page, title);
+            const rowTool = async (author, name) => {
+                const byline = e => e.hit && e.automationName === `View ${author}’s profile`;
+                await reveal(page, byline);
+                const { elements } = await state(page);
+                const row = elements.filter(byline).at(-1);
+                const tool = elements.find(e => e.hit && e.name === name
+                    && Math.abs((e.y + e.height / 2) - (row.y + row.height / 2)) < 12);
+                assert(tool, `Missing ${name} for the reply by ${author}`);
+                await page.click(tool.x + tool.width / 2, tool.y + tool.height / 2);
+            };
+            // The flyout has its own popup root. Use its native keyboard navigation.
+            await rowTool("designer", "CommentMenu");
+            await page.press("Home");
+            for (let i = 0; i < 5; ++i) await page.press("ArrowDown");
+            await page.screenshot(path.join(captures, "phone-reply-navigation.png"));
+            await page.press("Enter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.hit && e.automationName === 'View visitor’s profile')");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "101",
+                "Jumping to another reply should keep the containing discussion open");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            await rowTool("visitor", "CommentMenu");
+            await page.press("Home");
+            await page.press("ArrowDown");
+            await page.press("ArrowDown");
+            await page.press("Enter");
+            await waitText(page, "Comment text copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === "I kept my reading position & context.\nEven across pages.",
+                "Copied reply text lost its paragraph boundary or contained markup");
+            await byName(page, "DismissStatus");
+            await rowTool("visitor", "CommentMenu");
+            await page.press("Home");
+            for (let i = 0; i < 3; ++i) await page.press("ArrowDown");
+            await page.press("Enter");
+            await byAutomation(page, "Expand comment");
+            await rowTool("visitor", "CommentPermalink");
+            await waitText(page, "Comment by visitor");
+            assert(await page.evaluate("new URL(location.href).searchParams.get('item')") === "204",
+                "The standalone thread must use the selected comment's permalink");
+            await byName(page, "BackButton");
+            await page.waitFor("new URL(location.href).searchParams.get('item') === '101'");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "reply-navigation"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["returning readers catch up on new nested replies and copy their link", async () => {
+        const page = await start(1024, 820);
+        try {
+            await byName(page, "WelcomeOpen");
+            await byAutomation(page, "Collapse 1 reply");
+            await byName(page, "BackButton");
+            await page.waitFor("!new URL(location.href).searchParams.has('item')");
+            await page.evaluate(`(() => {
+                const items = globalThis.__emberFixtureItems;
+                items[101].descendants++;
+                items[201].kids.push(204);
+                items[204] = { id: 204, parent: 201, type: "comment", by: "visitor", time: Math.floor(Date.now() / 1000), text: "<p>A new nested reply for returning readers.</p>" };
+            })()`);
+            await byText(page, title);
+            await waitText(page, "3 comments");
+            await byName(page, "RefreshButton");
+            await waitText(page, "4 comments");
+            await byName(page, "NewReplyFilter");
+            await waitText(page, "1 new reply");
+            await waitText(page, "Earlier reply");
+            const nested = (await state(page)).elements.find(e => e.hit && e.automationName === "View visitor’s profile");
+            assert(nested, "The new reply is missing under its previously collapsed parent");
+            assert(!(await state(page)).elements.some(e => e.automationName === "View engineer’s profile"),
+                "A branch without new replies should be filtered out");
+            await page.screenshot(path.join(captures, "tablet-new-replies.png"));
+            const menu = (await state(page)).elements.find(e => e.hit && e.automationName === "More comment actions"
+                && Math.abs((e.y + e.height / 2) - (nested.y + nested.height / 2)) < 12);
+            assert(menu, "No overflow next to the new reply");
+            await page.click(menu.x + menu.width / 2, menu.y + menu.height / 2);
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            // Flyout menus can use a separate popup root. Select the first action by keyboard.
+            await page.press("Home");
+            await page.press("Enter");
+            await waitText(page, "Comment link copied.");
+            assert(await page.evaluate("navigator.clipboard.readText()") === "https://news.ycombinator.com/item?id=204", "The copy action used the wrong comment");
+            await reveal(page, e => e.automationName === "View visitor’s profile");
+            await byAutomation(page, "View visitor’s profile");
+            await waitText(page, "Recent activity");
+            await byName(page, "BackButton");
+            await waitText(page, "1 new reply");
+            await waitText(page, "Earlier reply");
+            await byName(page, "NewReplyFilter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Expand comment and 2 replies')");
+            assert(!(await state(page)).elements.some(e => e.automationName === "View visitor’s profile"),
+                "Clearing the scope lost the original collapsed state");
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "new-replies"); throw error; }
         finally { await page.close(); }
     }],
     ["phone touch gestures, navigation, downloads, persistence, and offline reload", async () => {
@@ -142,9 +849,33 @@ await run([
             assert(headline, "The first story has no touch target");
             const fingerX = Math.min(screen.width - 35, headline.x + headline.width - 15);
             const fingerY = headline.y + headline.height / 2;
+            await touchDrag(page, fingerX, fingerY, fingerX - 170, fingerY, async move => {
+                await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SwipeAction' && e.text === 'Save')");
+                await page.screenshot(path.join(captures, "phone-swipe-preview.png"));
+                // Retreat across the threshold before releasing the same touch.
+                await move(fingerX - 32, fingerY);
+                await sleep(60);
+            });
+            assert(!(await state(page)).elements.some(e => e.automationName?.startsWith(title) && e.helpText === "Saved. Open discussion."), "Retracting the swipe still saved the story");
+            assert(!(await state(page)).elements.some(e => e.name === "SwipeAction"), "Swipe feedback stayed visible after release");
+            await touchDrag(page, fingerX - 180, fingerY, fingerX, fingerY);
+            await waitText(page, "Story hidden.");
+            assert(!(await state(page)).elements.some(element => element.text === title), "Hidden headline remained in the feed");
+            await byName(page, "UndoStory");
+            await waitText(page, title);
+            await byName(page, "DismissStatus");
             await touchDrag(page, fingerX, fingerY, fingerX - 180, fingerY);
-            await waitText(page, "SAVED");
+            await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e =>
+                e.automationName?.startsWith(${JSON.stringify(title)}) && e.helpText === "Saved. Open discussion.")`);
             assert(!(await page.evaluate("new URL(location.href).searchParams.has('item')")), "Swiping a card also opened its discussion");
+            await byName(page, "DismissStatus");
+            const otherTitle = fixtures[102].title;
+            const other = (await state(page)).elements.find(element => element.hit && element.text === otherTitle);
+            assert(other, "Second bookmark fixture has no touch target");
+            const secondX = Math.min(screen.width - 35, other.x + other.width - 15);
+            const secondY = other.y + other.height / 2;
+            await touchDrag(page, secondX, secondY, secondX - 180, secondY);
+            await waitText(page, "Added to Saved stories. Download the thread to keep all its comments offline.");
             await byName(page, "DismissStatus");
             const heading = (await state(page)).elements.find(element => element.name === "FeedTitle");
             assert(heading, "The feed heading is absent");
@@ -157,6 +888,10 @@ await run([
             await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'SaveButton')");
             await byName(page, "SaveButton");
             await waitText(page, "Removed from Saved stories.");
+            await byName(page, "UndoStory");
+            await waitText(page, "Change undone.");
+            await byAutomation(page, "Remove saved story");
+            await waitText(page, "Removed from Saved stories.");
             await byName(page, "SaveButton");
             await waitText(page, "Added to Saved stories. Download the thread to keep all its comments offline.");
             await sleep(400);
@@ -164,6 +899,35 @@ await run([
             await waitText(page, "Discussion downloaded. It is available offline in Saved stories.");
             await byName(page, "DismissStatus");
             await page.screenshot(path.join(captures, "phone-thread.png"));
+            // A live breakpoint crossing lays out an existing, virtualized discussion.
+            // Starting independent windows at these widths does not exercise this path.
+            for (const [width, height, rail] of [[320, 640, false], [700, 420, false], [844, 390, false], [844, 550, true], [760, 550, true], [390, 844, false]]) {
+                await page.resize(width, height);
+                // The viewport changes before the deferred adaptive layout arranges its controls.
+                await page.waitFor(`(() => {
+                    const view = JSON.parse(ember.emberState());
+                    return view.width === ${width} && view.height === ${height}
+                        && view.elements.some(e => e.name === 'NavTop') === ${rail}
+                        && view.elements.some(e => e.name === 'SaveButton' && e.hit);
+                })()`);
+                if (width === 320) {
+                    assert(!(await state(page)).elements.some(e => e.name === "DownloadButton" && e.hit), "Download still crowds the narrow toolbar");
+                    await byName(page, "ToolbarMore");
+                    await waitText(page, "Focus reading");
+                    await byText(page, "Focus reading");
+                    await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.automationName === 'Exit focus reading' && e.hit)");
+                    await byAutomation(page, "Exit focus reading");
+                }
+                if (width === 844 && height === 390) {
+                    const controls = (await state(page)).elements;
+                    const first = controls.find(e => e.name === "MobileHome" && e.hit);
+                    const last = controls.find(e => e.name === "MobileMore" && e.hit);
+                    assert(first && last && first.x === last.x && first.y < last.y, "Landscape primary tabs must form a usable side strip");
+                    await page.screenshot(path.join(captures, "landscape-reader.png"));
+                }
+                assert(await page.evaluate("new URL(location.href).searchParams.get('item') === '101'"), "Resizing changed the selected URL");
+                assert(page.errors.length === 0, page.errors.join("\n"));
+            }
             await page.wheel(340, 600, 0, 440);
             await page.screenshot(path.join(captures, "phone-comments.png"));
             await page.wheel(340, 400, 0, -1000);
@@ -172,6 +936,12 @@ await run([
             await page.waitFor("!new URL(location.href).searchParams.has('item')");
             await byName(page, "MobileSaved");
             await waitText(page, title);
+            await waitText(page, otherTitle);
+            await byAutomation(page, "Show downloaded discussions only");
+            await waitText(page, title);
+            assert(!(await state(page)).elements.some(e => e.text === otherTitle), "Downloaded filter retained a bookmark without a download");
+            await byAutomation(page, "Show all saved stories");
+            await waitText(page, otherTitle);
             await byText(page, title);
             await page.waitFor("location.search.includes('item=101')");
             await page.waitFor("navigator.serviceWorker.controller !== null", 30000);
@@ -185,15 +955,168 @@ await run([
             await page.waitFor(`performance.timeOrigin !== ${previousDocument}`);
             await page.waitForView();
             await page.waitFor("globalThis.ember?.emberState");
-            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'ThreadFind')");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton')");
             await waitText(page, title);
             await page.screenshot(path.join(captures, "phone-offline-thread.png"));
             await byName(page, "BackButton");
-            await byName(page, "MobileSaved");
+            await byName(page, "MobileMore");
+            await waitText(page, "Your library");
+            await page.screenshot(path.join(captures, "phone-explore.png"));
+            const requests = await page.evaluate("globalThis.__emberApiRequests ?? 0");
+            await byAutomation(page, "Downloaded discussions");
             await waitText(page, title);
+            const downloaded = await state(page);
+            assert(downloaded.elements.some(e => e.hit && e.automationName === "Show all saved stories"),
+                "Explore did not activate the Downloaded filter");
+            assert(!downloaded.elements.some(e => e.text === otherTitle), "Explore included an undownloaded bookmark");
+            assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Explore fetched its offline library from the network");
             await page.screenshot(path.join(captures, "phone-offline-saved.png"));
+            await byName(page, "LibraryFindButton");
+            await page.type("curious maker example.org");
+            await page.press("Enter");
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'FeedSummary' && e.text?.startsWith('1 match'))");
+            await page.screenshot(path.join(captures, "phone-library-find.png"));
+            await byText(page, title);
+            await page.waitFor("new URL(location.href).searchParams.get('item') === '101' && JSON.parse(ember.emberState()).elements.some(e => e.name === 'FindButton' && e.hit)");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            const result = await state(page);
+            assert(result.elements.some(e => e.name === "LibraryFind" && e.text === "curious maker example.org"), "Returning from a match discarded the collection query");
+            await byName(page, "CloseLibraryFind");
+            await waitText(page, title);
+            assert(!(await state(page)).elements.some(e => e.name === "LibraryFind"), "Closing collection Find did not restore browsing");
+            assert(await page.evaluate("globalThis.__emberApiRequests ?? 0") === requests, "Searching and reopening the downloaded discussion used the network");
+
+            // Downloads and bookmarks are independent. Exercise both collections offline.
+            await byText(page, title);
+            await byAutomation(page, "Remove saved story");
+            await waitText(page, "Removed from Saved stories.");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            await byAutomation(page, "Show all saved stories");
+            await waitText(page, otherTitle);
+            assert(!(await state(page)).elements.some(e => e.text === title), "Unsaving retained the item in ordinary bookmarks");
+            await byAutomation(page, "Show downloaded discussions only");
+            await waitText(page, title);
+            await byText(page, title);
+            await waitText(page, "3 comments");
+            await byAutomation(page, "Manage downloaded discussion");
+            // The platform flyout may be hosted outside the main canvas control tree.
+            await page.press("End");
+            await page.press("Enter");
+            await waitText(page, "Removed from Downloads. Temporary pages can be reclaimed in Settings.");
+            await byName(page, "BackButton");
+            await waitText(page, "No downloaded discussions");
+            await byName(page, "RetryButton");
+            await waitText(page, otherTitle);
+            assert(!(await state(page)).elements.some(e => e.text === title), "Releasing a download restored its bookmark");
+
             assert(page.errors.length === 0, page.errors.join("\n"));
         } catch (error) { await failure(page, "phone"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["search corrections retain the current feed and restore the source draft", async () => {
+        const missingUser = initScript + `(() => {
+            const get = fetch.bind(globalThis);
+            globalThis.fetch = (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                return url.hostname === "hacker-news.firebaseio.com" && url.pathname === "/v0/user/noone.json"
+                    ? Promise.resolve(Response.json(null)) : get(input, options);
+            };
+        })();`;
+        const page = await open(site, { width: 1280, height: 800, initScript: missingUser });
+        try {
+            await page.waitForView();
+            await waitText(page, title);
+            await byName(page, "SearchBox");
+            await page.setPermission("clipboard-read", "granted");
+            await page.setPermission("clipboard-write", "granted");
+            const terms = "żółta herbata ".repeat(140);
+            assert(terms.length < 2048 && new TextEncoder().encode(terms.trim()).length > 2048,
+                "The fixture should exceed the byte limit only");
+            await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(terms)})`);
+            await page.press("v", ["ctrl"]);
+            await page.waitFor(`JSON.parse(ember.emberState()).elements.some(e => e.name === 'SearchBox' && e.text?.length === ${terms.length})`);
+            await page.press("Enter");
+            const message = "Search terms exceed the 2,048-byte limit.";
+            await waitText(page, message);
+            assert((await state(page)).elements.filter(e => e.text === message).length === 1,
+                "Show a single inline validation message");
+            assert((await state(page)).elements.some(e => e.name === "FeedTitle" && e.text === "Front page"),
+                "Invalid input replaced the feed");
+            await page.screenshot(path.join(captures, "desktop-search-validation.png"));
+            await page.press("a", ["ctrl"]);
+            await page.type("systems");
+            await page.waitFor(`!JSON.parse(ember.emberState()).elements.some(e => e.text === ${JSON.stringify(message)})`);
+            await page.resize(390, 844);
+            await page.waitFor("JSON.parse(ember.emberState()).elements.some(e => e.name === 'MobileSearch' && e.hit)");
+            await byName(page, "MobileSearch");
+            await byName(page, "SearchTerms");
+            await page.press("a", ["ctrl"]);
+            await page.type("systems draft");
+            await reveal(page, e => e.text === "Find a person");
+            await byText(page, "Find a person");
+            await reveal(page, e => e.automationName === "Hacker News username");
+            await byAutomation(page, "Hacker News username");
+            await page.type("@noone");
+            await page.press("Enter");
+            await waitText(page, "Profile unavailable");
+            await byAutomation(page, "Edit username");
+            await page.screenshot(path.join(captures, "phone-profile-correction.png"));
+            // The failed username is selected, so ordinary typing corrects it.
+            await page.type("maker");
+            await page.press("Enter");
+            await waitText(page, "Recent activity");
+            await byName(page, "BackButton");
+            await reveal(page, e => e.name === "SearchTerms", -1);
+            await waitText(page, "systems draft");
+            await byName(page, "BackButton");
+            await waitText(page, title);
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "search-corrections"); throw error; }
+        finally { await page.close(); }
+    }],
+    ["retrying profile activity preserves readable submissions and recovers a missing row", async () => {
+        const profileFixture = initScript + `(() => {
+            const existing = fetch.bind(globalThis);
+            const requests = globalThis.activityRequests = [];
+            globalThis.fetch = async (input, options) => {
+                const url = new URL(input instanceof Request ? input.url : input, location.href);
+                if (url.hostname === "hacker-news.firebaseio.com") {
+                    const file = url.pathname.split("/").pop();
+                    if (file === "maker.json") {
+                        requests.push(file);
+                        return Response.json({id:"maker", submitted:[6001,6002]});
+                    }
+                    if (file === "6001.json" || file === "6002.json") {
+                        requests.push(file);
+                        const id = parseInt(file, 10);
+                        if (id === 6001 && !globalThis.recoverActivity) throw new TypeError("Unavailable submission");
+                        return Response.json({id, type:"story", by:"maker", title:"Submission " + id});
+                    }
+                }
+                return existing(input, options);
+            };
+        })();`;
+        const page = await open(site, {width:1280, height:900, initScript:profileFixture});
+        try {
+            await page.waitForView();
+            await byName(page, "SearchBox");
+            await page.type("https://news.ycombinator.com/user?id=maker");
+            await page.press("Enter");
+            await waitText(page, "Submission 6002");
+            await reveal(page, e => e.automationName === "Retry activity");
+            await page.evaluate("activityRequests.length = 0; globalThis.recoverActivity = true;");
+            await byAutomation(page, "Retry activity");
+            await waitText(page, "Submission 6001");
+            assert(JSON.stringify(await page.evaluate("activityRequests.slice()")) === '["6001.json"]',
+                "Activity retry refetched part of the readable profile");
+            const cards = (await state(page)).elements.filter(e => e.automationName?.startsWith("Submission 600"));
+            assert(cards.length === 2 && cards[0].y < cards[1].y, "Recovered submissions are out of order");
+            await page.press("Enter");
+            await page.waitFor('new URL(location.href).searchParams.get("item") === "6001"');
+            assert(page.errors.length === 0, page.errors.join("\n"));
+        } catch (error) { await failure(page, "profile-activity-retry"); throw error; }
         finally { await page.close(); }
     }],
 ].filter(([name]) => !process.env.EMBER_BROWSER_CASE || name.includes(process.env.EMBER_BROWSER_CASE)));
