@@ -50,7 +50,13 @@ async function waitText(page, text) {
     await page.waitFor(`globalThis.ember?.emberState && JSON.parse(ember.emberState())?.elements.some(e => e.text === ${JSON.stringify(text)})`, 30000);
 }
 async function click(page, predicate, description) {
-    const element = (await state(page)).elements.find(element => element.hit && predicate(element));
+    // A control that appears with a change (the dismiss button of a new status) becomes a hit target
+    // after the next layout and frame, which a slower runner may not have reached yet: wait for it.
+    let element;
+    for (const end = Date.now() + 5000; ; await sleep(100)) {
+        element = (await state(page)).elements.find(element => element.hit && predicate(element));
+        if (element || Date.now() > end) break;
+    }
     assert(element, `No visible hit target: ${description}`);
     await page.click(element.x + element.width / 2, element.y + element.height / 2);
     await sleep(250);
