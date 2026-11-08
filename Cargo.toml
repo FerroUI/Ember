@@ -292,17 +292,28 @@ getrandom = { version = "0.4" }
 # >>> FerroUI profiles (written by FerroUI/scripts/apps/sync-workspace.py from FerroUI/Cargo.toml; do not edit)
 # The default release build is the one that is built most often, so it is set up for build time:
 # thin LTO over the default sixteen code generation units, which generates code on all cores.
+# It aborts on panic, as `dist` does (#567, docs/binary-size.md, section 4.7): no framework path
+# relies on catching a panic, and unwinding tables and landing pads are a fifth of an executable.
 [profile.release]
 lto = "thin"
+panic = "abort"
+
+# `release` with unwinding, for a program that catches panics to carry on (a plug-in host, a tool
+# that isolates the code it runs). Tests and benchmarks unwind in every profile.
+[profile.release-unwind]
+inherits = "release"
+panic = "unwind"
 
 # Optimised code for running an application locally (`cargo run --profile fast-release -p <app>`):
 # the optimisation level of release, without link-time optimisation across crates. The last step
 # of an executable then links the optimised crates instead of optimising the whole program again,
 # which took most of a release build of a large application. Not for measurements or shipping:
-# the benchmarks are measured with release, and what is shipped is built with dist.
+# the benchmarks are measured with release, and what is shipped is built with dist. It unwinds:
+# the Designer and the previewer, run this way, isolate the code of the previewed application.
 [profile.fast-release]
 inherits = "release"
 lto = false
+panic = "unwind"
 
 # The build that is shipped and measured (`cargo build --profile dist`, `scripts/perf-report.py
 # --profile dist`): whole-program optimisation in one code generation unit. The executables are
@@ -337,6 +348,24 @@ panic = "abort"
 [profile.dist-unwind]
 inherits = "dist"
 panic = "unwind"
+
+# Compiled theme markup runs once, when a theme is constructed, and is a large share of an
+# executable: the theme crates are optimised for size in the shipped build (#581). Their start-up
+# cost is within noise (docs/binary-size.md, section 4.14).
+[profile.dist.package.ferroui-themes-winui]
+opt-level = "z"
+
+[profile.dist.package.ferroui-themes-fluent]
+opt-level = "z"
+
+[profile.dist.package.ferroui-themes-simple]
+opt-level = "z"
+
+[profile.dist.package.ferroui-themes-macos]
+opt-level = "z"
+
+[profile.dist.package.ferroui-themes-material]
+opt-level = "z"
 
 # The WebAssembly module of the browser (scripts/build-browser.sh): optimised for size, because the
 # module is downloaded and compiled by every visitor (docs/porting/browser-platform.md, section 18).
