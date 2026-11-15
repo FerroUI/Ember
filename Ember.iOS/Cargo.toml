@@ -19,5 +19,5 @@ path = "main.rs"
 ember = { path = "../Ember" }
 ferroui-base = { workspace = true }
 ferroui-controls = { workspace = true }
-ferroui-ios = { workspace = true }
+ferroui-ios = { workspace = true, features = ["skia"] }
 ferroui-fonts-inter = { workspace = true }
