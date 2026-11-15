@@ -698,6 +698,10 @@ fn anchor_index(list: &ListBox, target: u64) -> Option<(i32, bool)> {
 
 fn scroll_anchor_into_view(list: &ListBox, index: i32, inset: u32) {
     list.scroll_into_view(index);
+    // A row that is realized already (the focus trail of VirtualizingStackPanel keeps the one
+    // beside a focused edge row) is brought into view without a layout pass: lay out before
+    // reading its position, so the offset below starts from where it is now.
+    list.update_layout();
     if let (Some(container), Some(scroll)) = (
         list.container_from_index(index),
         list.scroll()
