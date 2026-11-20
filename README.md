@@ -6,7 +6,7 @@ XAML, the retained control tree and composition animations. It runs on the deskt
 the browser (WebAssembly), all hosts sharing the same application; in the browser it renders into a
 canvas, with offline reading through IndexedDB and an installable application shell.
 
-**Open it in the browser:** https://ferroui.github.io/Ember/
+**Open it in the browser:** https://ferroui.com/Ember/
 
 ![Ember in the light desktop theme](docs/images/ember-desktop-light.png)
 
